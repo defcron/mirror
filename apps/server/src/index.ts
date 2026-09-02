@@ -10,6 +10,8 @@ import { ChatGptBackendClient, normalizeGizmos, normalizeModels, type Normalized
 import { getValidCredentials, verifyCandidateSessionToken } from "./auth.js";
 import { runChat, stopConversation } from "./chat-service.js";
 import { registerOpenAiRoutes } from "./openai.js";
+import { injectionCss, injectionJs, proxyChatGpt, proxyWebSocketUpgrade } from "./proxy.js";
+import { getEgressStatus, monitorRequiredEgress, verifyRequiredEgress } from "./egress.js";
 import {
   branchConversation, claimDefaultAccountData, clearSession, createConversation, databaseHealthy, deleteConversation,
   getConversation, getSession, importRemoteConversation, listConversations, listMessages, saveFile, saveVerifiedSession,
@@ -17,8 +19,23 @@ import {
 } from "./store.js";
 
 const app = Fastify({
-  logger: { redact: ["req.headers.authorization", "req.headers.cookie", "req.body.sessionToken"] },
-  bodyLimit: 2 * 1024 * 1024,
+  logger: {
+    redact: ["req.headers.authorization", "req.headers.cookie", "req.body.sessionToken"],
+    serializers: {
+      // Signed realtime/AJAX URLs can carry short-lived credentials in their
+      // query string. Keep request logging useful without persisting them.
+      req(req) {
+        return {
+          method: req.method,
+          url: typeof req.url === "string" ? req.url.split("?", 1)[0] : req.url,
+          host: req.headers?.host,
+          remoteAddress: req.socket?.remoteAddress,
+          remotePort: req.socket?.remotePort,
+        };
+      },
+    },
+  },
+  bodyLimit: 30 * 1024 * 1024,
 });
 await app.register(cors, { origin: process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173" });
 await app.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
@@ -39,7 +56,12 @@ app.setErrorHandler((error, _req, reply) => {
   reply.code(status).send({ error: message });
 });
 
-app.get("/api/health", async () => ({ ok: databaseHealthy(), storage: "sqlite", configured: Boolean(getSession()) }));
+app.get("/api/health", async () => ({
+  ok: databaseHealthy() && (!getEgressStatus().required || getEgressStatus().verified),
+  storage: "sqlite",
+  configured: Boolean(getSession()),
+  egress: getEgressStatus(),
+}));
 
 const SetSessionBody = z.object({ sessionToken: z.string().min(20, "That doesn't look like a valid session token") });
 app.post("/api/session", async (req) => {
@@ -184,13 +206,33 @@ app.post("/api/chat", async (req, reply) => {
 await registerOpenAiRoutes(app);
 
 const staticRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
-await app.register(fastifyStatic, { root: staticRoot, wildcard: false });
-app.setNotFoundHandler((req, reply) => {
-  if (req.url.startsWith("/api/") || req.url.startsWith("/v1/")) return reply.code(404).send({ error: "Not found" });
-  return reply.sendFile("index.html");
+await app.register(fastifyStatic, { root: staticRoot, prefix: "/mirror/", wildcard: false, decorateReply: true });
+app.get("/mirror/playground", (_req, reply) => reply.sendFile("index.html"));
+app.get("/mirror/inject.css", (_req, reply) => reply.type("text/css").send(injectionCss));
+app.get("/mirror/inject.js", (_req, reply) => reply.type("application/javascript").send(injectionJs));
+app.setNotFoundHandler(async (req, reply) => {
+  // Every Mirror-owned /api route is registered above. Any remaining route may
+  // belong to the official ChatGPT frontend and must be proxied upstream.
+  if (req.url.startsWith("/v1/")) return reply.code(404).send({ error: "Not found" });
+  return proxyChatGpt(req, reply);
 });
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "127.0.0.1";
+await verifyRequiredEgress();
 await app.listen({ port, host });
 app.log.info(`mirror server listening on http://${host}:${port}`);
+// The frontend also opens a raw WebSocket (realtime notifications) straight
+// to the upstream host; Fastify itself has no built-in WebSocket support, so
+// this proxies the HTTP upgrade through by hand, the same way every other
+// request is proxied through proxyChatGpt().
+app.server.on("upgrade", (req, socket, head) => {
+  void proxyWebSocketUpgrade(req, socket, head).catch((error) => {
+    app.log.error({ err: error }, "mirror websocket proxy failed");
+    socket.destroy();
+  });
+});
+monitorRequiredEgress((error) => {
+  app.log.error({ err: error }, "required WARP egress was lost; stopping Mirror to prevent direct fallback");
+  void app.close().finally(() => process.exit(1));
+});

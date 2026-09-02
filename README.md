@@ -21,25 +21,42 @@ This is an unofficial, protocol-dependent project. ChatGPT Web endpoints can cha
 - production static serving from the Fastify server
 - SQLite persistence, account-scoped records, AES-256-GCM credential encryption, redacted request logging, rate limiting and health checks
 - optional application API-key protection for `/v1/*`
+- mandatory, container-scoped Cloudflare WARP egress with a fail-closed startup check
 
-Auth expansion and WARP/proxy support are intentionally not included. The original one-`sessionToken` workflow remains the only account connection mode.
+Auth expansion is intentionally not included. The original one-`sessionToken` workflow remains the only account connection mode.
 
 ## Run
 
-```sh
-npm install
-npm run dev
-```
+WARP is mandatory. Mirror will not start on a direct network path. The bundled Compose stack puts Mirror and the official Cloudflare WARP Linux client in one network namespace. This routes session minting, ChatGPT backend calls, proxied web-app requests, uploads, and streamed responses through the same WARP tunnel. The WARP registration and Mirror database are stored in separate persistent Docker volumes.
 
-Development uses `http://localhost:5173` for the Vite interface and `http://127.0.0.1:8787` for the server.
+Cloudflare's Local proxy mode is deliberately not used: Cloudflare documents a 10-second request limit for that mode, which is unsuitable for long streamed generations. The stack instead uses full WARP mode with MASQUE and verifies Cloudflare's `warp=on` trace signal before Mirror starts.
 
-For the production build served by one local process:
+First copy the example configuration and explicitly acknowledge Cloudflare's applicable WARP terms:
 
 ```sh
-npm start
+cp .env.example .env
+# Edit .env and set WARP_ACCEPT_TOS=yes after reviewing the terms.
+docker compose up --build
 ```
 
-Open `http://127.0.0.1:8787`, choose **Connect account**, then follow the displayed steps. A candidate token is verified before replacing the last known-good session.
+Then open `http://127.0.0.1:8799`. The WARP container owns the published port because the Mirror container shares its network namespace. `GET /api/health` reports only non-sensitive egress state:
+
+```json
+{
+  "ok": true,
+  "egress": {
+    "mode": "warp",
+    "required": true,
+    "verified": true,
+    "checkedAt": "...",
+    "error": null
+  }
+}
+```
+
+If the tunnel is unavailable or Cloudflare's trace endpoint does not report `warp=on`, Mirror refuses to start. It rechecks every 30 seconds and stops if verified WARP egress is lost, preventing a quiet direct-network fallback. Running `npm start` outside the WARP network namespace fails the same verification and is not a supported bypass.
+
+WARP changes the network path; it does not guarantee a fixed public IP and must not be treated as a way to defeat an account restriction. If ChatGPT has already placed a security hold on the account, use ChatGPT's official account-security/recovery flow before resuming requests. Repeated automated retries can make the signal worse.
 
 ## OpenAI-compatible use
 

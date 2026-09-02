@@ -1,0 +1,43 @@
+services:
+  warp:
+    build:
+      context: ./docker/warp
+    environment:
+      WARP_ACCEPT_TOS: ${WARP_ACCEPT_TOS:-no}
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "${MIRROR_PORT:-8799}:8787"
+    volumes:
+      - mirror-warp:/var/lib/cloudflare-warp
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/warp-healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
+  mirror:
+    build:
+      context: .
+    network_mode: "service:warp"
+    depends_on:
+      warp:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8787
+      MIRROR_DATA_DIR: /home/node/.mirror
+      MIRROR_API_KEY: ${MIRROR_API_KEY:-}
+      MIRROR_API_KEYS: ${MIRROR_API_KEYS:-}
+      MIRROR_STORE_KEY: ${MIRROR_STORE_KEY:-}
+    volumes:
+      - mirror-data:/home/node/.mirror
+    restart: unless-stopped
+
+volumes:
+  mirror-data:
+  mirror-warp:

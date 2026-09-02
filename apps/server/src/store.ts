@@ -129,6 +129,14 @@ export function saveVerifiedSession(sessionToken: string, accountId?: string, de
   return session;
 }
 
+export function setSessionAccountId(accountId: string): void {
+  const session = getSession();
+  if (!session || session.accountId === accountId) return;
+  session.accountId = accountId;
+  writeSetting("session", encrypt(JSON.stringify(session)));
+  claimDefaultAccountData(accountId);
+}
+
 export function updateMintedToken(accessToken: string, expiresAt: number, rotatedSessionToken: string | null): void {
   const session = getSession();
   if (!session) return;
