@@ -57,7 +57,13 @@ function disableDatadogInit(text: string): string {
 }
 
 const UPSTREAM = "https://chatgpt.com";
-const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+// Kept in sync with a real browser's actual reported version (checked against
+// a live HAR capture) rather than left stale -- a User-Agent claiming a much
+// older Chrome than what the rest of the request's fingerprint implies is
+// itself a mismatch signal, on top of the Node/undici TLS fingerprint always
+// being different from a real browser's regardless of what this string says.
+const USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36";
+const SEC_CH_UA = '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"';
 // Syntactically valid, unsigned, non-secret JWT. The official client decodes
 // expiry/subject locally; the proxy always discards it before upstream calls.
 const BROWSER_TOKEN = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4MDAsInN1YiI6Im1pcnJvci11c2VyIn0.";
@@ -93,6 +99,16 @@ const BROWSER_TOKEN = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4M
  * after synchronous parsing completes).
  */
 const EARLY_PATCH = `<script>(function(){
+// Install the Datadog init hook (see mirrorInitDatadog/installMirrorDatadogHook
+// further down) as the very first thing this script does, before rel()/
+// wrapFetch/etc are even defined -- confirmed via a temporary stack-capturing
+// console.error hook that the app's own "addAction before initialize"
+// self-heal path can fire and lose the domain check before window "load"
+// ever arrives, so deferring our own real init() call to window "load" only
+// won the race sometimes. Hooking the window.DD_RUM property itself, so our
+// init() runs synchronously the instant the app assigns it, wins every time
+// regardless of how early the app pokes it.
+installMirrorDatadogHook();
 function rel(u){
   try{
     if(typeof u!=="string") return u;
@@ -238,9 +254,8 @@ if(document.readyState==="complete"){
 // avoid can never fail. If a future ChatGPT deploy rotates these values this
 // stops matching and Datadog just stays off, same as before this fix --
 // never a hard failure either way.
-function mirrorInitDatadog(){
+function mirrorInitDatadogOn(dd){
   try{
-    var dd=window.DD_RUM;
     if(!dd||typeof dd.init!=="function"||typeof dd.getInitConfiguration!=="function")return;
     if(dd.getInitConfiguration())return;
     dd.init({
@@ -256,10 +271,40 @@ function mirrorInitDatadog(){
     });
   }catch(e){}
 }
-if(document.readyState==="complete"){
-  mirrorInitDatadog();
-}else{
-  window.addEventListener("load",mirrorInitDatadog,{once:true});
+function installMirrorDatadogHook(){
+  try{
+    var current=window.DD_RUM;
+    // If the app already assigned window.DD_RUM before we got here (it
+    // shouldn't, since this runs first, but be defensive), init it right now.
+    if(current)mirrorInitDatadogOn(current);
+    Object.defineProperty(window,"DD_RUM",{
+      configurable:true,enumerable:true,
+      get:function(){return current;},
+      set:function(next){
+        current=next;
+        // Call synchronously, in the same tick as the assignment, before
+        // whatever assigned it gets a chance to run any further code (like
+        // the app's own addAction-before-initialize self-heal) that would
+        // otherwise race us to calling the real init() first.
+        mirrorInitDatadogOn(next);
+      }
+    });
+    // Datadog's standard bootstrap snippet often does
+    // window.DD_RUM=window.DD_RUM||{q:[],onReady:fn} and later MUTATES
+    // that same stub object in place (Object.assign-style) once the real SDK
+    // chunk loads, rather than reassigning window.DD_RUM to a new object --
+    // our property setter above only fires on reassignment, so a mutation
+    // would slip past it entirely. Poll the current value's shape for a few
+    // seconds after each assignment to catch that case too.
+    var pollCount=0;
+    var pollTimer=setInterval(function(){
+      pollCount++;
+      if(pollCount>200){clearInterval(pollTimer);return;}
+      if(current&&typeof current.init==="function"&&typeof current.getInitConfiguration==="function"&&!current.getInitConfiguration()){
+        mirrorInitDatadogOn(current);
+      }
+    },5);
+  }catch(e){}
 }
 })();</script>`;
 
@@ -274,6 +319,22 @@ function safeRequestHeaders(req: FastifyRequest): Headers {
   const exact = new Set([
     "accept", "accept-language", "baggage", "cache-control", "content-type",
     "pragma", "priority", "range", "sentry-trace",
+    // These are headers a real Chrome attaches to every request automatically
+    // (client-hints + fetch metadata) -- forwarding the browser's own values
+    // for them, rather than dropping them on the floor, is strictly better
+    // than either omitting them or hand-rolling our own guess: it keeps
+    // upstream's view consistent with what the actual requesting browser
+    // reports (sec-ch-ua's Chrome version, mobile/platform, etc.) instead of
+    // introducing a second, independent mismatch on top of the Node/undici
+    // TLS fingerprint we can't fix from here anyway.
+    "dnt", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+    "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "sec-fetch-user",
+    // Chrome sends "gzip, deflate, br, zstd"; Node's fetch defaults to
+    // something narrower (no zstd) if we don't forward this ourselves --
+    // another small but checkable mismatch. Safe to forward as-is: undici
+    // decompresses the response based on the Content-Encoding it actually
+    // gets back, regardless of what we advertised accepting.
+    "accept-encoding",
   ]);
   const prefixes = ["chatgpt-", "oai-", "openai-", "x-conduit-", "x-oai-", "x-openai-"];
   for (const [rawName, rawValue] of Object.entries(req.headers)) {
@@ -284,7 +345,32 @@ function safeRequestHeaders(req: FastifyRequest): Headers {
   }
   headers.set("user-agent", USER_AGENT);
   headers.set("origin", UPSTREAM);
-  headers.set("referer", `${UPSTREAM}/`);
+  // A real browser sends a deep, page-specific referer (e.g.
+  // https://chatgpt.com/c/<conversation-id>) for API calls made from that
+  // conversation's page, not a flat "https://chatgpt.com/" for every single
+  // request regardless of context -- always sending the bare origin here was
+  // its own small, consistently-checkable tell. Rewrite the browser's own
+  // Referer (which points at our proxy origin) back to the real upstream
+  // host instead, preserving whatever path it actually had.
+  const clientReferer = req.headers.referer;
+  if (typeof clientReferer === "string") {
+    try {
+      const rewritten = new URL(clientReferer);
+      rewritten.protocol = "https:";
+      rewritten.host = new URL(UPSTREAM).host;
+      headers.set("referer", rewritten.href);
+    } catch {
+      headers.set("referer", `${UPSTREAM}/`);
+    }
+  } else {
+    headers.set("referer", `${UPSTREAM}/`);
+  }
+  // Fall back to our own values only when the browser genuinely didn't send
+  // one (e.g. a same-origin GET with no sec-fetch-site, or an older browser
+  // without client hints) -- forwarded real values above always win.
+  if (!headers.has("sec-ch-ua")) headers.set("sec-ch-ua", SEC_CH_UA);
+  if (!headers.has("sec-ch-ua-mobile")) headers.set("sec-ch-ua-mobile", "?0");
+  if (!headers.has("sec-ch-ua-platform")) headers.set("sec-ch-ua-platform", '"macOS"');
   return headers;
 }
 
