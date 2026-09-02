@@ -1,0 +1,8 @@
+node_modules/
+.data/
+**/dist/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
