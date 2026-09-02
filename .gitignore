@@ -6,3 +6,6 @@ node_modules/
 .env
 .env.*
 !.env.example
+
+# macOS AppleDouble resource-fork files
+._*
