@@ -53,7 +53,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS conversations (
     id TEXT PRIMARY KEY, account_id TEXT NOT NULL DEFAULT 'default', upstream_id TEXT,
     current_node_id TEXT NOT NULL, model TEXT NOT NULL, gizmo_id TEXT, title TEXT NOT NULL,
-    initialized INTEGER NOT NULL DEFAULT 0, init_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    initialized INTEGER NOT NULL DEFAULT 0, init_json TEXT, is_private INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS conversations_updated_idx ON conversations(account_id, updated_at DESC);
   CREATE TABLE IF NOT EXISTS messages (
@@ -73,6 +74,10 @@ db.exec(`
 const messageColumns = db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
 if (!messageColumns.some((column) => column.name === "attachments_json")) {
   db.exec("ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'");
+}
+const conversationColumns = db.prepare("PRAGMA table_info(conversations)").all() as Array<{ name: string }>;
+if (!conversationColumns.some((column) => column.name === "is_private")) {
+  db.exec("ALTER TABLE conversations ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0");
 }
 db.prepare("UPDATE messages SET status = 'interrupted' WHERE status = 'streaming'").run();
 
@@ -171,18 +176,19 @@ function mapConversation(row: Record<string, unknown>): StoredConversation {
     conversationId: row.upstream_id ? String(row.upstream_id) : null,
     currentNodeId: String(row.current_node_id), model: String(row.model),
     gizmoId: row.gizmo_id ? String(row.gizmo_id) : null, initialized: Boolean(row.initialized),
+    private: Boolean(row.is_private),
     title: String(row.title), init: row.init_json ? JSON.parse(String(row.init_json)) : null,
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
 
-export function createConversation(input: { model: string; gizmoId?: string | null; title?: string; accountId?: string }): StoredConversation {
+export function createConversation(input: { id?: string; model: string; gizmoId?: string | null; private?: boolean; title?: string; accountId?: string }): StoredConversation {
   const now = new Date().toISOString();
-  const id = randomUUID();
+  const id = input.id ?? randomUUID();
   db.prepare(`INSERT INTO conversations
-    (id, account_id, upstream_id, current_node_id, model, gizmo_id, title, initialized, created_at, updated_at)
-    VALUES (?, ?, NULL, 'client-created-root', ?, ?, ?, 0, ?, ?)`)
-    .run(id, input.accountId ?? "default", input.model, input.gizmoId ?? null, input.title ?? "New chat", now, now);
+    (id, account_id, upstream_id, current_node_id, model, gizmo_id, title, initialized, is_private, created_at, updated_at)
+    VALUES (?, ?, NULL, 'client-created-root', ?, ?, ?, 0, ?, ?, ?)`)
+    .run(id, input.accountId ?? "default", input.model, input.gizmoId ?? null, input.title ?? "New chat", input.private ? 1 : 0, now, now);
   return getConversation(id)!;
 }
 
@@ -196,10 +202,10 @@ export function listConversations(accountId = "default"): StoredConversation[] {
 }
 
 export function updateConversation(conversation: StoredConversation): void {
-  db.prepare(`UPDATE conversations SET upstream_id=?, current_node_id=?, model=?, gizmo_id=?, title=?, initialized=?, init_json=?, updated_at=? WHERE id=?`)
+  db.prepare(`UPDATE conversations SET upstream_id=?, current_node_id=?, model=?, gizmo_id=?, title=?, initialized=?, init_json=?, is_private=?, updated_at=? WHERE id=?`)
     .run(conversation.conversationId, conversation.currentNodeId, conversation.model, conversation.gizmoId ?? null,
       conversation.title, conversation.initialized ? 1 : 0, conversation.init ? JSON.stringify(conversation.init) : null,
-      new Date().toISOString(), conversation.id);
+      conversation.private ? 1 : 0, new Date().toISOString(), conversation.id);
 }
 
 export function setConversationModel(id: string, model: string): StoredConversation | null {
@@ -316,7 +322,7 @@ export function deleteConversation(id: string): void {
 export function branchConversation(sourceId: string, currentNodeId: string, title = "Branched chat", throughMessageId?: string): StoredConversation | null {
   const source = getConversation(sourceId);
   if (!source) return null;
-  const branch = createConversation({ model: source.model, gizmoId: source.gizmoId, title, accountId: source.accountId });
+  const branch = createConversation({ model: source.model, gizmoId: source.gizmoId, private: source.private, title, accountId: source.accountId });
   branch.conversationId = source.conversationId;
   branch.currentNodeId = currentNodeId;
   branch.initialized = source.initialized;

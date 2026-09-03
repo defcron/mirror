@@ -84,6 +84,8 @@ export interface SendMessageOptions {
   /** Full current /gizmos/<id> response; sent only on the first gizmo turn. */
   gizmoPayload?: Record<string, unknown> | null;
   attachments?: UploadedFile[];
+  /** Temporary/incognito chat: excluded from chatgpt.com history and model training. */
+  historyAndTrainingDisabled?: boolean;
   onDelta?: (text: string, full: string) => void;
   onEvent?: (event: NormalizedConversationEvent) => void;
   signal?: AbortSignal;
@@ -229,6 +231,20 @@ export class ChatGptBackendClient {
     return this.getJson(`/gizmos/snorlax/sidebar?${params}`, signal);
   }
 
+  /**
+   * Actual Custom GPTs (owned + pinned in the sidebar), as opposed to
+   * `/gizmos/snorlax/sidebar` above which - despite the shared "gizmos/"
+   * path prefix - only surfaces ChatGPT Projects ("snorlax"), never GPTs.
+   * Upstream caps `limit` at 20 and exposes no pagination cursor.
+   */
+  async fetchGizmoBootstrap(
+    opts: { limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({ limit: String(Math.min(opts.limit ?? 20, 20)) });
+    return this.getJson(`/gizmos/bootstrap?${params}`, signal);
+  }
+
   async fetchGizmo(
     idOrSlug: string,
     signal?: AbortSignal,
@@ -274,6 +290,8 @@ export class ChatGptBackendClient {
       gizmoId?: string | null;
       requestedModel?: string | null;
       conversationId?: string | null;
+      /** Temporary/incognito chat: excluded from chatgpt.com history and model training. */
+      historyAndTrainingDisabled?: boolean;
     },
     signal?: AbortSignal,
   ): Promise<ConversationInitResult> {
@@ -286,6 +304,7 @@ export class ChatGptBackendClient {
         timezone_offset_min: opts.timezoneOffsetMin,
         conversation_origin: null,
         ...(opts.gizmoId ? { gizmo_id: opts.gizmoId } : {}),
+        ...(opts.historyAndTrainingDisabled ? { history_and_training_disabled: true } : {}),
       },
       {},
       signal,
@@ -625,6 +644,7 @@ export class ChatGptBackendClient {
       ...commonContext(),
       paragen_cot_summary_display_override: "allow",
       force_parallel_switch: "auto",
+      ...(opts.historyAndTrainingDisabled ? { history_and_training_disabled: true } : {}),
     };
 
     const res = await this.request("POST", "/f/conversation", {

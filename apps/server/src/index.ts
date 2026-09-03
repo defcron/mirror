@@ -37,7 +37,7 @@ const app = Fastify({
   },
   bodyLimit: 30 * 1024 * 1024,
 });
-await app.register(cors, { origin: process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173" });
+await app.register(cors, { origin: process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173", exposedHeaders: ["x-mirror-conversation-id"] });
 await app.register(rateLimit, { global: true, max: 180, timeWindow: "1 minute" });
 await app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
@@ -87,8 +87,16 @@ app.get("/api/models", async () => {
 });
 app.get("/api/gpts", async () => {
   const client = new ChatGptBackendClient(await getValidCredentials());
-  const raw = await client.fetchGizmoSidebar({ ownedOnly: false, limit: 50, conversationsPerGizmo: 0 });
-  return normalizeGizmos(raw);
+  const [projects, gpts] = await Promise.all([
+    client.fetchGizmoSidebar({ ownedOnly: false, limit: 50, conversationsPerGizmo: 0 }).catch(() => ({})),
+    client.fetchGizmoBootstrap({ limit: 20 }).catch(() => ({})),
+  ]);
+  const seen = new Set<string>();
+  return [...normalizeGizmos(gpts), ...normalizeGizmos(projects)].filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
 });
 
 const NewConversationBody = z.object({ model: z.string().default("auto"), gizmoId: z.string().nullable().optional() });

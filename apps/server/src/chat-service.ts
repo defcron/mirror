@@ -14,12 +14,16 @@ const activeTurns = new Map<string, AbortController>();
 
 export interface RunChatOptions {
   conversationId?: string | null;
+  /** When creating a brand-new conversation (no conversationId given/found), use this as its id instead of a random one - lets an API caller pick their own conversation id up front. */
+  newConversationId?: string;
   prompt: string;
   model?: string;
   gizmoId?: string | null;
   timezone?: string;
   timezoneOffsetMin?: number;
   attachments?: UploadedFile[];
+  /** Temporary/incognito chat: excluded from chatgpt.com history and model training. */
+  private?: boolean;
   signal?: AbortSignal;
   onDelta?: (delta: string) => void;
   onEvent?: (event: NormalizedConversationEvent) => void;
@@ -40,7 +44,7 @@ function linkedAbortController(signal?: AbortSignal): AbortController {
 export async function runChat(opts: RunChatOptions): Promise<{ conversation: StoredConversation; result: SendMessageResult; storedAssistantMessageId: string }> {
   const conversation = opts.conversationId
     ? getConversation(opts.conversationId)
-    : createConversation({ model: opts.model ?? "auto", gizmoId: opts.gizmoId, title: titleFromPrompt(opts.prompt), accountId: getSession()?.accountId ?? "default" });
+    : createConversation({ id: opts.newConversationId, model: opts.model ?? "auto", gizmoId: opts.gizmoId, private: opts.private, title: titleFromPrompt(opts.prompt), accountId: getSession()?.accountId ?? "default" });
   if (!conversation) throw Object.assign(new Error("Conversation not found"), { statusCode: 404 });
   if (conversation.accountId !== (getSession()?.accountId ?? "default")) throw Object.assign(new Error("Conversation not found"), { statusCode: 404 });
   if (activeTurns.has(conversation.id)) throw Object.assign(new Error("A response is already running for this conversation"), { statusCode: 409 });
@@ -68,7 +72,7 @@ export async function runChat(opts: RunChatOptions): Promise<{ conversation: Sto
       init = await client.initConversation({
         timezone: opts.timezone ?? "UTC", timezoneOffsetMin: opts.timezoneOffsetMin ?? 0,
         gizmoId: conversation.gizmoId, requestedModel: conversation.model === "auto" ? null : conversation.model,
-        conversationId: conversation.conversationId,
+        conversationId: conversation.conversationId, historyAndTrainingDisabled: conversation.private,
       }, controller.signal);
       if (conversation.model === "auto") {
         conversation.model = init.defaultModelSlug ?? init.intendedDefaultModelSlug ?? conversation.model;
@@ -88,6 +92,7 @@ export async function runChat(opts: RunChatOptions): Promise<{ conversation: Sto
       prompt: opts.prompt, model: conversation.model, conversationId: conversation.conversationId,
       parentMessageId: conversation.currentNodeId, gizmoId: conversation.gizmoId, gizmoPayload,
       timezone: opts.timezone, timezoneOffsetMin: opts.timezoneOffsetMin, attachments: opts.attachments,
+      historyAndTrainingDisabled: conversation.private,
       signal: controller.signal,
       onDelta: (delta, full) => { fullText = full; opts.onDelta?.(delta); },
       onEvent: (event) => { events.push(event); opts.onEvent?.(event); },

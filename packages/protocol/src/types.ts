@@ -55,6 +55,8 @@ export interface ConversationSessionState {
   model: string;
   gizmoId?: string | null;
   initialized?: boolean;
+  /** Temporary/incognito chat: excluded from chatgpt.com history and model training. */
+  private?: boolean;
 }
 
 export interface RemoteConversationSummary {
