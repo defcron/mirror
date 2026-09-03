@@ -690,17 +690,22 @@ export class ChatGptBackendClient {
       }
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      for (const chunk of frames.push(decoder.decode(value, { stream: true }))) {
-        for (const payload of iterSseDataLines(chunk)) {
-          reducer.feed(payload);
-          deliver();
-          if (reducer.isDone) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const chunk of frames.push(decoder.decode(value, { stream: true }))) {
+          for (const payload of iterSseDataLines(chunk)) {
+            reducer.feed(payload);
+            deliver();
+            if (reducer.isDone) break;
+          }
         }
+        if (reducer.isDone) break;
       }
-      if (reducer.isDone) break;
+    } finally {
+      if (reducer.isDone) await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
 
     for (const chunk of frames.push(decoder.decode())) {

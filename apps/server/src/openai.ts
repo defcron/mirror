@@ -1,53 +1,75 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { ChatGptBackendClient, normalizeGizmos, normalizeModels } from "@mirror/protocol";
+import {
+  ChatGptBackendClient,
+  normalizeGizmos,
+  normalizeModels,
+} from "@mirror/protocol";
 import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
-import { getConversation, getSession } from "./store.js";
+import {
+  fingerprintValue,
+  getConversation,
+  getOpenAiContext,
+  getSession,
+  saveOpenAiContext,
+} from "./store.js";
 
-const ContentPart = z.object({ type: z.string(), text: z.string().optional() }).passthrough();
-const OpenAiMessage = z.object({
-  role: z.enum(["system", "developer", "user", "assistant", "tool"]),
-  content: z.union([z.string(), z.array(ContentPart), z.null()]),
-  name: z.string().optional(),
-}).passthrough();
-const CompletionBody = z.object({
-  model: z.string().default("auto"),
-  messages: z.array(OpenAiMessage).min(1),
-  stream: z.boolean().default(false),
-  user: z.string().optional(),
-  /**
-   * Official OpenAI field, repurposed rather than adding a new one: whether
-   * this turn is attached to a continuable Mirror conversation thread.
-   * Defaults to true (persistent threads by default, mirroring how real
-   * ChatGPT conversations behave); pass store:false for a one-shot message
-   * that will not be resumable by a later /v1/chat/completions call.
-   */
-  store: z.boolean().default(true),
-  /**
-   * Official OpenAI field (free-form string metadata), repurposed for
-   * Mirror-specific routing so the request body needs no non-standard
-   * fields. Recognized keys:
-   *  - metadata.private = "true"      -> temporary/incognito chat, excluded
-   *                                       from chatgpt.com history & training
-   *  - metadata.mirror_model = "..."  -> the actual model (or another gizmo/
-   *                                       project id) to run when `model` is
-   *                                       itself a gizmo/project id, i.e. a
-   *                                       Project's picked model
-   *  - metadata.conversation_id = "..." -> the ONLY way to continue a
-   *                                       thread across calls (this API is
-   *                                       otherwise fully stateless, like
-   *                                       real OpenAI's). Reuse an id
-   *                                       returned via the
-   *                                       x-mirror-conversation-id response
-   *                                       header to continue that thread, or
-   *                                       supply your own new id up front to
-   *                                       name a brand-new conversation.
-   *                                       Omit it and every call starts a
-   *                                       fresh, unrelated conversation.
-   */
-  metadata: z.record(z.string(), z.string()).optional(),
-});
+const ContentPart = z
+  .object({ type: z.literal("text"), text: z.string() })
+  .strict();
+const OpenAiMessage = z
+  .object({
+    role: z.enum(["system", "developer", "user", "assistant", "tool"]),
+    content: z.union([z.string(), z.array(ContentPart), z.null()]),
+    name: z.string().optional(),
+  })
+  .passthrough();
+const CompletionBody = z
+  .object({
+    model: z.string().default("auto"),
+    messages: z.array(OpenAiMessage).min(1),
+    stream: z.boolean().default(false),
+    /**
+     * Official OpenAI field, repurposed rather than adding a new one: whether
+     * this turn is attached to a continuable Mirror conversation thread.
+     * Defaults to true (persistent threads by default, mirroring how real
+     * ChatGPT conversations behave); pass store:false for a one-shot message
+     * that will not be resumable by a later /v1/chat/completions call.
+     */
+    store: z.boolean().default(true),
+    /**
+     * Official OpenAI field (free-form string metadata), repurposed for
+     * Mirror-specific routing so the request body needs no non-standard
+     * fields. Recognized keys:
+     *  - metadata.private = "true"      -> temporary/incognito chat, excluded
+     *                                       from chatgpt.com history & training
+     *  - metadata.mirror_model = "..."  -> the actual model (or another gizmo/
+     *                                       project id) to run when `model` is
+     *                                       itself a gizmo/project id, i.e. a
+     *                                       Project's picked model
+     *  - metadata.conversation_id = "..." -> the ONLY way to continue a
+     *                                       thread across calls (this API is
+     *                                       otherwise fully stateless, like
+     *                                       real OpenAI's). Reuse an id
+     *                                       returned via the
+     *                                       x-mirror-conversation-id response
+     *                                       header to continue that thread, or
+     *                                       supply your own new id up front to
+     *                                       name a brand-new conversation.
+     *                                       Omit it and every call starts a
+     *                                       fresh, unrelated conversation.
+     */
+    metadata: z
+      .object({
+        private: z.enum(["true", "false"]).optional(),
+        mirror_model: z.string().min(1).optional(),
+        conversation_id: z.string().min(1).max(200).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
 
 /**
  * Model routing: official model slugs pass through unchanged. Gizmo-backed
@@ -59,37 +81,82 @@ const CompletionBody = z.object({
  * id nested inside it; we don't validate that shape, we just forward it and
  * let upstream decide what to do with it.
  */
-function routeModel(model: string, metadata?: Record<string, string>): { model?: string; gizmoId?: string | null; private?: boolean } {
+function routeModel(
+  model: string,
+  metadata?: Record<string, string>,
+): { model?: string; gizmoId?: string | null; private?: boolean } {
   const override = metadata?.mirror_model;
-  const isPrivate = metadata?.private === "true";
-  if (/^g-/.test(model)) return { model: override || "auto", gizmoId: model, private: isPrivate };
-  return { model: override || model, private: isPrivate };
+  const privateMode =
+    metadata?.private === undefined ? undefined : metadata.private === "true";
+  if (/^g-/.test(model))
+    return {
+      model: override || "auto",
+      gizmoId: model,
+      ...(privateMode !== undefined ? { private: privateMode } : {}),
+    };
+  return {
+    model: override || model,
+    ...(privateMode !== undefined ? { private: privateMode } : {}),
+  };
 }
 
-function textContent(content: z.infer<typeof OpenAiMessage>["content"]): string {
+function textContent(
+  content: z.infer<typeof OpenAiMessage>["content"],
+): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n");
+  return content
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text)
+    .join("\n");
 }
 
 function normalized(messages: z.infer<typeof OpenAiMessage>[]) {
-  return messages.map((message) => ({ role: message.role, content: textContent(message.content), ...(message.name ? { name: message.name } : {}) }));
+  return messages.map((message) => ({
+    role: message.role,
+    content: textContent(message.content),
+    ...(message.name ? { name: message.name } : {}),
+  }));
 }
 
-function promptFor(messages: ReturnType<typeof normalized>, continuation: boolean): string {
+function promptFor(
+  messages: ReturnType<typeof normalized>,
+  continuation: boolean,
+): string {
   if (continuation) return messages.at(-1)?.content ?? "";
-  const system = messages.filter((m) => m.role === "system" || m.role === "developer");
-  const conversational = messages.filter((m) => m.role !== "system" && m.role !== "developer");
-  if (messages.length === 1 && messages[0]?.role === "user") return messages[0].content;
+  const system = messages.filter(
+    (m) => m.role === "system" || m.role === "developer",
+  );
+  const conversational = messages.filter(
+    (m) => m.role !== "system" && m.role !== "developer",
+  );
+  if (messages.length === 1 && messages[0]?.role === "user")
+    return messages[0].content;
   return [
-    system.length ? `Instructions:\n${system.map((m) => m.content).join("\n")}` : "",
+    system.length
+      ? `Instructions:\n${system.map((m) => m.content).join("\n")}`
+      : "",
     "Conversation context:",
-    conversational.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join("\n\n"),
-  ].filter(Boolean).join("\n\n");
+    conversational
+      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+      .join("\n\n"),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function instructionsHash(messages: ReturnType<typeof normalized>): string {
+  return fingerprintValue(
+    messages.filter(
+      (message) => message.role === "system" || message.role === "developer",
+    ),
+  );
 }
 
 function sse(reply: FastifyReply, data: unknown): void {
-  reply.raw.write(`data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`);
+  reply.raw.write(
+    `data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`,
+  );
 }
 
 /**
@@ -104,28 +171,44 @@ function sse(reply: FastifyReply, data: unknown): void {
  * noticing a partial/garbled follow-up.
  */
 const conversationLocks = new Map<string, Promise<unknown>>();
-function withConversationLock<T>(key: string | null, fn: () => Promise<T>): Promise<T> {
+function withConversationLock<T>(
+  key: string | null,
+  fn: () => Promise<T>,
+): Promise<T> {
   if (!key) return fn();
   const prior = conversationLocks.get(key) ?? Promise.resolve();
   const queued = prior.catch(() => undefined);
   const settled = queued.then(fn);
   const tracked = settled.catch(() => undefined);
   conversationLocks.set(key, tracked);
-  tracked.finally(() => { if (conversationLocks.get(key) === tracked) conversationLocks.delete(key); });
+  tracked.finally(() => {
+    if (conversationLocks.get(key) === tracked) conversationLocks.delete(key);
+  });
   return settled;
 }
 
-export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> {
+export async function registerOpenAiRoutes(
+  app: FastifyInstance,
+): Promise<void> {
   app.get("/v1/models", async () => {
     const creds = await getValidCredentials();
     const client = new ChatGptBackendClient(creds);
     const [models, projectsRaw, gptsRaw] = await Promise.all([
       normalizeModels(await client.fetchModels()),
-      client.fetchGizmoSidebar({ ownedOnly: false, limit: 50, conversationsPerGizmo: 0 }).catch(() => ({})),
+      client
+        .fetchGizmoSidebar({
+          ownedOnly: false,
+          limit: 50,
+          conversationsPerGizmo: 0,
+        })
+        .catch(() => ({})),
       client.fetchGizmoBootstrap({ limit: 20 }).catch(() => ({})),
     ]);
     const seen = new Set<string>();
-    const gizmos = [...normalizeGizmos(gptsRaw), ...normalizeGizmos(projectsRaw)].filter((item) => {
+    const gizmos = [
+      ...normalizeGizmos(gptsRaw),
+      ...normalizeGizmos(projectsRaw),
+    ].filter((item) => {
       if (seen.has(item.id)) return false;
       seen.add(item.id);
       return true;
@@ -133,10 +216,19 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
     return {
       object: "list",
       data: [
-        ...models.map((model) => ({ id: model.id, object: "model", created: 0, owned_by: "chatgpt-web" })),
+        ...models.map((model) => ({
+          id: model.id,
+          object: "model",
+          created: 0,
+          owned_by: "chatgpt-web",
+        })),
         ...gizmos.map((gizmo) => ({
-          id: gizmo.id, object: "model", created: 0,
-          owned_by: gizmo.id.startsWith("g-p-") ? "chatgpt-project" : "chatgpt-gizmo",
+          id: gizmo.id,
+          object: "model",
+          created: 0,
+          owned_by: gizmo.id.startsWith("g-p-")
+            ? "chatgpt-project"
+            : "chatgpt-gizmo",
           name: gizmo.name,
         })),
       ],
@@ -144,10 +236,34 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
   });
 
   app.post("/v1/chat/completions", async (req: FastifyRequest, reply) => {
-    const body = CompletionBody.parse(req.body);
+    const parsed = CompletionBody.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.code(400).send({
+        error: {
+          message: parsed.error.issues.map((issue) => issue.message).join("; "),
+          type: "invalid_request_error",
+        },
+      });
+    }
+    const body = parsed.data;
     const messages = normalized(body.messages);
+    if (messages.some((message) => message.role === "tool")) {
+      return reply.code(400).send({
+        error: {
+          message:
+            "Tool messages are not supported by Mirror's Chat Completions subset",
+          type: "unsupported_parameter",
+        },
+      });
+    }
     const last = messages.at(-1);
-    if (!last || last.role !== "user") return reply.code(400).send({ error: { message: "The final message must have role=user", type: "invalid_request_error" } });
+    if (!last || last.role !== "user")
+      return reply.code(400).send({
+        error: {
+          message: "The final message must have role=user",
+          type: "invalid_request_error",
+        },
+      });
     if (!last.content.trim()) {
       // An empty final turn (e.g. a client that pre-appends a fresh blank
       // user row after each reply for convenience, then gets submitted
@@ -156,7 +272,12 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
       // nothing came through and replies saying so, and depending on the
       // client's own history bookkeeping that reply can end up rendered
       // back-to-back with the prior one, with no visible user text between.
-      return reply.code(400).send({ error: { message: "The final user message must not be empty", type: "invalid_request_error" } });
+      return reply.code(400).send({
+        error: {
+          message: "The final user message must not be empty",
+          type: "invalid_request_error",
+        },
+      });
     }
 
     // store:false means "one-shot": this call never continues (or is
@@ -172,12 +293,9 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
     // their own id for a brand-new conversation, so we create one using
     // that id. It's only a conflict if the id is already taken by a
     // conversation on a different account.
-    const explicitConversationId = !oneShot ? body.metadata?.conversation_id : undefined;
-    const explicitConversation = explicitConversationId ? getConversation(explicitConversationId) : null;
-    if (explicitConversation && explicitConversation.accountId !== (getSession()?.accountId ?? "default")) {
-      return reply.code(400).send({ error: { message: `metadata.conversation_id is already in use: ${explicitConversationId}`, type: "invalid_request_error" } });
-    }
-    const newConversationId = explicitConversationId && !explicitConversation ? explicitConversationId : undefined;
+    const explicitConversationId = !oneShot
+      ? body.metadata?.conversation_id
+      : undefined;
     // Same key a concurrent duplicate call (double-click, eager retry, etc)
     // for this exact conversation_id would compute, so they serialize
     // against each other rather than both reading the same "current head"
@@ -187,28 +305,134 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
     const created = Math.floor(Date.now() / 1000);
     const controller = new AbortController();
     req.raw.once("aborted", () => controller.abort());
-    reply.raw.once("close", () => { if (!reply.raw.writableEnded) controller.abort(); });
+    reply.raw.once("close", () => {
+      if (!reply.raw.writableEnded) controller.abort();
+    });
 
     if (body.stream) {
       reply.hijack();
       reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive", "X-Accel-Buffering": "no",
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
       reply.raw.socket?.setNoDelay(true);
-      sse(reply, { id: completionId, object: "chat.completion.chunk", created, model: body.model, choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }] });
+      sse(reply, {
+        id: completionId,
+        object: "chat.completion.chunk",
+        created,
+        model: body.model,
+        choices: [
+          {
+            index: 0,
+            delta: { role: "assistant", content: "" },
+            finish_reason: null,
+          },
+        ],
+      });
     }
 
     try {
       await withConversationLock(lockKey, async () => {
-        const continuing = Boolean(explicitConversation);
+        // Resolve state after acquiring the lock. Two concurrent calls using a
+        // brand-new caller-selected id must not both decide to INSERT it.
+        const explicitConversation = explicitConversationId
+          ? getConversation(explicitConversationId)
+          : null;
+        if (
+          explicitConversation &&
+          explicitConversation.accountId !==
+            (getSession()?.accountId ?? "default")
+        ) {
+          throw Object.assign(
+            new Error(
+              `metadata.conversation_id is already in use: ${explicitConversationId}`,
+            ),
+            { statusCode: 400 },
+          );
+        }
+        const newConversationId =
+          explicitConversationId && !explicitConversation
+            ? explicitConversationId
+            : undefined;
+        const continuing = Boolean(explicitConversation?.conversationId);
+        const contextHash = instructionsHash(messages);
+        if (explicitConversation) {
+          const priorHash = getOpenAiContext(explicitConversation.id);
+          if (priorHash && priorHash !== contextHash) {
+            throw Object.assign(
+              new Error(
+                "System/developer instructions cannot change while continuing a Mirror conversation; start a new conversation id.",
+              ),
+              { statusCode: 400 },
+            );
+          }
+        }
         const route = routeModel(body.model, body.metadata);
+        if (explicitConversation) {
+          if (
+            route.gizmoId !== undefined &&
+            route.gizmoId !== explicitConversation.gizmoId
+          ) {
+            throw Object.assign(
+              new Error(
+                "The GPT/Project cannot change while continuing a Mirror conversation; start a new conversation id.",
+              ),
+              { statusCode: 400 },
+            );
+          }
+          if (
+            route.model &&
+            route.model !== "auto" &&
+            route.model !== explicitConversation.model
+          ) {
+            throw Object.assign(
+              new Error(
+                "The model cannot change while continuing a Mirror conversation; start a new conversation id.",
+              ),
+              { statusCode: 400 },
+            );
+          }
+          if (
+            route.private !== undefined &&
+            route.private !== Boolean(explicitConversation.private)
+          ) {
+            throw Object.assign(
+              new Error(
+                "Private-chat mode cannot change while continuing a Mirror conversation; start a new conversation id.",
+              ),
+              { statusCode: 400 },
+            );
+          }
+        }
         const { conversation, result } = await runChat({
-          conversationId: explicitConversation?.id, newConversationId, prompt: promptFor(messages, continuing), model: route.model, gizmoId: route.gizmoId,
-          private: route.private, signal: controller.signal,
-          onDelta: body.stream ? (delta) => sse(reply, { id: completionId, object: "chat.completion.chunk", created, model: body.model,
-            choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] }) : undefined,
+          conversationId: explicitConversation?.id,
+          newConversationId,
+          prompt: promptFor(messages, continuing),
+          model: route.model,
+          gizmoId: route.gizmoId,
+          private: route.private || oneShot,
+          ephemeral: oneShot,
+          signal: controller.signal,
+          onDelta: body.stream
+            ? (delta) =>
+                sse(reply, {
+                  id: completionId,
+                  object: "chat.completion.chunk",
+                  created,
+                  model: body.model,
+                  choices: [
+                    {
+                      index: 0,
+                      delta: { content: delta },
+                      finish_reason: null,
+                    },
+                  ],
+                })
+            : undefined,
         });
+        if (!oneShot) saveOpenAiContext(conversation.id, contextHash);
 
         if (body.stream) {
           // Not part of the OpenAI chunk schema: an SSE comment line (ignored
@@ -216,17 +440,32 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
           // id, since HTTP response headers can no longer be set once the
           // stream has started and this may be a brand-new conversation whose
           // id was not known until runChat() returned.
-          if (!oneShot) reply.raw.write(`: mirror-conversation-id ${conversation.id}\n\n`);
-          sse(reply, { id: completionId, object: "chat.completion.chunk", created, model: conversation.model,
-            choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+          if (!oneShot)
+            reply.raw.write(`: mirror-conversation-id ${conversation.id}\n\n`);
+          sse(reply, {
+            id: completionId,
+            object: "chat.completion.chunk",
+            created,
+            model: conversation.model,
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          });
           sse(reply, "[DONE]");
           reply.raw.end();
           return;
         }
         if (!oneShot) reply.header("x-mirror-conversation-id", conversation.id);
         return reply.send({
-          id: completionId, object: "chat.completion", created, model: conversation.model,
-          choices: [{ index: 0, message: { role: "assistant", content: result.text }, finish_reason: "stop" }],
+          id: completionId,
+          object: "chat.completion",
+          created,
+          model: conversation.model,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: result.text },
+              finish_reason: "stop",
+            },
+          ],
           usage: null,
         });
       });
@@ -238,7 +477,15 @@ export async function registerOpenAiRoutes(app: FastifyInstance): Promise<void> 
         reply.raw.end();
         return;
       }
-      return reply.code(502).send({ error: { message, type: "mirror_error" } });
+      const status = Number(
+        (error as { statusCode?: number }).statusCode ?? 502,
+      );
+      return reply.code(status).send({
+        error: {
+          message,
+          type: status === 400 ? "invalid_request_error" : "mirror_error",
+        },
+      });
     }
   });
 }

@@ -9,7 +9,7 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
     ports:
-      - "${MIRROR_PORT:-8799}:8787"
+      - "127.0.0.1:${MIRROR_PORT:-8799}:8787"
     volumes:
       - mirror-warp:/var/lib/cloudflare-warp
     healthcheck:

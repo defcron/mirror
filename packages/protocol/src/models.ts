@@ -1,32 +1,4 @@
-import type { GizmoSummary, ModelDescriptor, SessionCredentials } from "./types.js";
-
-const BASE_URL = "https://chatgpt.com/backend-api";
-
-/** Fetch the live model-picker payload available to this account. */
-export async function fetchModels(
-  creds: SessionCredentials,
-  signal?: AbortSignal,
-): Promise<Record<string, unknown>> {
-  const res = await fetch(
-    `${BASE_URL}/models?iim=false&is_gizmo=false&supports_model_picker_upgrade_presets=true`,
-    {
-      headers: {
-        authorization: `Bearer ${creds.accessToken}`,
-        ...(creds.cookie ? { cookie: creds.cookie } : {}),
-        "oai-device-id": creds.deviceId,
-      },
-      signal,
-    },
-  );
-  if (!res.ok) {
-    throw new Error(`GET /models failed: ${res.status}`);
-  }
-  const json = await res.json();
-  return (json && typeof json === "object" ? json : {}) as Record<
-    string,
-    unknown
-  >;
-}
+import type { GizmoSummary, ModelDescriptor } from "./types.js";
 
 /** Normalize the evolving gizmo/sidebar payload without depending on one response envelope. */
 export function normalizeGizmos(raw: Record<string, unknown>): GizmoSummary[] {

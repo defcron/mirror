@@ -112,6 +112,7 @@ export interface GenerateProofOptions {
 export function generateProofToken(opts: GenerateProofOptions): string | null {
   const { required, seed = "", difficulty = "", userAgent = null, proofConfig = null, maxAttempts = 100_000 } = opts;
   if (!required) return null;
+  if (!seed || !difficulty || !/^[0-9a-f]+$/i.test(difficulty)) throw new Error("Invalid required proof-of-work challenge");
 
   const proof: ProofConfig = proofConfig ? ([...proofConfig] as ProofConfig) : defaultProofConfig(userAgent);
   const difficultyLen = difficulty.length;
@@ -150,6 +151,7 @@ export async function generateProofTokenAsync(
     yieldEvery = 1_000,
   } = opts;
   if (!required) return null;
+  if (!seed || !difficulty || !/^[0-9a-f]+$/i.test(difficulty)) throw new Error("Invalid required proof-of-work challenge");
 
   const proof: ProofConfig = proofConfig
     ? ([...proofConfig] as ProofConfig)

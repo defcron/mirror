@@ -14,7 +14,10 @@ test("rewrites absolute ChatGPT URLs to the Mirror origin", () => {
   const output = rewriteChatGptUrls(input, "http://127.0.0.1:3000");
   assert.equal(output.includes("https://chatgpt.com"), false);
   assert.equal(output.includes("https://www.chatgpt.com"), false);
-  assert.match(output, /http:\/\/127\.0\.0\.1:3000\/backend-api\/f\/conversation/);
+  assert.match(
+    output,
+    /http:\/\/127\.0\.0\.1:3000\/backend-api\/f\/conversation/,
+  );
   assert.match(output, /http:\/\/127\.0\.0\.1:3000\/backend-api\/models/);
 });
 
@@ -39,11 +42,17 @@ test("rewrites ChatGPT subdomains, legacy host, and websocket origins", () => {
   assert.equal(output.includes("chat.openai.com"), false);
   assert.match(output, /https:\/\/mirror\.example\/ces\/v1\/rgstr/);
   assert.match(output, /wss:\/\/mirror\.example\/backend-api\/celsius\/ws/);
-  assert.equal(output.includes(String.raw`https:\/\/mirror.example\/collect`), true);
+  assert.equal(
+    output.includes(String.raw`https:\/\/mirror.example\/collect`),
+    true,
+  );
 });
 
 test("only buffers textual asset types for rewriting", () => {
-  assert.equal(isRewritableContentType("application/javascript; charset=utf-8"), true);
+  assert.equal(
+    isRewritableContentType("application/javascript; charset=utf-8"),
+    true,
+  );
   assert.equal(isRewritableContentType("application/json"), true);
   assert.equal(isRewritableContentType("text/css"), true);
   assert.equal(isRewritableContentType("application/octet-stream"), false);
@@ -51,7 +60,13 @@ test("only buffers textual asset types for rewriting", () => {
 });
 
 test("builds a same-origin proxy URL from the incoming request", () => {
-  assert.equal(requestOrigin("http", "localhost:3000"), "http://localhost:3000");
-  assert.equal(requestOrigin("https", "mirror.example"), "https://mirror.example");
+  assert.equal(
+    requestOrigin("http", "localhost:3000"),
+    "http://localhost:3000",
+  );
+  assert.equal(
+    requestOrigin("https", "mirror.example"),
+    "https://mirror.example",
+  );
   assert.equal(requestOrigin("http", undefined), null);
 });

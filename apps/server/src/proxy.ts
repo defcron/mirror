@@ -5,6 +5,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { getValidCredentials } from "./auth.js";
 import { getSession, setSessionAccountId } from "./store.js";
 import { isRewritableContentType, requestOrigin, rewriteChatGptUrls } from "./url-rewrite.js";
+import { isAllowedOrigin, isAllowedRequestHost } from "./security.js";
 
 // Datadog's Browser SDK is configured (on OpenAI's side, in their Datadog
 // dashboard) with an "allowed application URLs" list scoped to chatgpt.com --
@@ -67,6 +68,9 @@ const SEC_CH_UA = '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="
 // Syntactically valid, unsigned, non-secret JWT. The official client decodes
 // expiry/subject locally; the proxy always discards it before upstream calls.
 const BROWSER_TOKEN = "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4MDAsInN1YiI6Im1pcnJvci11c2VyIn0.";
+const websocketServer = new WebSocketServer({ noServer: true });
+const MAX_PENDING_WEBSOCKET_MESSAGES = 100;
+const MAX_PENDING_WEBSOCKET_BYTES = 1024 * 1024;
 
 // Previously this was a static <link>/<script defer> pair spliced directly
 // into the served HTML head. That worked, but left extra <head> children
@@ -445,6 +449,10 @@ async function resolveAccountId(credentials: { accessToken: string; deviceId: st
  * bytes piped through unmodified in both directions.
  */
 export async function proxyWebSocketUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+  if (!isAllowedRequestHost(req.headers.host) || !isAllowedOrigin(req.headers.origin, req.headers.host)) {
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    return;
+  }
   const url = req.url ?? "/";
   const upstreamHeaders: Record<string, string> = {
     "user-agent": USER_AGENT,
@@ -464,23 +472,33 @@ export async function proxyWebSocketUpgrade(req: IncomingMessage, socket: Duplex
   }
 
   const upstreamUrl = `${UPSTREAM.replace(/^https:/, "wss:")}${url}`;
-  const upstreamSocket = new WebSocket(upstreamUrl, { headers: upstreamHeaders });
-  const wss = new WebSocketServer({ noServer: true });
+  const upstreamSocket = new WebSocket(upstreamUrl, { headers: upstreamHeaders, handshakeTimeout: 15_000 });
 
   upstreamSocket.on("error", () => socket.destroy());
   upstreamSocket.on("unexpected-response", () => socket.destroy());
 
-  wss.handleUpgrade(req, socket, head, (clientSocket) => {
+  websocketServer.handleUpgrade(req, socket, head, (clientSocket) => {
     const pending: Array<{ data: WebSocket.RawData; isBinary: boolean }> = [];
+    let pendingBytes = 0;
     let upstreamOpen = false;
 
     upstreamSocket.on("open", () => {
       upstreamOpen = true;
       for (const message of pending.splice(0)) upstreamSocket.send(message.data, { binary: message.isBinary });
+      pendingBytes = 0;
     });
     clientSocket.on("message", (data, isBinary) => {
       if (upstreamOpen) upstreamSocket.send(data, { binary: isBinary });
-      else pending.push({ data, isBinary });
+      else {
+        const bytes = typeof data === "string" ? Buffer.byteLength(data) : data instanceof ArrayBuffer ? data.byteLength : Array.isArray(data) ? data.reduce((sum, part) => sum + part.byteLength, 0) : data.byteLength;
+        if (pending.length >= MAX_PENDING_WEBSOCKET_MESSAGES || pendingBytes + bytes > MAX_PENDING_WEBSOCKET_BYTES) {
+          clientSocket.close(1009, "Pending WebSocket queue limit exceeded");
+          upstreamSocket.close();
+          return;
+        }
+        pendingBytes += bytes;
+        pending.push({ data, isBinary });
+      }
     });
     upstreamSocket.on("message", (data, isBinary) => {
       if (clientSocket.readyState === clientSocket.OPEN) clientSocket.send(data, { binary: isBinary });
@@ -530,9 +548,13 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
   }
 
   let upstream: Response;
+  const controller = new AbortController();
+  const abortUpstream = () => controller.abort(new DOMException("Proxy client disconnected", "AbortError"));
+  req.raw.once("aborted", abortUpstream);
+  reply.raw.once("close", () => { if (!reply.raw.writableEnded) abortUpstream(); });
   try {
     upstream = await fetch(`${UPSTREAM}${req.url}`, {
-      method: req.method, headers, body: requestBody(req), redirect: "manual",
+      method: req.method, headers, body: requestBody(req), redirect: "manual", signal: controller.signal,
     });
   } catch (error) {
     req.log.error({ error, path: req.url }, "mirror upstream request failed");
@@ -630,9 +652,20 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (!reply.raw.write(Buffer.from(value))) await new Promise<void>((resolve) => reply.raw.once("drain", resolve));
+      if (reply.raw.destroyed) break;
+      if (!reply.raw.write(Buffer.from(value))) {
+        await new Promise<void>((resolve) => {
+          const finish = () => { reply.raw.off("drain", finish); reply.raw.off("close", finish); resolve(); };
+          reply.raw.once("drain", finish);
+          reply.raw.once("close", finish);
+        });
+      }
     }
-  } finally { reply.raw.end(); }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+    if (!reply.raw.destroyed) reply.raw.end();
+  }
 }
 
 export const injectionCss = `
