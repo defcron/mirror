@@ -1,67 +1,45 @@
 # Mirror
 
-Mirror is a local, modern ChatGPT Web client and OpenAI-compatible adapter. It uses a user-supplied ChatGPT `sessionToken` to mint short-lived access tokens server-side and talks to `chatgpt.com/backend-api`. It does not use an OpenAI API key or browser automation.
+Mirror is a local, self-hosted ChatGPT web client with an OpenAI-compatible API bolted on. It logs in with your existing ChatGPT session — no OpenAI API key, no browser automation — and talks directly to `chatgpt.com/backend-api`, the same backend the real ChatGPT web app uses.
 
-This is an unofficial, protocol-dependent project. ChatGPT Web endpoints can change without notice. Keep Mirror bound to localhost unless you have separately designed and reviewed a trusted deployment.
+You get a clean chat UI (Markdown, code blocks, math, file uploads, Custom GPTs, conversation branching) *and* a drop-in `/v1/chat/completions` endpoint you can point any OpenAI SDK at.
 
-## What is implemented
+> **Unofficial project.** Mirror depends on ChatGPT's private web protocol, which OpenAI can change at any time without notice. Keep it on localhost. See [PROTOCOL.md](./PROTOCOL.md) for the full reverse-engineered protocol notes.
 
-- Correct ChatGPT conversation-tree continuity using the final assistant node as the next `parent_message_id`
-- `conversation/init` defaults, limits and blocked-feature capture
-- capability/error-driven two-stage follow-up conduit flow
-- first-class Custom GPT discovery, selection and `gizmo_interaction` mode
-- structured stream events for assistant text, tools, file search, citations, images, markers and status
-- live account model discovery—no model slug is hardcoded into the interface
-- OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions`, streaming and non-streaming
-- explicit OpenAI thread continuation through `metadata.conversation_id`
-- persistent conversation sidebar, switching, deletion, branching, editing and regeneration
-- Markdown, code, GFM tables and KaTeX math rendering
-- file upload, persistent file metadata, attachment chips and generated-image results
-- stop/cancellation plumbing from the browser through the upstream request
-- production static serving from the Fastify server
-- SQLite persistence, account-scoped records, AES-256-GCM credential encryption, redacted request logging, rate limiting and health checks
-- optional application API-key protection for `/v1/*`, with constant-time key comparison
-- loopback-only Compose publication plus Host/origin checks against DNS rebinding and cross-origin control requests
-- mandatory, container-scoped Cloudflare WARP egress with a fail-closed startup check
+## Quickstart
 
-Auth expansion is intentionally not included. The original one-`sessionToken` workflow remains the only account connection mode.
+You'll need Docker, and a ChatGPT account you're logged into in a browser.
 
-## Run
+**1. Get your session token.**
 
-WARP is mandatory. Mirror will not start on a direct network path. The bundled Compose stack puts Mirror and the official Cloudflare WARP Linux client in one network namespace. This routes session minting, ChatGPT backend calls, proxied web-app requests, uploads, and streamed responses through the same WARP tunnel. The WARP registration and Mirror database are stored in separate persistent Docker volumes.
+Log into [chatgpt.com](https://chatgpt.com) in your browser, open dev tools, and copy the value of the `__Secure-next-auth.session-token` cookie (Application/Storage tab → Cookies → chatgpt.com). This is the only credential Mirror needs — it's the same cookie your browser already uses to stay logged in.
 
-Cloudflare's Local proxy mode is deliberately not used: Cloudflare documents a 10-second request limit for that mode, which is unsuitable for long streamed generations. The stack instead uses full WARP mode with MASQUE and verifies Cloudflare's `warp=on` trace signal before Mirror starts.
-
-First copy the example configuration and explicitly acknowledge Cloudflare's applicable WARP terms:
+**2. Configure and start the stack.**
 
 ```sh
 cp .env.example .env
-# Edit .env and set WARP_ACCEPT_TOS=yes after reviewing the terms.
+# Open .env and set WARP_ACCEPT_TOS=yes (after reading Cloudflare's WARP terms)
 docker compose up --build
 ```
 
-Then open `http://127.0.0.1:8799`. The WARP container owns the published port because the Mirror container shares its network namespace. `GET /api/health` reports only non-sensitive egress state:
+**3. Open the app and paste your token.**
 
-```json
-{
-  "ok": true,
-  "egress": {
-    "mode": "warp",
-    "required": true,
-    "verified": true,
-    "checkedAt": "...",
-    "error": null
-  }
-}
-```
+Go to `http://127.0.0.1:8799`, paste the session token from step 1 when prompted, and start chatting.
 
-If the tunnel is unavailable or Cloudflare's trace endpoint does not report `warp=on`, Mirror refuses to start. It rechecks every 30 seconds and stops if verified WARP egress is lost, preventing a quiet direct-network fallback. Running `npm start` outside the WARP network namespace fails the same verification and is not a supported bypass.
+That's it — Mirror mints its own short-lived access tokens from your session and never needs the raw token again unless it expires or you sign out.
 
-WARP changes the network path; it does not guarantee a fixed public IP and must not be treated as a way to defeat an account restriction. If ChatGPT has already placed a security hold on the account, use ChatGPT's official account-security/recovery flow before resuming requests. Repeated automated retries can make the signal worse.
+### Why WARP?
 
-## OpenAI-compatible use
+Mirror requires all traffic to route through the bundled Cloudflare WARP container — it will refuse to start otherwise. This isn't optional hardening you can turn off. It exists because:
 
-Point an OpenAI client at `http://127.0.0.1:8799/v1` when using Compose (`8787` when running the server directly). If `MIRROR_API_KEY` is unset, any placeholder API key works while the server remains localhost-only.
+- it keeps Mirror's outbound requests to `chatgpt.com` on a consistent, verified egress path instead of your raw host network
+- Cloudflare's faster "Local proxy" mode caps requests at 10 seconds, which breaks long streamed responses, so Mirror uses full WARP/MASQUE mode instead and verifies Cloudflare's `warp=on` trace signal before letting the app serve traffic
+
+Mirror rechecks this every 30 seconds and shuts down serving if the tunnel drops — there's no silent fallback to a direct connection. Note that WARP changes your network path but doesn't grant a fixed IP or protect an account that ChatGPT has already flagged; if that happens, use ChatGPT's own account recovery flow rather than retrying through Mirror.
+
+## Using the OpenAI-compatible API
+
+Point any OpenAI SDK at Mirror instead of `api.openai.com`:
 
 ```python
 from openai import OpenAI
@@ -76,60 +54,97 @@ for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-To require an application key for `/v1/*`:
+`api_key` can be any placeholder value by default — Mirror doesn't check it unless you opt in:
 
 ```sh
 MIRROR_API_KEY='replace-with-a-long-random-value' npm start
 ```
 
-Multiple accepted keys can be supplied as a comma-separated `MIRROR_API_KEYS` value. These are Mirror application keys, not OpenAI API keys.
+(Multiple keys: comma-separate them in `MIRROR_API_KEYS`. These gate access to Mirror itself; they are unrelated to your OpenAI or ChatGPT credentials.)
 
-## Storage and security
+**What's supported:** `model`, `messages`, `stream`, `store`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option.
 
-The default database is `.data/mirror.db`. The session and cached access token are encrypted with AES-256-GCM. On first run Mirror creates `.data/master.key` with owner-only permissions; production operators can instead provide a base64- or hex-encoded 32-byte `MIRROR_STORE_KEY`.
+**What's not supported (yet):** tool calls, image/audio content parts, response-format constraints, sampling controls (temperature, top_p, etc.), token limits, penalties, seeds, stop sequences, and multiple choices per request.
 
-The playground keeps bearer credentials only in memory. Prompt history is not persisted by default; enable “Remember prompt history on this device” to opt into browser `localStorage`, and disable it again to remove the stored message history.
+**Continuing a conversation:** pass `metadata.conversation_id` to keep talking in the same upstream ChatGPT thread. Mirror only sends your latest message in that case, since ChatGPT already has the history server-side. You can't change the system/developer instructions on an existing thread — start a new `conversation_id` instead. Pass `store: false` for a one-off, upstream "temporary chat" that Mirror deletes locally as soon as the request finishes (success or failure).
 
-If the old plaintext `.data/store.json` exists, Mirror imports it into the encrypted database and removes the plaintext file after a successful migration. It never logs credential values. `.data`, environment files, build output and dependencies are excluded by `.gitignore`.
+## What Mirror can do
 
-Useful configuration:
+- Full ChatGPT conversation continuity (correct parent-message threading, branching, editing, regeneration)
+- Custom GPT discovery and chat
+- Live model list pulled from your account — nothing hardcoded
+- Streaming assistant text, tool calls, file search, citations, and generated images, all rendered properly
+- File uploads and generated-image results
+- Stop/cancel mid-response
+- Markdown, GFM tables, code highlighting, and KaTeX math rendering
+- Persistent conversation sidebar (SQLite-backed, encrypted credentials)
+- OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` (streaming + non-streaming)
 
-| Variable            | Default                 | Purpose                          |
-| ------------------- | ----------------------- | -------------------------------- |
-| `HOST`              | `127.0.0.1`             | Server bind address              |
-| `PORT`              | `8787`                  | Server port                      |
-| `MIRROR_WEB_ORIGIN` | `http://localhost:5173` | Development CORS origin          |
-| `MIRROR_DATA_DIR`   | project `.data`         | Database/key directory           |
-| `MIRROR_STORE_KEY`  | generated local key     | 32-byte database encryption key  |
-| `MIRROR_API_KEY(S)` | unset                   | Protect OpenAI-compatible routes |
+**Not included by design:** support for multiple auth methods beyond the one session-token flow, and a solved Cloudflare Turnstile challenge (Mirror currently relies on the fact that ChatGPT doesn't always demand one — see [PROTOCOL.md](./PROTOCOL.md) for details on that gap).
 
-Mirror accepts browser/API traffic only when the request Host is loopback (`localhost`, `*.localhost`, `127.0.0.0/8`, or `::1`). The Compose port is explicitly published on `127.0.0.1`. Remote and multi-user deployment is unsupported; it would need TLS, a real identity boundary, CSRF protection, managed key storage, explicit tenancy and an operational review rather than merely changing `HOST`.
+## Security & storage
 
-### Supported OpenAI-compatible subset
+- Everything is scoped to `127.0.0.1` by default. Mirror checks the request `Host` header and rejects anything that isn't loopback (`localhost`, `127.0.0.0/8`, `::1`). It is **not** designed for remote or multi-user deployment — that would need TLS, real auth, CSRF protection, and a proper security review, not just a changed `HOST` value.
+- Your session token and minted access token are encrypted at rest with AES-256-GCM, in a local SQLite database (`.data/mirror.db` by default).
+- On first run Mirror generates `.data/master.key` (owner-only permissions) to encrypt that database. For production-style setups you can instead supply your own key via `MIRROR_STORE_KEY` (32 bytes, base64 or hex).
+- The web playground keeps your bearer token in memory only. Prompt/message history isn't persisted unless you opt in via "Remember prompt history on this device," which stores it in browser `localStorage` — turn it back off to clear it.
+- If you're upgrading from an older version that used a plaintext `.data/store.json`, Mirror migrates it into the encrypted database automatically and deletes the plaintext file once that succeeds.
+- Nothing sensitive is ever written to logs.
 
-`POST /v1/chat/completions` deliberately accepts only `model`, `messages`, `stream`, `store`, and the documented string-valued `metadata` keys (`private`, `mirror_model`, and `conversation_id`). Unknown request fields and metadata keys are rejected instead of silently ignored. Text content is supported; tools, image/audio content parts, response formats, sampling controls, token limits, penalties, seeds, stop sequences and multiple choices are not currently implemented.
+### Configuration reference
 
-Use `metadata.conversation_id` to continue a thread. On continuation, Mirror sends only the final user turn because the upstream ChatGPT conversation already contains its history. System/developer instructions may not change for an existing Mirror conversation; start a new id when those instructions change. `store:false` creates an upstream temporary chat and deletes its local conversation/messages when the request finishes, including on failure.
+| Variable            | Default                 | Purpose                                       |
+| ------------------- | ------------------------ | ---------------------------------------------- |
+| `WARP_ACCEPT_TOS`    | (unset)                  | Must be `yes` — acknowledges Cloudflare's WARP terms before the tunnel will register |
+| `MIRROR_PORT`        | `8799`                   | Host port for the combined WARP + Mirror stack (Compose) |
+| `HOST`               | `127.0.0.1`               | Server bind address (direct/non-Compose runs) |
+| `PORT`               | `8787`                    | Server port (direct/non-Compose runs) |
+| `MIRROR_WEB_ORIGIN`  | `http://localhost:5173`   | Dev-mode CORS origin |
+| `MIRROR_DATA_DIR`    | project `.data`           | Where the database and encryption key live |
+| `MIRROR_STORE_KEY`   | auto-generated            | Fixed 32-byte database encryption key (base64 or hex) |
+| `MIRROR_API_KEY(S)`  | unset                     | Require an application key for `/v1/*` (comma-separate for multiple) |
 
-## API surface
+## Running without Docker
 
-| Endpoint                             | Purpose                                             |
-| ------------------------------------ | --------------------------------------------------- |
-| `GET /api/health`                    | database/configuration health                       |
-| `POST/GET/DELETE /api/session`       | verify, inspect or remove the local ChatGPT session |
-| `GET /api/models`                    | normalized live account models                      |
-| `GET /api/gpts`                      | normalized Custom GPT list                          |
-| `GET/POST /api/conversations`        | list or create chats                                |
-| `GET/DELETE /api/conversations/:id`  | load or delete a chat                               |
-| `POST /api/conversations/:id/branch` | branch from an assistant node                       |
-| `POST /api/conversations/:id/stop`   | cancel an active response                           |
-| `POST /api/files`                    | upload an attachment                                |
-| `GET /api/assets`                    | resolve an authenticated generated asset            |
-| `POST /api/chat`                     | Mirror delta-only structured SSE chat stream        |
-| `GET /v1/models`                     | OpenAI-compatible model list                        |
-| `POST /v1/chat/completions`          | OpenAI-compatible completions                       |
+For development, or if you'd rather manage WARP yourself:
 
-## Verification
+```sh
+npm install
+npm run dev        # server on :8787 (or configured PORT) + web dev server on :5173
+```
+
+`npm start` builds and runs the production server directly, but note it still performs the same WARP egress verification and will refuse to serve traffic without a working WARP tunnel in its network path — there's no supported way to bypass this check.
+
+## HTTP API reference
+
+Mirror's own REST/SSE API (used by the bundled web UI):
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/health` | Database/configuration/egress health |
+| `POST /api/session` | Verify and store a ChatGPT session token |
+| `GET /api/session` | Inspect the current session |
+| `DELETE /api/session` | Remove the stored session |
+| `GET /api/models` | Normalized live model list |
+| `GET /api/gpts` | Normalized Custom GPT list |
+| `GET /api/conversations` | List conversations |
+| `POST /api/conversations` | Create a conversation |
+| `GET /api/conversations/:id` | Load a conversation |
+| `DELETE /api/conversations/:id` | Delete a conversation |
+| `POST /api/conversations/:id/branch` | Branch from an assistant node |
+| `POST /api/conversations/:id/stop` | Cancel an in-flight response |
+| `POST /api/files` | Upload an attachment |
+| `GET /api/assets` | Fetch an authenticated generated asset (e.g. an image) |
+| `POST /api/chat` | Structured SSE chat stream (used by the web UI) |
+
+Plus the OpenAI-compatible surface:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /v1/models` | OpenAI-compatible model list |
+| `POST /v1/chat/completions` | OpenAI-compatible completions (streaming and non-streaming) |
+
+## Development & testing
 
 ```sh
 npm run typecheck
@@ -138,6 +153,8 @@ npm run build
 npm audit --omit=dev
 ```
 
-The automated tests cover SSE framing across network/CRLF boundaries, inherited patch operations, final assistant-node extraction, tool/citation/image preservation, encrypted credential storage, OpenAI instruction-context persistence, branch-safe remote synchronization, API-key configuration, bearer parsing, and loopback Host/origin policy. They do not send a live ChatGPT message because the test suite never reads or injects an account credential.
+Tests cover SSE framing, conversation-tree/branch logic, encrypted credential storage, OpenAI-compatible request validation, and the loopback Host/origin policy. They never touch a live ChatGPT account — no credential is read or injected during the test run.
 
-See [PROTOCOL.md](./PROTOCOL.md) for the observed upstream flow and compatibility assumptions.
+## Learn more
+
+- [PROTOCOL.md](./PROTOCOL.md) — the reverse-engineered ChatGPT backend protocol Mirror implements against, including known gaps and open questions.
