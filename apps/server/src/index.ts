@@ -37,10 +37,12 @@ import {
   branchConversation,
   claimDefaultAccountData,
   clearSession,
+  countConversations,
   createConversation,
   databaseHealthy,
   deleteConversation,
   getConversation,
+  getConversationSyncCursor,
   getSession,
   importRemoteConversation,
   listConversations,
@@ -48,6 +50,7 @@ import {
   saveFile,
   saveVerifiedSession,
   setConversationModel,
+  setConversationSyncCursor,
   syncRemoteConversations,
   updateMintedToken,
   ownsFile,
@@ -210,17 +213,84 @@ const NewConversationBody = z.object({
   model: z.string().default("auto"),
   gizmoId: z.string().nullable().optional(),
 });
-app.get("/api/conversations", async () => {
-  const client = new ChatGptBackendClient(await getValidCredentials());
-  const first = await client.fetchConversations({ limit: 100 });
-  const items = [...first.items];
-  for (let offset = items.length; offset < first.total; offset += 100) {
-    const page = await client.fetchConversations({ offset, limit: 100 });
-    items.push(...page.items);
-    if (page.items.length === 0) break;
+// Paginated so a UI (the Playground's "Load a conversation" list) can lazy
+// load a large history as the user scrolls, instead of eagerly fetching
+// every page of it up front. The full remote-sidebar sync - which walks
+// every page of the real ChatGPT sidebar via fetchConversations, an O(total
+// conversation count) series of upstream calls - only makes sense to redo
+// on the *first* page of a fresh listing (or an explicit refresh); repeating
+// it on every subsequent scroll-triggered page would turn "scroll down" into
+// "re-fetch your entire ChatGPT history" on every scroll tick, so callers
+// paging past offset 0 pass sync=false and get served straight from the
+// local mirror of it instead.
+const ConversationsQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).default(0),
+  sync: z.coerce.boolean().default(true),
+  // Restart the incremental sync cursor from the very top instead of
+  // resuming where a previous call left off - only worth paying for on an
+  // explicit user-initiated refresh (see App.tsx), not on every page load.
+  resync: z.coerce.boolean().default(false),
+});
+app.get("/api/conversations", async (req) => {
+  const { limit, offset, sync, resync } = ConversationsQuery.parse(req.query);
+  if (sync) {
+    const accountId = accountKey();
+    const client = new ChatGptBackendClient(await getValidCredentials());
+    const cursor = resync
+      ? { activeOffset: 0, activeDone: false, archivedOffset: 0, archivedDone: false }
+      : getConversationSyncCursor(accountId);
+    // Real ChatGPT's /backend-api/conversations does NOT report a stable
+    // grand total in its `total` field - it reports something closer to
+    // "at least offset + items-returned-so-far", which keeps climbing every
+    // time you page further, and only settles once you've actually paged
+    // past the real end (where items comes back empty). That ruled out
+    // using an early page's `total` as a loop bound (a prior version of
+    // this did, and it silently truncated syncs to a few hundred
+    // conversations on any large account). But walking *all* the way to
+    // the real end on every request - correct, but O(total conversation
+    // count) upstream calls - turned a few-hundred-millisecond request into
+    // a multi-minute one on an account with thousands of conversations,
+    // and this endpoint gets hit on every page of the Playground's
+    // conversation list AND after every completed run. So: only pull
+    // however many more upstream pages are needed to cover *this*
+    // request's offset+limit window beyond what's already locally synced,
+    // persisting where we left off (see store.ts's ConversationSyncCursor)
+    // so the next call - whether that's scrolling further or just loading
+    // again later - resumes instead of restarting. Active conversations are
+    // fetched before archived ones (is_archived is a separate upstream
+    // query, not something one call returns both sides of).
+    const MAX_PAGES_PER_CALL = 40; // up to ~4,000 *new* conversations of upstream work per request - generous headroom without being unbounded
+    const need = offset + limit;
+    const collected: Array<Awaited<ReturnType<typeof client.fetchConversations>>["items"][number]> = [];
+    for (
+      let page = 0;
+      page < MAX_PAGES_PER_CALL &&
+      countConversations(accountId) + collected.length < need &&
+      (!cursor.activeDone || !cursor.archivedDone);
+      page++
+    ) {
+      const archived = cursor.activeDone;
+      const result = await client.fetchConversations({
+        offset: archived ? cursor.archivedOffset : cursor.activeOffset,
+        limit: 100,
+        archived,
+      });
+      collected.push(...result.items);
+      if (archived) {
+        cursor.archivedOffset += result.items.length;
+        if (result.items.length === 0) cursor.archivedDone = true;
+      } else {
+        cursor.activeOffset += result.items.length;
+        if (result.items.length === 0) cursor.activeDone = true;
+      }
+    }
+    if (collected.length) syncRemoteConversations(collected, accountId);
+    setConversationSyncCursor(accountId, cursor);
   }
-  syncRemoteConversations(items, accountKey());
-  return listConversations(accountKey());
+  const items = listConversations(accountKey(), { limit, offset });
+  const total = countConversations(accountKey());
+  return { items, total, hasMore: offset + items.length < total };
 });
 app.post("/api/conversations", async (req) =>
   createConversation({
@@ -229,7 +299,12 @@ app.post("/api/conversations", async (req) =>
   }),
 );
 app.get("/api/conversations/:id", async (req, reply) => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  // Mirror conversation ids are UUIDs when auto-generated, but a caller can
+  // also name their own via /v1/chat/completions' metadata.conversation_id
+  // (e.g. an arbitrary slug) - accept any non-empty id here so a
+  // Playground/API-driven conversation created that way can still be
+  // browsed, loaded, and managed through these routes.
+  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
   let conversation = getConversation(id);
   if (conversation?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
@@ -243,7 +318,12 @@ app.get("/api/conversations/:id", async (req, reply) => {
   return { conversation, messages: listMessages(id) };
 });
 app.patch("/api/conversations/:id", async (req, reply) => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  // Mirror conversation ids are UUIDs when auto-generated, but a caller can
+  // also name their own via /v1/chat/completions' metadata.conversation_id
+  // (e.g. an arbitrary slug) - accept any non-empty id here so a
+  // Playground/API-driven conversation created that way can still be
+  // browsed, loaded, and managed through these routes.
+  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
   return setConversationModel(
@@ -252,20 +332,35 @@ app.patch("/api/conversations/:id", async (req, reply) => {
   );
 });
 app.delete("/api/conversations/:id", async (req) => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  // Mirror conversation ids are UUIDs when auto-generated, but a caller can
+  // also name their own via /v1/chat/completions' metadata.conversation_id
+  // (e.g. an arbitrary slug) - accept any non-empty id here so a
+  // Playground/API-driven conversation created that way can still be
+  // browsed, loaded, and managed through these routes.
+  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
   if (getConversation(id)?.accountId !== accountKey()) return { ok: false };
   stopConversation(id);
   deleteConversation(id);
   return { ok: true };
 });
 app.post("/api/conversations/:id/stop", async (req, reply) => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  // Mirror conversation ids are UUIDs when auto-generated, but a caller can
+  // also name their own via /v1/chat/completions' metadata.conversation_id
+  // (e.g. an arbitrary slug) - accept any non-empty id here so a
+  // Playground/API-driven conversation created that way can still be
+  // browsed, loaded, and managed through these routes.
+  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
   return { ok: stopConversation(id) };
 });
 app.post("/api/conversations/:id/branch", async (req, reply) => {
-  const { id } = z.object({ id: z.string().uuid() }).parse(req.params);
+  // Mirror conversation ids are UUIDs when auto-generated, but a caller can
+  // also name their own via /v1/chat/completions' metadata.conversation_id
+  // (e.g. an arbitrary slug) - accept any non-empty id here so a
+  // Playground/API-driven conversation created that way can still be
+  // browsed, loaded, and managed through these routes.
+  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
   const body = z

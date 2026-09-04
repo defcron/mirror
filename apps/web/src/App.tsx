@@ -1,22 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  editPlaygroundMessage,
+  removePlaygroundMessage,
+  type PlaygroundMessage,
+} from "./playground-history.js";
 
 interface ApiModel {
   id: string;
   owned_by?: string;
   name?: string;
 }
-interface TestMessage {
-  role: "system" | "user" | "assistant";
+interface ConversationSummary {
+  id: string;
+  title: string;
+  model: string;
+  gizmoId?: string | null;
+  updatedAt: string;
+}
+interface StoredMessageDto {
+  role: "user" | "assistant";
   content: string;
 }
 
-const DEFAULT_MESSAGES: TestMessage[] = [
+const DEFAULT_MESSAGES: PlaygroundMessage[] = [
   { role: "system", content: "You are a helpful assistant." },
   { role: "user", content: "Say hello in one short sentence." },
 ];
 const STORAGE_KEY_CONVERSATION_ID = "mirror-playground-conversation-id";
 const STORAGE_KEY_MESSAGES = "mirror-playground-messages";
 const STORAGE_KEY_REMEMBER = "mirror-playground-remember-history";
+const CONVERSATIONS_PAGE_SIZE = 50;
 
 function loadStoredConversationId(): string {
   try {
@@ -25,7 +38,7 @@ function loadStoredConversationId(): string {
     return "";
   }
 }
-function loadStoredMessages(): TestMessage[] {
+function loadStoredMessages(): PlaygroundMessage[] {
   try {
     if (localStorage.getItem(STORAGE_KEY_REMEMBER) !== "true")
       return DEFAULT_MESSAGES;
@@ -95,7 +108,16 @@ export default function App() {
       return false;
     }
   });
-  const [messages, setMessages] = useState<TestMessage[]>(loadStoredMessages);
+  const [messages, setMessages] =
+    useState<PlaygroundMessage[]>(loadStoredMessages);
+  const [conversationsList, setConversationsList] = useState<
+    ConversationSummary[]
+  >([]);
+  const [conversationsLoading, setConversationsLoading] = useState(false);
+  const [conversationsLoadingMore, setConversationsLoadingMore] =
+    useState(false);
+  const [conversationsOffset, setConversationsOffset] = useState(0);
+  const [conversationsHasMore, setConversationsHasMore] = useState(false);
   const [output, setOutput] = useState("");
   const [raw, setRaw] = useState("");
   const [showRaw, setShowRaw] = useState(false);
@@ -149,6 +171,102 @@ export default function App() {
       })
       .catch(() => undefined);
   }, []);
+
+  // sync is always sent - the server only pulls however many more upstream
+  // pages are needed to cover this request's window, resuming from a
+  // persisted cursor (see index.ts), so it's cheap on every call rather
+  // than something to gate behind a special "first load only" flag. resync
+  // is the expensive one: it restarts that cursor from the top, so it's
+  // reserved for an explicit user-initiated refresh.
+  async function fetchConversationsPage(offset: number, resync: boolean) {
+    const params = new URLSearchParams({
+      limit: String(CONVERSATIONS_PAGE_SIZE),
+      offset: String(offset),
+      sync: "true",
+      resync: String(resync),
+    });
+    const res = await fetch(`${location.origin}/api/conversations?${params}`);
+    const body = await res.json();
+    return {
+      items: Array.isArray(body.items) ? (body.items as ConversationSummary[]) : [],
+      hasMore: Boolean(body.hasMore),
+    };
+  }
+  // Used on mount, after every completed run (a run can create/reorder a
+  // conversation), and by the explicit Refresh button (resync=true there -
+  // see the button below).
+  async function refreshConversations(resync = false) {
+    setConversationsLoading(true);
+    try {
+      const { items, hasMore } = await fetchConversationsPage(0, resync);
+      setConversationsList(items);
+      setConversationsOffset(items.length);
+      setConversationsHasMore(hasMore);
+    } catch {
+      /* best-effort - the picker just stays empty/stale */
+    } finally {
+      setConversationsLoading(false);
+    }
+  }
+  const loadingMoreRef = useRef(false);
+  async function loadMoreConversations() {
+    if (loadingMoreRef.current || !conversationsHasMore) return;
+    loadingMoreRef.current = true;
+    setConversationsLoadingMore(true);
+    try {
+      const { items, hasMore } = await fetchConversationsPage(
+        conversationsOffset,
+        false,
+      );
+      setConversationsList((current) => [...current, ...items]);
+      setConversationsOffset((current) => current + items.length);
+      setConversationsHasMore(hasMore);
+    } catch {
+      /* best-effort - scrolling again will just retry */
+    } finally {
+      loadingMoreRef.current = false;
+      setConversationsLoadingMore(false);
+    }
+  }
+  useEffect(() => {
+    void refreshConversations();
+  }, []);
+
+  async function loadConversation(id: string) {
+    if (!id) return;
+    setStatus("Loading…");
+    try {
+      const res = await fetch(
+        `${location.origin}/api/conversations/${encodeURIComponent(id)}`,
+      );
+      if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+      const body = await res.json();
+      const loaded: StoredMessageDto[] = Array.isArray(body.messages)
+        ? body.messages
+        : [];
+      // The stored history only ever has user/assistant turns (see
+      // store.ts) - a leading system/developer message isn't tracked as a
+      // "message" server-side, so keep whatever the editor currently has
+      // (or fall back to the default) rather than dropping it.
+      const currentSystem = messages.find((m) => m.role === "system");
+      setMessages([
+        ...(currentSystem ? [currentSystem] : []),
+        ...loaded.map((m) => ({ role: m.role, content: m.content })),
+        { role: "user" as const, content: "" },
+      ]);
+      setConversationId(body.conversation?.id ?? id);
+      if (body.conversation?.gizmoId) setModel(body.conversation.gizmoId);
+      else if (body.conversation?.model && body.conversation.model !== "auto")
+        setModel(body.conversation.model);
+      if (typeof body.conversation?.private === "boolean")
+        setPrivateChat(body.conversation.private);
+      setStatus("Loaded");
+    } catch (error) {
+      setStatus("Error");
+      setRaw(String((error as Error).message ?? error));
+      setShowRaw(true);
+    }
+  }
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
@@ -159,12 +277,29 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
-  function updateMessage(index: number, key: keyof TestMessage, value: string) {
-    setMessages((current) =>
-      current.map((message, i) =>
-        i === index ? { ...message, [key]: value } : message,
-      ),
+  function updateMessage(
+    index: number,
+    key: keyof PlaygroundMessage,
+    value: string,
+  ) {
+    if (runningRef.current) return;
+    const mutation = editPlaygroundMessage(
+      messages,
+      index,
+      key,
+      value,
+      Boolean(conversationId.trim()),
     );
+    setMessages(mutation.messages);
+  }
+  function removeMessage(index: number) {
+    if (runningRef.current) return;
+    const mutation = removePlaygroundMessage(
+      messages,
+      index,
+      Boolean(conversationId.trim()),
+    );
+    setMessages(mutation.messages);
   }
 
   const runningRef = useRef(false);
@@ -259,11 +394,9 @@ export default function App() {
         }
         finalText = complete;
       }
-      // The server threads continuations by matching the exact prior message
-      // array (including the assistant's own reply) against a saved
-      // fingerprint. Append the reply here so the next Run's request body
-      // reproduces that exact prefix and lands on the same conversationId
-      // instead of silently starting a new thread each time.
+      // Keep the exact reply in the visible transcript. The conversation id
+      // identifies the upstream thread, while the message prefix lets the
+      // server verify that the client has not silently diverged from it.
       if (finalText && !oneShot) {
         setMessages((current) => [
           ...current,
@@ -272,6 +405,7 @@ export default function App() {
         ]);
       }
       setStatus("Completed");
+      if (!oneShot) void refreshConversations();
     } catch (error) {
       if ((error as Error).name === "AbortError") setStatus("Stopped");
       else {
@@ -375,6 +509,7 @@ export default function App() {
             <div className="panel-title">
               <b>Messages</b>
               <button
+                disabled={running}
                 onClick={() =>
                   setMessages((current) => [
                     ...current,
@@ -390,6 +525,7 @@ export default function App() {
                 <div className="message-editor" key={index}>
                   <div className="message-toolbar">
                     <select
+                      disabled={running || message.role === "assistant"}
                       value={message.role}
                       onChange={(event) =>
                         updateMessage(index, "role", event.target.value)
@@ -400,17 +536,25 @@ export default function App() {
                       <option>assistant</option>
                     </select>
                     <button
-                      aria-label="Remove message"
-                      onClick={() =>
-                        setMessages((current) =>
-                          current.filter((_, i) => i !== index),
-                        )
+                      aria-label={
+                        message.role === "assistant"
+                          ? "Assistant messages cannot be removed"
+                          : "Remove message"
                       }
+                      disabled={running || message.role === "assistant"}
+                      onClick={() => removeMessage(index)}
                     >
                       ×
                     </button>
                   </div>
                   <textarea
+                    readOnly={running || message.role === "assistant"}
+                    aria-readonly={running || message.role === "assistant"}
+                    title={
+                      message.role === "assistant"
+                        ? "Assistant messages are read-only; you can select and copy their text."
+                        : undefined
+                    }
                     value={message.content}
                     onChange={(event) =>
                       updateMessage(index, "content", event.target.value)
@@ -525,6 +669,7 @@ export default function App() {
               <span>Conversation ID</span>
               <div className="model-picker-row">
                 <input
+                  disabled={running}
                   value={conversationId}
                   onChange={(event) => setConversationId(event.target.value)}
                   placeholder="auto (filled in after the first response)"
@@ -532,6 +677,7 @@ export default function App() {
                 <button
                   type="button"
                   className="model-mode-toggle"
+                  disabled={running}
                   onClick={() => {
                     setConversationId("");
                     setMessages([
@@ -546,6 +692,74 @@ export default function App() {
                   New
                 </button>
               </div>
+            </label>
+            <label>
+              <div className="conversation-list-head">
+                <span>
+                  Load a conversation
+                  {conversationsLoading ? " (refreshing…)" : ""}
+                </span>
+                <button
+                  type="button"
+                  className="model-mode-toggle"
+                  onClick={() => void refreshConversations(true)}
+                >
+                  Refresh
+                </button>
+              </div>
+              <div
+                className="conversation-list"
+                onScroll={(event) => {
+                  const el = event.currentTarget;
+                  // Trigger the next page a bit before the user actually
+                  // hits bottom, so the fetch has time to land before they
+                  // run out of already-rendered rows to scroll through.
+                  if (
+                    el.scrollTop + el.clientHeight >=
+                    el.scrollHeight - 64
+                  ) {
+                    void loadMoreConversations();
+                  }
+                }}
+              >
+                {conversationsList.length === 0 ? (
+                  <div className="conversation-list-empty">
+                    {conversationsLoading
+                      ? "Loading…"
+                      : "No conversations yet"}
+                  </div>
+                ) : (
+                  conversationsList.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      disabled={running}
+                      className={`conversation-list-item${
+                        item.id === conversationId ? " active" : ""
+                      }`}
+                      onClick={() => void loadConversation(item.id)}
+                    >
+                      <span className="conversation-list-title">
+                        {item.title || "Untitled"}
+                      </span>
+                      <span className="conversation-list-meta">
+                        {new Date(item.updatedAt).toLocaleString()}
+                      </span>
+                    </button>
+                  ))
+                )}
+                {conversationsLoadingMore && (
+                  <div className="conversation-list-loading">
+                    Loading more…
+                  </div>
+                )}
+              </div>
+              <p className="field-hint">
+                Loading a conversation copies its history into the editor
+                below. Editing a committed message, including a GPT reply,
+                drops dependent turns; Run rebases the same Playground
+                conversation onto the edited history.
+              </p>
             </label>
             <div className="request-preview">
               <span>Request URL</span>

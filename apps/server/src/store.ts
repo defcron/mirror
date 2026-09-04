@@ -113,6 +113,11 @@ db.exec(`
     conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
     instructions_hash TEXT NOT NULL, updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS openai_transcripts (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL, transcript_hash TEXT NOT NULL, updated_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS openai_transcripts_hash_idx ON openai_transcripts(account_id, transcript_hash);
   CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY, account_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL
   );
@@ -304,14 +309,74 @@ export function getConversation(id: string): StoredConversation | null {
   return row ? mapConversation(row) : null;
 }
 
-export function listConversations(accountId = "default"): StoredConversation[] {
+export function listConversations(
+  accountId = "default",
+  page?: { limit: number; offset: number },
+): StoredConversation[] {
+  const rows = page
+    ? (db
+        .prepare(
+          "SELECT * FROM conversations WHERE account_id = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        )
+        .all(accountId, page.limit, page.offset) as Record<string, unknown>[])
+    : (db
+        .prepare(
+          "SELECT * FROM conversations WHERE account_id = ? ORDER BY updated_at DESC",
+        )
+        .all(accountId) as Record<string, unknown>[]);
+  return rows.map(mapConversation);
+}
+
+export function countConversations(accountId = "default"): number {
   return (
     db
-      .prepare(
-        "SELECT * FROM conversations WHERE account_id = ? ORDER BY updated_at DESC",
-      )
-      .all(accountId) as Record<string, unknown>[]
-  ).map(mapConversation);
+      .prepare("SELECT COUNT(*) AS count FROM conversations WHERE account_id = ?")
+      .get(accountId) as { count: number }
+  ).count;
+}
+
+/**
+ * Where an account's incremental remote-sidebar sync last left off (see
+ * index.ts's GET /api/conversations). ChatGPT's own conversations listing
+ * has no cheap "give me the true total up front" answer (its `total` field
+ * climbs as you page further rather than reporting a stable count - see the
+ * comment in index.ts), so rather than walking a caller's *entire* upstream
+ * history on every request - correct, but multi-minute on any account with
+ * a large history - the sync resumes from here each time and only pulls
+ * however many more pages the currently requested page of the local list
+ * actually needs.
+ */
+export interface ConversationSyncCursor {
+  activeOffset: number;
+  activeDone: boolean;
+  archivedOffset: number;
+  archivedDone: boolean;
+}
+const DEFAULT_SYNC_CURSOR: ConversationSyncCursor = {
+  activeOffset: 0,
+  activeDone: false,
+  archivedOffset: 0,
+  archivedDone: false,
+};
+function syncCursorKey(accountId: string): string {
+  return `conversation_sync_cursor:${accountId}`;
+}
+export function getConversationSyncCursor(
+  accountId: string,
+): ConversationSyncCursor {
+  const raw = readSetting(syncCursorKey(accountId));
+  if (!raw) return { ...DEFAULT_SYNC_CURSOR };
+  try {
+    return { ...DEFAULT_SYNC_CURSOR, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULT_SYNC_CURSOR };
+  }
+}
+export function setConversationSyncCursor(
+  accountId: string,
+  cursor: ConversationSyncCursor,
+): void {
+  writeSetting(syncCursorKey(accountId), JSON.stringify(cursor));
 }
 
 export function updateConversation(conversation: StoredConversation): void {
@@ -620,4 +685,127 @@ export function getOpenAiContext(conversationId: string): string | null {
     )
     .get(conversationId) as { instructions_hash: string } | undefined;
   return row?.instructions_hash ?? null;
+}
+
+/**
+ * Fingerprint of "the full transcript this conversation's caller would
+ * resend next time" (everything they sent this turn, including our own
+ * reply, since a resent history necessarily echoes back what we returned).
+ * Two things read this:
+ *  - findConversationByTranscript: a caller with no metadata.conversation_id
+ *    at all (a plain OpenAI-only client that manages its own history, e.g. a
+ *    browser extension's "custom API" mode) gets matched back to the same
+ *    Mirror conversation purely by recognizing its resent history, instead
+ *    of spawning a brand-new upstream ChatGPT thread on every message.
+ *  - the explicit metadata.conversation_id path compares the caller's
+ *    freshly resent prior transcript against this to detect that they
+ *    edited an earlier turn (e.g. in the Playground) rather than merely
+ *    appending one - see rebaseConversationUpstream/replaceMessages below.
+ */
+export function saveOpenAiTranscript(
+  conversationId: string,
+  accountId: string,
+  transcriptHash: string,
+): void {
+  db.prepare(
+    `INSERT INTO openai_transcripts(conversation_id, account_id, transcript_hash, updated_at) VALUES (?, ?, ?, ?)
+    ON CONFLICT(conversation_id) DO UPDATE SET transcript_hash=excluded.transcript_hash, updated_at=excluded.updated_at`,
+  ).run(conversationId, accountId, transcriptHash, new Date().toISOString());
+}
+
+export function getOpenAiTranscript(conversationId: string): string | null {
+  const row = db
+    .prepare(
+      "SELECT transcript_hash FROM openai_transcripts WHERE conversation_id = ?",
+    )
+    .get(conversationId) as { transcript_hash: string } | undefined;
+  return row?.transcript_hash ?? null;
+}
+
+export function findConversationByTranscript(
+  accountId: string,
+  transcriptHash: string,
+): StoredConversation | null {
+  const row = db
+    .prepare(
+      `SELECT conversation_id FROM openai_transcripts
+       WHERE account_id = ? AND transcript_hash = ? ORDER BY updated_at DESC LIMIT 1`,
+    )
+    .get(accountId, transcriptHash) as { conversation_id: string } | undefined;
+  return row ? getConversation(row.conversation_id) : null;
+}
+
+/**
+ * Rebases a conversation inside its existing upstream ChatGPT thread while
+ * keeping its Mirror id intact. ChatGPT does not expose an operation for
+ * overwriting an already-generated assistant node, but its conversation
+ * graph can accept a new branch under the same conversation_id. For a user
+ * edit, currentNodeId is the real message immediately before the edited user
+ * turn, so the replacement is sent as a normal user bubble rather than a
+ * flattened transcript. Other rebase callers may explicitly choose root.
+ */
+export function rebaseConversationUpstream(
+  id: string,
+  overrides: {
+    model?: string;
+    gizmoId?: string | null;
+    private?: boolean;
+    currentNodeId?: string;
+  } = {},
+): void {
+  const existing = getConversation(id);
+  if (!existing) return;
+  db.prepare(
+    `UPDATE conversations SET current_node_id=?,
+     model=?, gizmo_id=?, is_private=?, updated_at=? WHERE id=?`,
+  ).run(
+    overrides.currentNodeId ?? "client-created-root",
+    overrides.model && overrides.model !== "auto" ? overrides.model : existing.model,
+    overrides.gizmoId !== undefined ? overrides.gizmoId : (existing.gizmoId ?? null),
+    (overrides.private !== undefined ? overrides.private : Boolean(existing.private)) ? 1 : 0,
+    new Date().toISOString(),
+    id,
+  );
+}
+
+/** Replaces a conversation's locally stored message history wholesale (used
+ * alongside rebaseConversationUpstream when a caller's edited transcript
+ * becomes the new ground truth). Replayed prefix messages generally have no
+ * real upstream node id because they were not sent as individual turns. The
+ * fresh user/assistant pair can retain the ids, status and structured events
+ * runChat observed for the real synthetic-context turn. */
+export function replaceMessages(
+  conversationId: string,
+  entries: Array<{
+    id?: string;
+    upstreamNodeId?: string | null;
+    role: "user" | "assistant";
+    content: string;
+    status?: string;
+    events?: NormalizedConversationEvent[];
+    attachments?: UploadedFile[];
+  }>,
+): void {
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(
+      conversationId,
+    );
+    for (const entry of entries) {
+      addMessage({
+        id: entry.id,
+        conversationId,
+        upstreamNodeId: entry.upstreamNodeId ?? null,
+        role: entry.role,
+        content: entry.content,
+        status: entry.status ?? "done",
+        events: entry.events ?? [],
+        attachments: entry.attachments,
+      });
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }

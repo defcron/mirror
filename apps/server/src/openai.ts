@@ -9,10 +9,17 @@ import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
 import {
   fingerprintValue,
+  findConversationByTranscript,
   getConversation,
   getOpenAiContext,
+  getOpenAiTranscript,
   getSession,
+  listMessages,
+  rebaseConversationUpstream,
+  replaceMessages,
   saveOpenAiContext,
+  saveOpenAiTranscript,
+  type StoredConversation,
 } from "./store.js";
 
 const ContentPart = z
@@ -48,17 +55,30 @@ const CompletionBody = z
      *                                       project id) to run when `model` is
      *                                       itself a gizmo/project id, i.e. a
      *                                       Project's picked model
-     *  - metadata.conversation_id = "..." -> the ONLY way to continue a
-     *                                       thread across calls (this API is
-     *                                       otherwise fully stateless, like
-     *                                       real OpenAI's). Reuse an id
-     *                                       returned via the
+     *  - metadata.conversation_id = "..." -> reuse an id returned via the
      *                                       x-mirror-conversation-id response
      *                                       header to continue that thread, or
      *                                       supply your own new id up front to
      *                                       name a brand-new conversation.
-     *                                       Omit it and every call starts a
-     *                                       fresh, unrelated conversation.
+     *                                       Optional: a client that always
+     *                                       resends its full message history
+     *                                       itself (rather than tracking a
+     *                                       conversation id at all - e.g. a
+     *                                       plain "OpenAI-compatible API"
+     *                                       mode in a browser extension)
+     *                                       still gets threaded onto the
+     *                                       same Mirror conversation
+     *                                       automatically, by recognizing
+     *                                       its resent history. See
+     *                                       findConversationByTranscript in
+     *                                       store.ts.
+     *
+     * Editing an earlier user turn in a resent history for an explicit
+     * conversation_id rebases that Mirror conversation as a new branch
+     * inside the existing upstream ChatGPT thread. Assistant turns are
+     * immutable and requests that change or remove one are rejected. Both
+     * the upstream and caller-facing conversation ids stay unchanged. See
+     * rebaseConversationUpstream/replaceMessages in store.ts.
      */
     metadata: z
       .object({
@@ -151,6 +171,31 @@ function instructionsHash(messages: ReturnType<typeof normalized>): string {
       (message) => message.role === "system" || message.role === "developer",
     ),
   );
+}
+
+function conversationalMessages(messages: ReturnType<typeof normalized>) {
+  return messages
+    .filter((message) => message.role === "user" || message.role === "assistant")
+    .map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.content,
+    }));
+}
+
+function firstHistoryDifference(
+  stored: Array<{ role: "user" | "assistant"; content: string }>,
+  incoming: Array<{ role: "user" | "assistant"; content: string }>,
+): number {
+  let index = 0;
+  while (
+    index < stored.length &&
+    index < incoming.length &&
+    stored[index]?.role === incoming[index]?.role &&
+    stored[index]?.content === incoming[index]?.content
+  ) {
+    index += 1;
+  }
+  return index;
 }
 
 function sse(reply: FastifyReply, data: unknown): void {
@@ -286,13 +331,13 @@ export async function registerOpenAiRoutes(
     // returns x-mirror-conversation-id. See CompletionBody above.
     const oneShot = body.store === false;
 
-    // metadata.conversation_id is the ONLY continuation mechanism (see
-    // CompletionBody above) - this API is otherwise fully stateless, like
-    // real OpenAI's; there is no prefix/message-history matching anymore.
-    // If it doesn't exist yet, that's not an error - the caller is picking
-    // their own id for a brand-new conversation, so we create one using
-    // that id. It's only a conflict if the id is already taken by a
-    // conversation on a different account.
+    // metadata.conversation_id is optional (see CompletionBody above): if
+    // present but doesn't exist yet, that's not an error - the caller is
+    // picking their own id for a brand-new conversation, so we create one
+    // using that id. It's only a conflict if the id is already taken by a
+    // conversation on a different account. If absent entirely, resent
+    // history alone can still land this on an existing conversation - see
+    // findConversationByTranscript below.
     const explicitConversationId = !oneShot
       ? body.metadata?.conversation_id
       : undefined;
@@ -337,13 +382,13 @@ export async function registerOpenAiRoutes(
       await withConversationLock(lockKey, async () => {
         // Resolve state after acquiring the lock. Two concurrent calls using a
         // brand-new caller-selected id must not both decide to INSERT it.
+        const accountId = getSession()?.accountId ?? "default";
         const explicitConversation = explicitConversationId
           ? getConversation(explicitConversationId)
           : null;
         if (
           explicitConversation &&
-          explicitConversation.accountId !==
-            (getSession()?.accountId ?? "default")
+          explicitConversation.accountId !== accountId
         ) {
           throw Object.assign(
             new Error(
@@ -356,21 +401,130 @@ export async function registerOpenAiRoutes(
           explicitConversationId && !explicitConversation
             ? explicitConversationId
             : undefined;
-        const continuing = Boolean(explicitConversation?.conversationId);
-        const contextHash = instructionsHash(messages);
-        if (explicitConversation) {
-          const priorHash = getOpenAiContext(explicitConversation.id);
-          if (priorHash && priorHash !== contextHash) {
-            throw Object.assign(
-              new Error(
-                "System/developer instructions cannot change while continuing a Mirror conversation; start a new conversation id.",
-              ),
-              { statusCode: 400 },
-            );
+        const route = routeModel(body.model, body.metadata);
+
+        // priorTranscript is everything the caller sent *except* the new
+        // final user turn - i.e. what they believe the conversation's
+        // history already is. We compare/match against this, not the full
+        // `messages` array, since the new turn obviously never matches
+        // anything yet.
+        const priorTranscript = messages.slice(0, -1);
+        const priorTranscriptHash = priorTranscript.length
+          ? fingerprintValue(priorTranscript)
+          : null;
+
+        // No metadata.conversation_id at all: try to recognize this as a
+        // continuation purely from the resent history, for clients that
+        // manage their own history and never track a conversation id (see
+        // CompletionBody's metadata doc-comment above).
+        let inferredConversation: StoredConversation | null = null;
+        if (!oneShot && !explicitConversationId && priorTranscriptHash) {
+          const candidate = findConversationByTranscript(
+            accountId,
+            priorTranscriptHash,
+          );
+          if (
+            candidate &&
+            (route.gizmoId === undefined ||
+              route.gizmoId === candidate.gizmoId) &&
+            (!route.model ||
+              route.model === "auto" ||
+              route.model === candidate.model) &&
+            (route.private === undefined ||
+              route.private === Boolean(candidate.private))
+          ) {
+            inferredConversation = candidate;
           }
         }
-        const route = routeModel(body.model, body.metadata);
-        if (explicitConversation) {
+
+        const activeConversation = explicitConversation ?? inferredConversation;
+
+        // An explicit conversation_id whose resent prior transcript no
+        // longer matches what we have on record means the caller edited an
+        // earlier turn rather than merely appending one. User-turn edits can
+        // rebase; assistant-turn edits are rejected below.
+        const storedTranscriptHash = explicitConversation
+          ? getOpenAiTranscript(explicitConversation.id)
+          : null;
+        const priorConversationMessages = conversationalMessages(priorTranscript);
+        const storedMessageRows = explicitConversation
+          ? listMessages(explicitConversation.id)
+          : [];
+        const storedConversationMessages = storedMessageRows.map(
+          ({ role, content }) => ({
+              role,
+              content,
+            }),
+        );
+        const historyDifferenceIndex = firstHistoryDifference(
+          storedConversationMessages,
+          priorConversationMessages,
+        );
+        if (
+          explicitConversation &&
+          storedConversationMessages[historyDifferenceIndex]?.role ===
+            "assistant"
+        ) {
+          throw Object.assign(
+            new Error(
+              "Assistant messages are read-only and cannot be changed or removed while continuing a Mirror conversation.",
+            ),
+            { statusCode: 400 },
+          );
+        }
+        // Conversations created/imported before transcript fingerprints were
+        // introduced still need safe edit detection. Their local logical
+        // user/assistant rows are the best available baseline. The context
+        // hash covers system/developer changes for older OpenAI-created rows;
+        // imported ChatGPT conversations have no corresponding system row, so
+        // their first unchanged Playground continuation remains possible.
+        const legacyTranscriptChanged = Boolean(
+          explicitConversation &&
+            !storedTranscriptHash &&
+            priorTranscriptHash &&
+            storedConversationMessages.length > 0 &&
+            fingerprintValue(storedConversationMessages) !==
+              fingerprintValue(priorConversationMessages),
+        );
+        const storedContextHash = explicitConversation
+          ? getOpenAiContext(explicitConversation.id)
+          : null;
+        const legacyContextChanged = Boolean(
+          !storedTranscriptHash &&
+            storedContextHash &&
+            storedContextHash !== instructionsHash(messages),
+        );
+        const needsRebase = Boolean(
+          explicitConversation &&
+            priorTranscriptHash &&
+            ((storedTranscriptHash &&
+              storedTranscriptHash !== priorTranscriptHash) ||
+              legacyTranscriptChanged ||
+              legacyContextChanged),
+        );
+        const isUserHistoryEdit = Boolean(
+          needsRebase &&
+            storedConversationMessages[historyDifferenceIndex]?.role === "user",
+        );
+        const rebasePriorMessages = priorConversationMessages.map(
+          (message, index) => {
+            const stored = storedMessageRows[index];
+            return stored &&
+              stored.role === message.role &&
+              stored.content === message.content
+              ? {
+                  ...message,
+                  id: stored.id,
+                  upstreamNodeId: stored.upstreamNodeId,
+                  status: stored.status,
+                  events: stored.events,
+                  attachments: stored.attachments,
+                }
+              : message;
+          },
+        );
+
+        if (explicitConversation && !needsRebase) {
           if (
             route.gizmoId !== undefined &&
             route.gizmoId !== explicitConversation.gizmoId
@@ -406,33 +560,127 @@ export async function registerOpenAiRoutes(
             );
           }
         }
-        const { conversation, result } = await runChat({
-          conversationId: explicitConversation?.id,
-          newConversationId,
-          prompt: promptFor(messages, continuing),
-          model: route.model,
-          gizmoId: route.gizmoId,
-          private: route.private || oneShot,
-          ephemeral: oneShot,
-          signal: controller.signal,
-          onDelta: body.stream
-            ? (delta) =>
-                sse(reply, {
-                  id: completionId,
-                  object: "chat.completion.chunk",
-                  created,
-                  model: body.model,
-                  choices: [
-                    {
-                      index: 0,
-                      delta: { content: delta },
-                      finish_reason: null,
-                    },
-                  ],
-                })
-            : undefined,
-        });
-        if (!oneShot) saveOpenAiContext(conversation.id, contextHash);
+
+        if (needsRebase) {
+          rebaseConversationUpstream(explicitConversation!.id, {
+            model: route.model,
+            gizmoId: route.gizmoId,
+            private: route.private,
+            currentNodeId: isUserHistoryEdit
+              ? (storedMessageRows[historyDifferenceIndex - 1]
+                  ?.upstreamNodeId ?? "client-created-root")
+              : "client-created-root",
+          });
+          replaceMessages(explicitConversation!.id, rebasePriorMessages);
+        }
+
+        // A user edit is a real ChatGPT conversation-tree branch: send only
+        // the edited final user turn under its actual predecessor. Other
+        // rebases (for example changed system instructions) still need the
+        // synthetic full-context prompt because those instructions are not
+        // materialized as editable upstream message nodes.
+        const continuing =
+          Boolean(activeConversation?.conversationId) &&
+          (!needsRebase || isUserHistoryEdit);
+        let chat: Awaited<ReturnType<typeof runChat>>;
+        try {
+          chat = await runChat({
+            conversationId: activeConversation?.id,
+            newConversationId,
+            prompt: promptFor(messages, continuing),
+            model: route.model,
+            gizmoId: route.gizmoId,
+            private: route.private || oneShot,
+            ephemeral: oneShot,
+            signal: controller.signal,
+            onDelta: body.stream
+              ? (delta) =>
+                  sse(reply, {
+                    id: completionId,
+                    object: "chat.completion.chunk",
+                    created,
+                    model: body.model,
+                    choices: [
+                      {
+                        index: 0,
+                        delta: { content: delta },
+                        finish_reason: null,
+                      },
+                    ],
+                  })
+              : undefined,
+          });
+        } catch (error) {
+          // runChat necessarily records the synthetic replay prompt (and an
+          // error/partial assistant row) before contacting upstream. On a
+          // failed rebase those implementation-detail rows must not leak into
+          // the editor's canonical history; the client never appended the
+          // failed turn either, so restore exactly the edited prior prefix.
+          if (needsRebase) {
+            replaceMessages(explicitConversation!.id, rebasePriorMessages);
+          }
+          throw error;
+        }
+        const { conversation, result, storedAssistantMessageId } = chat;
+        if (!oneShot) {
+          if (!continuing) {
+            // A first/rebased upstream turn is sent as one synthetic prompt
+            // containing the whole OpenAI transcript. That prompt is a wire
+            // implementation detail, not a logical user message. Rewrite the
+            // local rows to the exact user/assistant transcript the caller
+            // owns, while retaining the real new user/assistant node ids and
+            // assistant events from runChat. Otherwise loading the chat would
+            // expose a duplicate flattened transcript, and its next request
+            // would immediately fail transcript matching and rebase again.
+            const stored = listMessages(conversation.id);
+            const storedUser = stored.find(
+              (message) => message.upstreamNodeId === result.userMessageId,
+            );
+            const storedAssistant = stored.find(
+              (message) => message.id === storedAssistantMessageId,
+            );
+            const canonical = conversationalMessages(messages);
+            const lastUserIndex = canonical.findLastIndex(
+              (message) => message.role === "user",
+            );
+            replaceMessages(conversation.id, [
+              ...canonical.map((message, index) =>
+                index === lastUserIndex && storedUser
+                  ? {
+                      ...message,
+                      id: storedUser.id,
+                      upstreamNodeId: storedUser.upstreamNodeId,
+                      status: storedUser.status,
+                      events: storedUser.events,
+                      attachments: storedUser.attachments,
+                    }
+                  : message,
+              ),
+              {
+                role: "assistant",
+                content: result.text,
+                ...(storedAssistant
+                  ? {
+                      id: storedAssistant.id,
+                      upstreamNodeId: storedAssistant.upstreamNodeId,
+                      status: storedAssistant.status,
+                      events: storedAssistant.events,
+                      attachments: storedAssistant.attachments,
+                    }
+                  : {}),
+              },
+            ]);
+          }
+          saveOpenAiContext(conversation.id, instructionsHash(messages));
+          saveOpenAiTranscript(
+            conversation.id,
+            accountId,
+            fingerprintValue([
+              ...messages,
+              { role: "assistant", content: result.text },
+            ]),
+          );
+        }
 
         if (body.stream) {
           // Not part of the OpenAI chunk schema: an SSE comment line (ignored

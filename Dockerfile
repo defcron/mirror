@@ -10,7 +10,14 @@ RUN npm ci
 COPY tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
-RUN npm run build && npm prune --omit=dev
+RUN npm run build
+# devDependencies stay in the image below rather than being pruned or
+# reinstalled fresh - both npm prune --omit=dev (bulk-delete) and a second
+# `npm ci --omit=dev` (bulk-write) hang for a very long time on this
+# machine's Colima setup, apparently regardless of which direction the
+# many-small-files I/O goes. Simplest reliable fix: just keep the one
+# node_modules the build stage already produced, dev packages and all.
+# Bigger runtime image, but it actually finishes building.
 
 FROM node:24-bookworm-slim AS runtime
 
