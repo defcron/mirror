@@ -1,8 +1,6 @@
 # Mirror
 
-Mirror is a local, self-hosted ChatGPT web client with an OpenAI-compatible API bolted on. It logs in with your existing ChatGPT session — no OpenAI API key, no browser automation — and talks directly to `chatgpt.com/backend-api`, the same backend the real ChatGPT web app uses.
-
-You get a clean chat UI (Markdown, code blocks, math, file uploads, Custom GPTs, conversation branching) *and* a drop-in `/v1/chat/completions` endpoint you can point any OpenAI SDK at.
+Mirror is a local, self-hosted ChatGPT client with an OpenAI-compatible API bolted on. It logs you into the *real* chatgpt.com web app — proxied through Mirror's own server, using your existing ChatGPT session — so you get the actual ChatGPT interface, Custom GPTs and all, with no OpenAI API key and no browser automation involved. Alongside that, Mirror ships a separate **Playground** page for testing its OpenAI-compatible `/v1/chat/completions` endpoint directly.
 
 > **Unofficial project.** Mirror depends on ChatGPT's private web protocol, which OpenAI can change at any time without notice. Keep it on localhost. See [PROTOCOL.md](./PROTOCOL.md) for the full reverse-engineered protocol notes.
 
@@ -12,7 +10,13 @@ You'll need Docker, and a ChatGPT account you're logged into in a browser.
 
 **1. Get your session token.**
 
-Log into [chatgpt.com](https://chatgpt.com) in your browser, open dev tools, and copy the value of the `__Secure-next-auth.session-token` cookie (Application/Storage tab → Cookies → chatgpt.com). This is the only credential Mirror needs — it's the same cookie your browser already uses to stay logged in.
+While logged into ChatGPT in your browser, navigate to:
+
+```
+https://chatgpt.com/api/auth/session
+```
+
+Open your browser's dev tools on that page and copy the value of the `__Secure-next-auth.session-token` cookie. This is the one credential Mirror needs — it's the same long-lived session cookie your browser already relies on to keep you logged in; Mirror uses it server-side to mint its own short-lived access tokens, and never needs anything else from you.
 
 **2. Configure and start the stack.**
 
@@ -22,11 +26,11 @@ cp .env.example .env
 docker compose up --build
 ```
 
-**3. Open the app and paste your token.**
+**3. Open the app and connect your token.**
 
-Go to `http://127.0.0.1:8799`, paste the session token from step 1 when prompted, and start chatting.
+Go to `http://127.0.0.1:8799` — this is the real ChatGPT interface, served through Mirror. In the left sidebar, click the **Mirror controls** button (it sits just above your account button, and Mirror injects it there automatically). A panel opens with a `sessionToken` field — paste the token from step 1 and hit **Save & reload**.
 
-That's it — Mirror mints its own short-lived access tokens from your session and never needs the raw token again unless it expires or you sign out.
+That's it. Mirror mints and refreshes its own access tokens from your session token going forward, so you won't need to touch this panel again unless the session itself expires or you sign out. The same panel also shows a green/amber connection dot and the current WARP egress status, and has an **API tester** link straight to the Playground (see below).
 
 ### Why WARP?
 
@@ -36,6 +40,18 @@ Mirror requires all traffic to route through the bundled Cloudflare WARP contain
 - Cloudflare's faster "Local proxy" mode caps requests at 10 seconds, which breaks long streamed responses, so Mirror uses full WARP/MASQUE mode instead and verifies Cloudflare's `warp=on` trace signal before letting the app serve traffic
 
 Mirror rechecks this every 30 seconds and shuts down serving if the tunnel drops — there's no silent fallback to a direct connection. Note that WARP changes your network path but doesn't grant a fixed IP or protect an account that ChatGPT has already flagged; if that happens, use ChatGPT's own account recovery flow rather than retrying through Mirror.
+
+## The Playground
+
+Besides the proxied ChatGPT interface, Mirror ships a second page — the **Playground** — for exercising its OpenAI-compatible API directly, without needing to write any code. Reach it either from the **Mirror controls** panel's "API tester" link, or directly at:
+
+```
+http://127.0.0.1:8799/mirror/playground
+```
+
+It's a lightweight chat-completions tester: pick a live model from your account, send messages, and watch streaming or non-streaming responses come back exactly as `/v1/chat/completions` would return them to any OpenAI SDK. You can edit or remove individual turns and re-run from that point, continue an existing upstream ChatGPT thread via its conversation id, and load previous Mirror conversations into the working history. It's meant as a quick way to sanity-check requests and inspect exact response shapes before wiring up real client code — everything it does goes through the same `/v1/chat/completions` endpoint documented below, so anything that works in the Playground will work the same way from `curl` or an SDK.
+
+By default the Playground keeps its bearer token in memory only and doesn't persist message history; there's a "Remember prompt history on this device" toggle if you want it to keep your working history in the browser's `localStorage` between visits — flip it back off to clear it.
 
 ## Using the OpenAI-compatible API
 
@@ -70,24 +86,20 @@ MIRROR_API_KEY='replace-with-a-long-random-value' npm start
 
 ## What Mirror can do
 
-- Full ChatGPT conversation continuity (correct parent-message threading, branching, editing, regeneration)
-- Custom GPT discovery and chat
-- Live model list pulled from your account — nothing hardcoded
-- Streaming assistant text, tool calls, file search, citations, and generated images, all rendered properly
-- File uploads and generated-image results
-- Stop/cancel mid-response
-- Markdown, GFM tables, code highlighting, and KaTeX math rendering
-- Persistent conversation sidebar (SQLite-backed, encrypted credentials)
-- OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` (streaming + non-streaming)
+Because the main interface is the real ChatGPT web app (proxied through Mirror rather than rebuilt from scratch), you get everything that comes with it: full conversation continuity, branching, editing and regeneration, Custom GPTs, Markdown/code/GFM table/KaTeX rendering, file uploads and generated images, and the persistent conversation sidebar — all backed by your own account, served from Mirror's own SQLite-backed, encrypted local storage. On top of that, Mirror adds:
+
+- Live model discovery straight from your account — nothing hardcoded
+- Structured event capture for assistant text, tool calls, file search, citations, images, and status markers, so behavior stays correct even when the underlying protocol details shift
+- Stop/cancellation that reaches all the way through to the upstream request
+- An OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` (streaming + non-streaming), plus the Playground for testing them directly
 
 **Not included by design:** support for multiple auth methods beyond the one session-token flow, and a solved Cloudflare Turnstile challenge (Mirror currently relies on the fact that ChatGPT doesn't always demand one — see [PROTOCOL.md](./PROTOCOL.md) for details on that gap).
 
 ## Security & storage
 
 - Everything is scoped to `127.0.0.1` by default. Mirror checks the request `Host` header and rejects anything that isn't loopback (`localhost`, `127.0.0.0/8`, `::1`). It is **not** designed for remote or multi-user deployment — that would need TLS, real auth, CSRF protection, and a proper security review, not just a changed `HOST` value.
-- Your session token and minted access token are encrypted at rest with AES-256-GCM, in a local SQLite database (`.data/mirror.db` by default).
+- Your session token and minted access token are encrypted at rest with AES-256-GCM, in a local SQLite database (`.data/mirror.db` by default). The token is never inserted into the proxied ChatGPT page's own scripts.
 - On first run Mirror generates `.data/master.key` (owner-only permissions) to encrypt that database. For production-style setups you can instead supply your own key via `MIRROR_STORE_KEY` (32 bytes, base64 or hex).
-- The web playground keeps your bearer token in memory only. Prompt/message history isn't persisted unless you opt in via "Remember prompt history on this device," which stores it in browser `localStorage` — turn it back off to clear it.
 - If you're upgrading from an older version that used a plaintext `.data/store.json`, Mirror migrates it into the encrypted database automatically and deletes the plaintext file once that succeeds.
 - Nothing sensitive is ever written to logs.
 
@@ -117,7 +129,7 @@ npm run dev        # server on :8787 (or configured PORT) + web dev server on :5
 
 ## HTTP API reference
 
-Mirror's own REST/SSE API (used by the bundled web UI):
+Mirror's own REST/SSE API (used by the proxied UI and the Playground):
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -135,14 +147,14 @@ Mirror's own REST/SSE API (used by the bundled web UI):
 | `POST /api/conversations/:id/stop` | Cancel an in-flight response |
 | `POST /api/files` | Upload an attachment |
 | `GET /api/assets` | Fetch an authenticated generated asset (e.g. an image) |
-| `POST /api/chat` | Structured SSE chat stream (used by the web UI) |
+| `POST /api/chat` | Structured SSE chat stream (used by the proxied UI) |
 
 Plus the OpenAI-compatible surface:
 
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/models` | OpenAI-compatible model list |
-| `POST /v1/chat/completions` | OpenAI-compatible completions (streaming and non-streaming) |
+| `POST /v1/chat/completions` | OpenAI-compatible completions (streaming and non-streaming) — also what the Playground exercises |
 
 ## Development & testing
 
