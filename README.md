@@ -71,14 +71,28 @@ for chunk in response:
 ```
 
 Browser navigation to `/` or `/mirror/playground` creates a process-local, HttpOnly,
-SameSite=Strict control cookie. Reload after restarting Mirror. Non-browser API
-clients must supply a configured `MIRROR_API_KEY` or one of `MIRROR_API_KEYS`.
-These keys protect control routes, conversations, proxy access, and `/v1/*`;
-they are unrelated to OpenAI credentials. Health and compiled static assets are public.
+SameSite=Strict control cookie, so the proxied ChatGPT UI and the Playground keep working
+in a browser without any extra setup. Reload after restarting Mirror. Everything else —
+`curl`, an OpenAI SDK, any non-browser client hitting `/v1/*` or Mirror's own `/api/*`
+routes — now requires a configured `MIRROR_API_KEY` (or one of `MIRROR_API_KEYS`); Mirror
+will reject those requests with 401 if none is set. These keys protect control routes,
+conversations, proxy access, and `/v1/*`; they are unrelated to OpenAI credentials.
+Health and compiled static assets are public.
 
 ```sh
 MIRROR_API_KEY='replace-with-a-long-random-value' npm start
 ```
+
+This is required for any programmatic use of Mirror — set it in `.env` (or export it)
+before scripting against `/v1/*`, not just at `npm start` time. Generate a crypto-random
+value for it instead of typing one by hand:
+
+```sh
+npm run gen-api-key            # 32 random bytes, base64url-encoded
+npm run gen-api-key -- 24      # optional byte length (min 16)
+```
+
+This only prints a key to your terminal — copy it into `MIRROR_API_KEY` (or append another to `MIRROR_API_KEYS`) yourself; it doesn't write your `.env` file for you.
 
 **What's supported:** `model`, `messages`, `stream`, `store`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option.
 
@@ -116,7 +130,7 @@ Because the main interface is the real ChatGPT web app (proxied through Mirror r
 | `MIRROR_WEB_ORIGIN`  | `http://localhost:5173`   | Dev-mode CORS origin |
 | `MIRROR_DATA_DIR`    | project `.data`           | Where the database and encryption key live |
 | `MIRROR_STORE_KEY`   | auto-generated            | Fixed 32-byte credential encryption key (base64 or hex) |
-| `MIRROR_API_KEY(S)`  | unset                     | Application keys for API and control access (comma-separate for multiple) |
+| `MIRROR_API_KEY(S)`  | **required for API access** | Application key(s) gating `/v1/*` and other non-browser routes (comma-separate `MIRROR_API_KEYS` for multiple) |
 
 ## Running without Docker
 

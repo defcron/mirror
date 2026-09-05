@@ -16,7 +16,8 @@
     "test": "npm run build --workspace=packages/protocol && npm run build --workspace=apps/server && npm run test --workspace=apps/web && node --test packages/protocol/tests/*.test.mjs apps/server/tests/*.test.mjs",
     "test:e2e": "playwright test",
     "storage": "node scripts/storage.mjs",
-    "manifest": "node scripts/manifest.mjs"
+    "manifest": "node scripts/manifest.mjs",
+    "gen-api-key": "node scripts/gen-api-key.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
