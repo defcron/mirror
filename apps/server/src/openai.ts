@@ -8,6 +8,9 @@ import {
 import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
 import {
+  getSessionRevision,
+  assertSessionRevision,
+  saveInstructions,
   fingerprintValue,
   findConversationByTranscript,
   getConversation,
@@ -266,6 +269,7 @@ export async function registerOpenAiRoutes(
           object: "model",
           created: 0,
           owned_by: "chatgpt-web",
+          mirror: { supported: !model.id.endsWith("-wm"), execution_mode: model.id.endsWith("-wm") ? "unsupported_work" : "interactive", capabilities: model.capabilities ?? null },
         })),
         ...gizmos.map((gizmo) => ({
           id: gizmo.id,
@@ -290,7 +294,9 @@ export async function registerOpenAiRoutes(
         },
       });
     }
+    const requestRevision = getSessionRevision();
     const body = parsed.data;
+    if ((body.metadata?.mirror_model ?? body.model).endsWith("-wm")) return reply.code(400).send({ error: {message: "Work Mode is not supported by Mirror; select an interactive model", type: "unsupported_parameter"} });
     const messages = normalized(body.messages);
     if (messages.some((message) => message.role === "tool")) {
       return reply.code(400).send({
@@ -380,6 +386,7 @@ export async function registerOpenAiRoutes(
 
     try {
       await withConversationLock(lockKey, async () => {
+        assertSessionRevision(requestRevision);
         // Resolve state after acquiring the lock. Two concurrent calls using a
         // brand-new caller-selected id must not both decide to INSERT it.
         const accountId = getSession()?.accountId ?? "default";
@@ -671,6 +678,7 @@ export async function registerOpenAiRoutes(
               },
             ]);
           }
+          saveInstructions(conversation.id, messages);
           saveOpenAiContext(conversation.id, instructionsHash(messages));
           saveOpenAiTranscript(
             conversation.id,

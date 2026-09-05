@@ -13,14 +13,18 @@
     "dev": "npm run build --workspace=packages/protocol && concurrently -n server,web -c blue,green \"npm run dev:server\" \"npm run dev:web\"",
     "start": "npm run build && node apps/server/dist/index.js",
     "typecheck": "npm run build --workspace=packages/protocol && npm run typecheck --workspaces --if-present",
-    "test": "npm run build --workspace=packages/protocol && npm run build --workspace=apps/server && npm run test --workspace=apps/web && node --test packages/protocol/tests/*.test.mjs apps/server/tests/*.test.mjs"
+    "test": "npm run build --workspace=packages/protocol && npm run build --workspace=apps/server && npm run test --workspace=apps/web && node --test packages/protocol/tests/*.test.mjs apps/server/tests/*.test.mjs",
+    "test:e2e": "playwright test",
+    "storage": "node scripts/storage.mjs",
+    "manifest": "node scripts/manifest.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^24.13.3",
     "concurrently": "^10.0.5"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24 <25"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

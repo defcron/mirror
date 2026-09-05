@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   ChatGptBackendClient,
   type ConversationInitResult,
@@ -7,6 +8,9 @@ import {
 } from "@mirror/protocol";
 import { getValidCredentials } from "./auth.js";
 import {
+  getSessionRevision,
+  assertSessionRevision,
+  onSessionChange,
   addMessage,
   createConversation,
   getConversation,
@@ -62,7 +66,14 @@ export async function runChat(
   result: SendMessageResult;
   storedAssistantMessageId: string;
 }> {
-  const conversation = opts.conversationId
+  const revision = getSessionRevision();
+  const transient = Boolean(opts.ephemeral);
+  const conversation = transient ? {
+    id: randomUUID(), accountId: getSession()?.accountId ?? "default", model: opts.model ?? "auto",
+    conversationId: null, currentNodeId: "client-created-root", gizmoId: opts.gizmoId,
+    private: true, initialized: false, isBranch: false, title: "One-shot",
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), init: null,
+  } as StoredConversation : opts.conversationId
     ? getConversation(opts.conversationId)
     : createConversation({
         id: opts.newConversationId,
@@ -88,7 +99,11 @@ export async function runChat(
 
   const controller = linkedAbortController(opts.signal);
   activeTurns.set(conversation.id, controller);
-  const user = addMessage({
+  const unsubscribe = onSessionChange(() => controller.abort(new DOMException("Session changed", "AbortError")));
+  const recordMessage: typeof addMessage = (input) => transient
+    ? { ...input, id: input.id ?? randomUUID(), createdAt: new Date().toISOString() }
+    : addMessage(input);
+  const user = recordMessage({
     conversationId: conversation.id,
     upstreamNodeId: null,
     role: "user",
@@ -97,7 +112,7 @@ export async function runChat(
     events: [],
     attachments: opts.attachments,
   });
-  const assistant = addMessage({
+  const assistant = recordMessage({
     conversationId: conversation.id,
     upstreamNodeId: null,
     role: "assistant",
@@ -110,6 +125,7 @@ export async function runChat(
   const events: NormalizedConversationEvent[] = [];
   try {
     const creds = await getValidCredentials();
+    assertSessionRevision(revision);
     const client = new ChatGptBackendClient(creds);
     await client.fetchMe(controller.signal).catch(() => undefined);
 
@@ -140,7 +156,7 @@ export async function runChat(
         limitsProgress: init.limitsProgress,
         blockedFeatures: init.blockedFeatures,
       };
-      updateConversation(conversation);
+      if (!transient) updateConversation(conversation);
     }
 
     const gizmoPayload =
@@ -171,11 +187,12 @@ export async function runChat(
       },
     });
 
+    assertSessionRevision(revision);
     conversation.conversationId = result.conversationId;
     if (result.messageId) conversation.currentNodeId = result.messageId;
-    updateConversation(conversation);
-    updateMessage(user.id, user.content, "done", result.userMessageId, []);
-    updateMessage(
+    if (!transient) updateConversation(conversation);
+    if (!transient) updateMessage(user.id, user.content, "done", result.userMessageId, []);
+    if (!transient) updateMessage(
       assistant.id,
       result.text || fullText,
       result.status ?? "done",
@@ -183,7 +200,7 @@ export async function runChat(
       events,
     );
     return {
-      conversation: getConversation(conversation.id)!,
+      conversation: transient ? conversation : getConversation(conversation.id)!,
       result,
       storedAssistantMessageId: assistant.id,
     };
@@ -192,7 +209,7 @@ export async function runChat(
       error instanceof Error && error.name === "AbortError"
         ? "Generation stopped"
         : "Generation failed";
-    updateMessage(
+    if (!transient) updateMessage(
       assistant.id,
       fullText,
       message === "Generation stopped" ? "stopped" : "error",
@@ -202,7 +219,7 @@ export async function runChat(
     throw error;
   } finally {
     activeTurns.delete(conversation.id);
-    if (opts.ephemeral) deleteConversation(conversation.id);
+    unsubscribe();
   }
 }
 

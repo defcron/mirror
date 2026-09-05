@@ -21,6 +21,7 @@ test("ephemeral chat uses upstream temporary mode and leaves no local rows", asy
     );
     store.updateMintedToken("cached-access", Date.now() + 60 * 60 * 1000, null);
     globalThis.fetch = async (url, init = {}) => {
+      assert.equal(store.countConversations("account-1"), 0, "one-shot writes no rows even while running");
       const pathname = new URL(String(url)).pathname;
       if (init.body)
         bodies.push({ pathname, body: JSON.parse(String(init.body)) });
