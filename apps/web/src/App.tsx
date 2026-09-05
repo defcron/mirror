@@ -1,3 +1,4 @@
+import { readCompletionStream } from "./completion-stream.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   editPlaygroundMessage,
@@ -8,6 +9,7 @@ import {
 interface ApiModel {
   id: string;
   owned_by?: string;
+  mirror?: {supported: boolean};
   name?: string;
 }
 interface ConversationSummary {
@@ -31,9 +33,14 @@ const STORAGE_KEY_MESSAGES = "mirror-playground-messages";
 const STORAGE_KEY_REMEMBER = "mirror-playground-remember-history";
 const CONVERSATIONS_PAGE_SIZE = 50;
 
+function loadSnapshot(): { model: string; pickedModel: string; privateChat: boolean } | null {
+  try { return localStorage.getItem(STORAGE_KEY_REMEMBER) === "true" ? JSON.parse(localStorage.getItem("mirror-playground-snapshot") ?? "null") : null; } catch { return null; }
+}
 function loadStoredConversationId(): string {
   try {
-    return localStorage.getItem(STORAGE_KEY_CONVERSATION_ID) ?? "";
+    if (localStorage.getItem(STORAGE_KEY_REMEMBER) !== "true") return "";
+    const snapshot = JSON.parse(localStorage.getItem("mirror-playground-snapshot") ?? "null");
+    return snapshot?.conversationId ?? "";
   } catch {
     return "";
   }
@@ -42,7 +49,7 @@ function loadStoredMessages(): PlaygroundMessage[] {
   try {
     if (localStorage.getItem(STORAGE_KEY_REMEMBER) !== "true")
       return DEFAULT_MESSAGES;
-    const raw = localStorage.getItem(STORAGE_KEY_MESSAGES);
+    const raw = JSON.stringify(JSON.parse(localStorage.getItem("mirror-playground-snapshot") ?? "null")?.messages ?? null);
     const parsed = raw ? JSON.parse(raw) : null;
     if (
       Array.isArray(parsed) &&
@@ -50,7 +57,7 @@ function loadStoredMessages(): PlaygroundMessage[] {
       parsed.every(
         (item) =>
           item &&
-          ["system", "user", "assistant"].includes(item.role) &&
+          ["system", "developer", "user", "assistant"].includes(item.role) &&
           typeof item.content === "string",
       )
     )
@@ -87,10 +94,10 @@ export default function App() {
   const [path, setPath] = useState("/v1/chat/completions");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ApiModel[]>([]);
-  const [model, setModel] = useState("auto");
+  const [model, setModel] = useState(() => loadSnapshot()?.model ?? "auto");
   const [modelFreeform, setModelFreeform] = useState(false);
-  const [pickedModel, setPickedModel] = useState("");
-  const [privateChat, setPrivateChat] = useState(false);
+  const [pickedModel, setPickedModel] = useState(() => loadSnapshot()?.pickedModel ?? "");
+  const [privateChat, setPrivateChat] = useState(() => loadSnapshot()?.privateChat ?? false);
   const [oneShot, setOneShot] = useState(false);
   // Persisted to localStorage (see effects below) so a page refresh doesn't
   // strand you: the conversation id is exactly what lets you resume an
@@ -131,23 +138,13 @@ export default function App() {
   );
   useEffect(() => {
     try {
-      if (conversationId)
-        localStorage.setItem(STORAGE_KEY_CONVERSATION_ID, conversationId);
-      else localStorage.removeItem(STORAGE_KEY_CONVERSATION_ID);
-    } catch {
-      /* best-effort */
-    }
-  }, [conversationId]);
-  useEffect(() => {
-    try {
+      localStorage.removeItem(STORAGE_KEY_CONVERSATION_ID);
+      localStorage.removeItem(STORAGE_KEY_MESSAGES);
       localStorage.setItem(STORAGE_KEY_REMEMBER, String(rememberHistory));
-      if (rememberHistory)
-        localStorage.setItem(STORAGE_KEY_MESSAGES, JSON.stringify(messages));
-      else localStorage.removeItem(STORAGE_KEY_MESSAGES);
-    } catch {
-      /* best-effort */
-    }
-  }, [messages, rememberHistory]);
+      if (rememberHistory && !oneShot && !running) localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId, messages, model, pickedModel, privateChat }));
+      else if (!rememberHistory || oneShot) localStorage.removeItem("mirror-playground-snapshot");
+    } catch { /* Storage may be unavailable. */ }
+  }, [conversationId, messages, model, pickedModel, privateChat, rememberHistory, oneShot, running]);
   const isGizmoModel = /^g-/.test(model);
   const lastMessage = messages.at(-1);
   // Not used to disable the Run button (that turned out to trap people who
@@ -164,13 +161,13 @@ export default function App() {
         : null;
 
   useEffect(() => {
-    fetch(`${location.origin}/v1/models`)
-      .then((res) => res.json())
+    fetch(`${domain.replace(/\/$/, "")}/v1/models`, { headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {} })
+      .then(async (res) => { if (!res.ok) throw new Error(`Model discovery failed: ${res.status}`); return res.json(); })
       .then((body) => {
         if (Array.isArray(body.data)) setModels(body.data);
       })
       .catch(() => undefined);
-  }, []);
+  }, [domain, apiKey]);
 
   // sync is always sent - the server only pulls however many more upstream
   // pages are needed to cover this request's window, resuming from a
@@ -248,13 +245,14 @@ export default function App() {
       // store.ts) - a leading system/developer message isn't tracked as a
       // "message" server-side, so keep whatever the editor currently has
       // (or fall back to the default) rather than dropping it.
-      const currentSystem = messages.find((m) => m.role === "system");
+      const savedInstructions = Array.isArray(body.instructions) ? body.instructions : [];
       setMessages([
-        ...(currentSystem ? [currentSystem] : []),
+        ...savedInstructions,
         ...loaded.map((m) => ({ role: m.role, content: m.content })),
         { role: "user" as const, content: "" },
       ]);
       setConversationId(body.conversation?.id ?? id);
+      setPickedModel(body.conversation?.gizmoId ? body.conversation.model : "");
       if (body.conversation?.gizmoId) setModel(body.conversation.gizmoId);
       else if (body.conversation?.model && body.conversation.model !== "auto")
         setModel(body.conversation.model);
@@ -358,41 +356,9 @@ export default function App() {
         finalText = body.choices?.[0]?.message?.content ?? "";
         setOutput(finalText);
       } else if (response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let complete = "";
-        let transcript = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const frames = buffer.split(/\r?\n\r?\n/);
-          buffer = frames.pop() ?? "";
-          for (const frame of frames) {
-            // Comment lines (": mirror-conversation-id <id>") carry the
-            // conversation id out-of-band since it may not be known until
-            // after the first chunk has already been written to the client.
-            const commentId = frame
-              .split(/\r?\n/)
-              .find((line) => line.startsWith(": mirror-conversation-id "))
-              ?.slice(25)
-              .trim();
-            if (commentId) setConversationId(commentId);
-            const data = frame
-              .split(/\r?\n/)
-              .find((line) => line.startsWith("data:"))
-              ?.slice(5)
-              .trim();
-            if (!data || data === "[DONE]") continue;
-            transcript += `${data}\n`;
-            const chunk = JSON.parse(data);
-            complete += chunk.choices?.[0]?.delta?.content ?? "";
-            setOutput(complete);
-            setRaw(transcript);
-          }
-        }
-        finalText = complete;
+        finalText = await readCompletionStream(response.body, setOutput, setRaw, setConversationId);
+      } else {
+        throw new Error("Response has no stream body");
       }
       // Keep the exact reply in the visible transcript. The conversation id
       // identifies the upstream thread, while the message prefix lets the
@@ -532,6 +498,7 @@ export default function App() {
                       }
                     >
                       <option>system</option>
+                      <option>developer</option>
                       <option>user</option>
                       <option>assistant</option>
                     </select>
@@ -604,12 +571,12 @@ export default function App() {
                   >
                     <option value="auto">auto</option>
                     {models.map((item) => (
-                      <option value={item.id} key={item.id}>
+                      <option value={item.id} key={item.id} disabled={item.mirror?.supported === false}>
                         {item.owned_by === "chatgpt-gizmo"
                           ? `GPT: ${item.name ?? item.id}`
                           : item.owned_by === "chatgpt-project"
                             ? `Project: ${item.name ?? item.id}`
-                            : item.id}
+                            : `${item.id}${item.mirror?.supported === false ? " (unsupported)" : ""}`}
                       </option>
                     ))}
                   </select>
@@ -756,8 +723,8 @@ export default function App() {
               </div>
               <p className="field-hint">
                 Loading a conversation copies its history into the editor
-                below. Editing a committed message, including a GPT reply,
-                drops dependent turns; Run rebases the same Playground
+                below. Editing a committed user message
+                drops dependent turns; assistant replies are read-only. Run rebases the same Playground
                 conversation onto the edited history.
               </p>
             </label>

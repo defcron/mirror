@@ -3,10 +3,11 @@ import {
   SessionTokenInvalidError,
   type SessionCredentials,
 } from "@mirror/protocol";
-import { getSession, updateMintedToken } from "./store.js";
+import { getSession, updateMintedToken, getSessionRevision, assertSessionRevision } from "./store.js";
 import { randomUUID } from "node:crypto";
 
 const REFRESH_BUFFER_MS = 60_000; // re-mint a bit before actual expiry, not right at the edge
+let refreshRevision = -1;
 let refreshInFlight: Promise<SessionCredentials> | null = null;
 
 /**
@@ -34,7 +35,10 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
     };
   }
 
+  if (refreshRevision !== getSessionRevision()) refreshInFlight = null;
   if (!refreshInFlight) {
+    refreshRevision = getSessionRevision();
+    const startedRevision = refreshRevision;
     refreshInFlight = (async () => {
       try {
         // Re-read inside the single-flight operation so a queued caller never
@@ -54,7 +58,9 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
             deviceId: current.deviceId,
           };
         }
+        const revision = getSessionRevision();
         const minted = await mintAccessToken(current.sessionToken);
+        assertSessionRevision(revision);
         updateMintedToken(
           minted.accessToken,
           minted.expiresAt,
@@ -67,7 +73,7 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
         throw err;
       }
     })().finally(() => {
-      refreshInFlight = null;
+      if (refreshRevision === startedRevision) refreshInFlight = null;
     });
   }
   return refreshInFlight;

@@ -12,7 +12,7 @@ const CHATGPT_WEB_HOSTS = String.raw`(?:[a-z0-9-]+\.)*chatgpt\.com|chat\.openai\
 export function isRewritableContentType(contentType: string): boolean {
   const type = contentType.split(";", 1)[0]!.trim().toLowerCase();
   return (
-    type.startsWith("text/") ||
+    (type.startsWith("text/") && type !== "text/event-stream") ||
     type === "application/javascript" ||
     type === "application/x-javascript" ||
     type === "application/ecmascript" ||

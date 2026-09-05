@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 
 function hostnameFromHost(host: string): string | null {
@@ -44,8 +44,7 @@ export function isAllowedOrigin(
   try {
     const originUrl = new URL(origin);
     const requestHostname = requestHost ? hostnameFromHost(requestHost) : null;
-    if (requestHostname && originUrl.hostname.toLowerCase() === requestHostname)
-      return true;
+    if (requestHostname && originUrl.origin === new URL(`http://${requestHost}`).origin) return true;
     const developmentOrigin =
       process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173";
     return originUrl.origin === new URL(developmentOrigin).origin;
@@ -67,4 +66,16 @@ export function tokenMatches(candidate: string, accepted: string[]): boolean {
 
 export function bearerToken(authorization: string | undefined): string {
   return authorization?.match(/^Bearer\s+(.+)$/i)?.[1] ?? "";
+}
+
+const controlSecret = randomBytes(32).toString("base64url");
+export function controlCookie(): string { return `mirror_control=${controlSecret}; Path=/; HttpOnly; SameSite=Strict`; }
+export function authorizedLocalRequest(headers: { authorization?: string; cookie?: string }): boolean {
+  if (tokenMatches(bearerToken(headers.authorization), configuredApiKeys())) return true;
+  const cookie = headers.cookie?.split(";").map(x => x.trim()).find(x => x.startsWith("mirror_control="))?.slice(15) ?? "";
+  return tokenMatches(cookie, [controlSecret]);
+}
+export function mayBootstrapBrowser(method: string, url: string, headers: Record<string, unknown>): boolean {
+  return method === "GET" && (url === "/" || url === "/mirror/playground") &&
+    String(headers.accept ?? "").includes("text/html") && headers["sec-fetch-site"] !== "cross-site";
 }

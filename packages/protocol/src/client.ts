@@ -597,8 +597,9 @@ export class ChatGptBackendClient {
     const timezone = opts.timezone ?? "UTC";
     const timezoneOffsetMin = opts.timezoneOffsetMin ?? 0;
     // Work Mode itself is an asynchronous task protocol, not conversation SSE.
-    // Its aliases retain a usable interactive path by selecting their base model.
-    const interactiveModel = opts.model.endsWith("-wm") ? opts.model.slice(0, -3) : opts.model;
+    // Reject unsupported aliases; never silently substitute another model.
+    if (opts.model.endsWith("-wm")) throw new BackendApiError("Work Mode is not supported by this transport", 400);
+    const interactiveModel = opts.model;
     const firstTurn = !opts.conversationId;
     const parentMessageId = firstTurn
       ? opts.parentMessageId ?? "client-created-root"
@@ -721,6 +722,8 @@ export class ChatGptBackendClient {
       }
     }
     deliver();
+
+    if (!reducer.isDone) throw new BackendApiError("Conversation stream interrupted before completion");
 
     if (reducer.error) {
       throw new BackendApiError(

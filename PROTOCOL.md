@@ -43,4 +43,4 @@ The implementation uses `conversation/init`, the two-stage `f/conversation/prepa
 - Bearer-only vs. bearer+cookie requirement (affects the paste-your-token-only auth UX).
 - Turnstile solving strategy.
 - Exact typed event envelopes continue to evolve. Mirror preserves raw normalized events internally and derives stable text/tool/citation/image views.
-- Unknown OpenAI-compatible histories cannot reconstruct a pre-existing ChatGPT tree. A new Mirror conversation supplies the received history as explicit text context; subsequent calls resume the real node only through an explicit `metadata.conversation_id`.
+- Unknown OpenAI-compatible histories cannot reconstruct a pre-existing ChatGPT tree. A new Mirror conversation supplies the received history as explicit text context; subsequent calls can resume through an explicit `metadata.conversation_id` or a matching stored transcript fingerprint. Work Mode aliases are rejected rather than remapped.

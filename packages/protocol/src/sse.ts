@@ -325,6 +325,7 @@ export class ConversationStreamReducer {
     if (role === "assistant" && this.currentMessageId) {
       this.currentAssistantId = this.currentMessageId;
       this.assistantTexts.set(this.currentMessageId, messageText(message));
+      if (messageText(message)) this.push({kind: "assistant_text", messageId: this.currentMessageId, delta: messageText(message), text: messageText(message)});
     }
 
     const isTool =

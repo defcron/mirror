@@ -60,7 +60,7 @@ Point any OpenAI SDK at Mirror instead of `api.openai.com`:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8799/v1", api_key="local")
+client = OpenAI(base_url="http://127.0.0.1:8799/v1", api_key="your-configured-mirror-key")
 response = client.chat.completions.create(
     model="auto",
     messages=[{"role": "user", "content": "Hello"}],
@@ -70,23 +70,25 @@ for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
-`api_key` can be any placeholder value by default — Mirror doesn't check it unless you opt in:
+Browser navigation to `/` or `/mirror/playground` creates a process-local, HttpOnly,
+SameSite=Strict control cookie. Reload after restarting Mirror. Non-browser API
+clients must supply a configured `MIRROR_API_KEY` or one of `MIRROR_API_KEYS`.
+These keys protect control routes, conversations, proxy access, and `/v1/*`;
+they are unrelated to OpenAI credentials. Health and compiled static assets are public.
 
 ```sh
 MIRROR_API_KEY='replace-with-a-long-random-value' npm start
 ```
 
-(Multiple keys: comma-separate them in `MIRROR_API_KEYS`. These gate access to Mirror itself; they are unrelated to your OpenAI or ChatGPT credentials.)
-
 **What's supported:** `model`, `messages`, `stream`, `store`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option.
 
 **What's not supported (yet):** tool calls, image/audio content parts, response-format constraints, sampling controls (temperature, top_p, etc.), token limits, penalties, seeds, stop sequences, and multiple choices per request.
 
-**Continuing a conversation:** pass `metadata.conversation_id` to keep talking in the same upstream ChatGPT thread. Mirror only sends your latest message in that case, since ChatGPT already has the history server-side. You can't change the system/developer instructions on an existing thread — start a new `conversation_id` instead. Pass `store: false` for a one-off, upstream "temporary chat" that Mirror deletes locally as soon as the request finishes (success or failure).
+**Continuing a conversation:** pass `metadata.conversation_id` to keep talking in the same upstream ChatGPT thread. Mirror only sends your latest message in that case, since ChatGPT already has the history server-side. User edits and changed instructions rebase the tracked conversation; assistant turns are read-only. Supply the complete prior transcript when continuing through the Playground. Pass `store: false` for a one-off, upstream "temporary chat" whose conversation and messages remain in memory only, without database insertion.
 
 ## What Mirror can do
 
-Because the main interface is the real ChatGPT web app (proxied through Mirror rather than rebuilt from scratch), you get everything that comes with it: full conversation continuity, branching, editing and regeneration, Custom GPTs, Markdown/code/GFM table/KaTeX rendering, file uploads and generated images, and the persistent conversation sidebar — all backed by your own account, served from Mirror's own SQLite-backed, encrypted local storage. On top of that, Mirror adds:
+Because the main interface is the real ChatGPT web app (proxied through Mirror rather than rebuilt from scratch), you get everything that comes with it: full conversation continuity, branching, editing and regeneration, Custom GPTs, Markdown/code/GFM table/KaTeX rendering, file uploads and generated images, and the persistent conversation sidebar — backed by your ChatGPT account. The Playground separately maintains a local SQLite mirror of conversations it uses. On top of that, Mirror adds:
 
 - Live model discovery straight from your account — nothing hardcoded
 - Structured event capture for assistant text, tool calls, file search, citations, images, and status markers, so behavior stays correct even when the underlying protocol details shift
@@ -99,9 +101,9 @@ Because the main interface is the real ChatGPT web app (proxied through Mirror r
 
 - Everything is scoped to `127.0.0.1` by default. Mirror checks the request `Host` header and rejects anything that isn't loopback (`localhost`, `127.0.0.0/8`, `::1`). It is **not** designed for remote or multi-user deployment — that would need TLS, real auth, CSRF protection, and a proper security review, not just a changed `HOST` value.
 - Your session token and minted access token are encrypted at rest with AES-256-GCM, in a local SQLite database (`.data/mirror.db` by default). The token is never inserted into the proxied ChatGPT page's own scripts.
-- On first run Mirror generates `.data/master.key` (owner-only permissions) to encrypt that database. For production-style setups you can instead supply your own key via `MIRROR_STORE_KEY` (32 bytes, base64 or hex).
+- On first run Mirror generates `.data/master.key` (owner-only permissions) to encrypt credential values. Conversation text, saved instructions, and events are not encrypted by Mirror. For production-style setups you can instead supply your own key via `MIRROR_STORE_KEY` (32 bytes, base64 or hex).
 - If you're upgrading from an older version that used a plaintext `.data/store.json`, Mirror migrates it into the encrypted database automatically and deletes the plaintext file once that succeeds.
-- Nothing sensitive is ever written to logs.
+- Request logging redacts common credential headers and omits query strings. Treat logs as sensitive and review them before sharing; redaction is not a guarantee against every upstream error shape.
 
 ### Configuration reference
 
@@ -113,15 +115,16 @@ Because the main interface is the real ChatGPT web app (proxied through Mirror r
 | `PORT`               | `8787`                    | Server port (direct/non-Compose runs) |
 | `MIRROR_WEB_ORIGIN`  | `http://localhost:5173`   | Dev-mode CORS origin |
 | `MIRROR_DATA_DIR`    | project `.data`           | Where the database and encryption key live |
-| `MIRROR_STORE_KEY`   | auto-generated            | Fixed 32-byte database encryption key (base64 or hex) |
-| `MIRROR_API_KEY(S)`  | unset                     | Require an application key for `/v1/*` (comma-separate for multiple) |
+| `MIRROR_STORE_KEY`   | auto-generated            | Fixed 32-byte credential encryption key (base64 or hex) |
+| `MIRROR_API_KEY(S)`  | unset                     | Application keys for API and control access (comma-separate for multiple) |
 
 ## Running without Docker
 
 For development, or if you'd rather manage WARP yourself:
 
 ```sh
-npm install
+nvm use  # Node 24, also used by Docker and CI
+npm ci
 npm run dev        # server on :8787 (or configured PORT) + web dev server on :5173
 ```
 
@@ -162,6 +165,9 @@ Plus the OpenAI-compatible surface:
 npm run typecheck
 npm test
 npm run build
+npx playwright install chromium
+npm run test:e2e
+npm run manifest -- --check
 npm audit --omit=dev
 ```
 
@@ -170,3 +176,51 @@ Tests cover SSE framing, conversation-tree/branch logic, encrypted credential st
 ## Learn more
 
 - [PROTOCOL.md](./PROTOCOL.md) — the reverse-engineered ChatGPT backend protocol Mirror implements against, including known gaps and open questions.
+
+## Reliability and compatibility
+
+- `sync` and `resync` query parameters accept only `true` or `false`. Pagination
+  reports additional upstream history even at a local page boundary. Refresh
+  fetches the newest active page; scrolling incrementally continues the sync.
+- Streaming errors and missing terminal markers are failures. Partial output
+  remains visible. Event streams are forwarded incrementally, without text rewriting.
+- The optional browser snapshot pairs conversation ID, messages, model, project
+  model, and privacy settings. Without history persistence, refresh starts a new
+  editor. Loading a saved conversation restores its stored instructions; older
+  conversations without saved instructions load with none rather than borrowing
+  instructions from a different conversation.
+- `-wm` models are listed as unsupported and rejected by this transport. Mirror
+  does not implement Work Mode or silently substitute the corresponding base model.
+  Model IDs describe the selected transport model, not a verified internal model build.
+- `private` requests can still have local history. `store:false` uses memory-only
+  conversation/message state. Turning off “Remember prompt history” clears the
+  browser snapshot. Neither deletion nor pruning guarantees physical secure erasure.
+- Session replacement/logout invalidates pending credential refreshes and cancels
+  active generations. Reconnect/retry explicitly after a session change.
+- No Datadog initialization is performed by Mirror. The frontend integration is
+  isolated in `browser-patch.ts` and `mirror-controls.ts`; it still depends on
+  upstream markup and is not guaranteed compatible with every upstream release.
+
+## Backup, restore, and retention
+
+Use Node 24. Set `MIRROR_DATA_DIR` to the directory used by your deployment.
+A backup contains **plaintext conversations/instructions/events** and encrypted
+credentials. With the generated-key configuration it also contains `master.key`;
+protect the whole backup as sensitive. With `MIRROR_STORE_KEY`, retain that key
+separately. Backups use SQLite's online backup API, including committed WAL data.
+
+```sh
+npm run storage -- backup /absolute/path/to/new-backup-directory
+# Stop Mirror before either operation below.
+MIRROR_DATA_DIR=/absolute/path/to/new-empty-data-directory npm run storage -- restore /absolute/path/to/new-backup-directory --offline
+npm run storage -- prune 90 --offline
+```
+
+Restore refuses to overwrite an existing database. Keep the original directory
+until the restored installation has been checked. Pruning deletes local
+conversations older than the chosen number of days; it does not delete upstream
+ChatGPT history or revoke credentials. It is an explicit maintenance operation,
+not an automatic retention policy.
+
+`SHA256-MANIFEST.json` describes tracked source/configuration files. Regenerate it
+with `npm run manifest` after changing files; CI checks that it is current.

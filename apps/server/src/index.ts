@@ -1,3 +1,4 @@
+import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import Fastify from "fastify";
@@ -27,6 +28,9 @@ import {
   verifyRequiredEgress,
 } from "./egress.js";
 import {
+  controlCookie,
+  authorizedLocalRequest,
+  mayBootstrapBrowser,
   bearerToken,
   configuredApiKeys,
   isAllowedOrigin,
@@ -34,6 +38,9 @@ import {
   tokenMatches,
 } from "./security.js";
 import {
+  getSessionRevision,
+  assertSessionRevision,
+  getInstructions,
   branchConversation,
   claimDefaultAccountData,
   clearSession,
@@ -57,6 +64,7 @@ import {
   ownsUpstreamConversation,
 } from "./store.js";
 
+export async function buildApp() {
 const app = Fastify({
   logger: {
     redact: [
@@ -105,17 +113,14 @@ app.addHook("onRequest", async (req, reply) => {
       .code(403)
       .send({ error: "Cross-origin control request rejected" });
   }
-  if (!req.url.startsWith("/v1/") || apiKeys.length === 0) return;
-  if (!tokenMatches(bearerToken(req.headers.authorization), apiKeys)) {
-    return reply
-      .code(401)
-      .send({
-        error: {
-          message: "Invalid Mirror API key",
-          type: "authentication_error",
-        },
-      });
+  if (req.headers.origin && !isAllowedOrigin(req.headers.origin, req.headers.host))
+    return reply.code(403).send({error: "Origin rejected"});
+  if (mayBootstrapBrowser(req.method, req.url, req.headers)) {
+    reply.header("Set-Cookie", controlCookie());
+    return;
   }
+  if (req.url === "/api/health" || req.url.startsWith("/mirror/assets/")) return;
+  if (!authorizedLocalRequest(req.headers)) return reply.code(401).send({ error: { message: "Open Mirror in your browser or supply a configured Mirror API key", type: "authentication_error" } });
 });
 
 app.setErrorHandler((error, _req, reply) => {
@@ -151,9 +156,11 @@ const SetSessionBody = z.object({
 });
 app.post("/api/session", async (req) => {
   const body = SetSessionBody.parse(req.body);
+  const revision = getSessionRevision();
   const candidate = await verifyCandidateSessionToken(body.sessionToken);
   const client = new ChatGptBackendClient(candidate.credentials);
   const me = await client.fetchMe();
+  assertSessionRevision(revision);
   saveVerifiedSession(
     candidate.persistedSessionToken,
     client.accountId ?? undefined,
@@ -223,74 +230,33 @@ const NewConversationBody = z.object({
 // "re-fetch your entire ChatGPT history" on every scroll tick, so callers
 // paging past offset 0 pass sync=false and get served straight from the
 // local mirror of it instead.
+const queryBoolean = z.enum(["true", "false"]).transform((value) => value === "true");
 const ConversationsQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   offset: z.coerce.number().int().min(0).default(0),
-  sync: z.coerce.boolean().default(true),
+  sync: queryBoolean.default("true"),
   // Restart the incremental sync cursor from the very top instead of
   // resuming where a previous call left off - only worth paying for on an
   // explicit user-initiated refresh (see App.tsx), not on every page load.
-  resync: z.coerce.boolean().default(false),
+  resync: queryBoolean.default("false"),
 });
 app.get("/api/conversations", async (req) => {
   const { limit, offset, sync, resync } = ConversationsQuery.parse(req.query);
   if (sync) {
+    const revision = getSessionRevision();
     const accountId = accountKey();
     const client = new ChatGptBackendClient(await getValidCredentials());
-    const cursor = resync
-      ? { activeOffset: 0, activeDone: false, archivedOffset: 0, archivedDone: false }
-      : getConversationSyncCursor(accountId);
-    // Real ChatGPT's /backend-api/conversations does NOT report a stable
-    // grand total in its `total` field - it reports something closer to
-    // "at least offset + items-returned-so-far", which keeps climbing every
-    // time you page further, and only settles once you've actually paged
-    // past the real end (where items comes back empty). That ruled out
-    // using an early page's `total` as a loop bound (a prior version of
-    // this did, and it silently truncated syncs to a few hundred
-    // conversations on any large account). But walking *all* the way to
-    // the real end on every request - correct, but O(total conversation
-    // count) upstream calls - turned a few-hundred-millisecond request into
-    // a multi-minute one on an account with thousands of conversations,
-    // and this endpoint gets hit on every page of the Playground's
-    // conversation list AND after every completed run. So: only pull
-    // however many more upstream pages are needed to cover *this*
-    // request's offset+limit window beyond what's already locally synced,
-    // persisting where we left off (see store.ts's ConversationSyncCursor)
-    // so the next call - whether that's scrolling further or just loading
-    // again later - resumes instead of restarting. Active conversations are
-    // fetched before archived ones (is_archived is a separate upstream
-    // query, not something one call returns both sides of).
-    const MAX_PAGES_PER_CALL = 40; // up to ~4,000 *new* conversations of upstream work per request - generous headroom without being unbounded
-    const need = offset + limit;
-    const collected: Array<Awaited<ReturnType<typeof client.fetchConversations>>["items"][number]> = [];
-    for (
-      let page = 0;
-      page < MAX_PAGES_PER_CALL &&
-      countConversations(accountId) + collected.length < need &&
-      (!cursor.activeDone || !cursor.archivedDone);
-      page++
-    ) {
-      const archived = cursor.activeDone;
-      const result = await client.fetchConversations({
-        offset: archived ? cursor.archivedOffset : cursor.activeOffset,
-        limit: 100,
-        archived,
-      });
-      collected.push(...result.items);
-      if (archived) {
-        cursor.archivedOffset += result.items.length;
-        if (result.items.length === 0) cursor.archivedDone = true;
-      } else {
-        cursor.activeOffset += result.items.length;
-        if (result.items.length === 0) cursor.activeDone = true;
-      }
-    }
-    if (collected.length) syncRemoteConversations(collected, accountId);
-    setConversationSyncCursor(accountId, cursor);
+    assertSessionRevision(revision);
+    await syncConversationPage(accountId, offset + limit, resync, async (options) => {
+      assertSessionRevision(revision);
+      const page = await client.fetchConversations(options);
+      assertSessionRevision(revision);
+      return page;
+    });
   }
   const items = listConversations(accountKey(), { limit, offset });
   const total = countConversations(accountKey());
-  return { items, total, hasMore: offset + items.length < total };
+  return { items, total, hasMore: offset + items.length < total || hasRemoteHistory(accountKey()) };
 });
 app.post("/api/conversations", async (req) =>
   createConversation({
@@ -315,7 +281,7 @@ app.get("/api/conversations/:id", async (req, reply) => {
       await client.fetchConversation(conversation.conversationId),
     );
   }
-  return { conversation, messages: listMessages(id) };
+  return { conversation, messages: listMessages(id), instructions: getInstructions(id) };
 });
 app.patch("/api/conversations/:id", async (req, reply) => {
   // Mirror conversation ids are UUIDs when auto-generated, but a caller can
@@ -554,6 +520,11 @@ app.setNotFoundHandler(async (req, reply) => {
   return proxyChatGpt(req, reply);
 });
 
+return app;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const app = await buildApp();
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "127.0.0.1";
 await verifyRequiredEgress();
@@ -576,3 +547,5 @@ monitorRequiredEgress((error) => {
   );
   void app.close().finally(() => process.exit(1));
 });
+
+}

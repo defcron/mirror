@@ -118,6 +118,7 @@ db.exec(`
     account_id TEXT NOT NULL, transcript_hash TEXT NOT NULL, updated_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS openai_transcripts_hash_idx ON openai_transcripts(account_id, transcript_hash);
+  CREATE TABLE IF NOT EXISTS conversation_instructions (conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE, messages_json TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS files (
     id TEXT PRIMARY KEY, account_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL
   );
@@ -147,6 +148,14 @@ db.prepare(
   "UPDATE messages SET status = 'interrupted' WHERE status = 'streaming'",
 ).run();
 
+let sessionRevision = 0;
+const sessionListeners = new Set<() => void>();
+export function getSessionRevision(): number { return sessionRevision; }
+export function onSessionChange(listener: () => void): () => void { sessionListeners.add(listener); return () => { sessionListeners.delete(listener); }; }
+function changedSession(): void { sessionRevision++; for (const listener of sessionListeners) listener(); }
+export function assertSessionRevision(expected: number): void {
+  if (expected !== sessionRevision) throw Object.assign(new Error("Session changed; retry with the current account"), {statusCode: 409});
+}
 export interface StoredSession {
   sessionToken: string;
   deviceId: string;
@@ -201,6 +210,7 @@ export function saveVerifiedSession(
   accountId?: string,
   deviceId?: string,
 ): StoredSession {
+  changedSession();
   const prior = getSession();
   const session: StoredSession = {
     sessionToken,
@@ -234,6 +244,7 @@ export function updateMintedToken(
 }
 
 export function clearSession(): void {
+  changedSession();
   db.prepare("DELETE FROM settings WHERE key = 'session'").run();
 }
 
@@ -808,4 +819,12 @@ export function replaceMessages(
     db.exec("ROLLBACK");
     throw error;
   }
+}
+
+export function saveInstructions(id: string, messages: Array<{role: string; content: string}>): void {
+  db.prepare("INSERT INTO conversation_instructions VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET messages_json=excluded.messages_json").run(id, JSON.stringify(messages.filter(m => m.role === "system" || m.role === "developer")));
+}
+export function getInstructions(id: string): Array<{role: string; content: string}> {
+  const row = db.prepare("SELECT messages_json FROM conversation_instructions WHERE conversation_id=?").get(id) as {messages_json: string} | undefined;
+  return row ? JSON.parse(row.messages_json) : [];
 }

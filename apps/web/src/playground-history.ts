@@ -1,5 +1,5 @@
 export interface PlaygroundMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "developer" | "user" | "assistant";
   content: string;
 }
 
