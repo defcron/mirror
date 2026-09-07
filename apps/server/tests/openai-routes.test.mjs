@@ -694,10 +694,10 @@ test("a one-shot (store:false) streaming completion never emits a mirror-convers
 });
 
 // ---------------------------------------------------------------------------
-// Turn limiter: stop sequences and max_tokens, streaming and non-streaming.
+// Compatibility fields must never truncate streaming or non-streaming answers.
 // ---------------------------------------------------------------------------
 
-test("a stop sequence truncates a non-streaming response and reports finish_reason=stop", async () => {
+test("a stop sequence is accepted without truncating the non-streaming answer", async () => {
   useSession("account-limit-1");
   await withFetch(
     stubBackend("account-limit-1", {
@@ -711,13 +711,13 @@ test("a stop sequence truncates a non-streaming response and reports finish_reas
       });
       assert.equal(res.statusCode, 200, res.body);
       const body = res.json();
-      assert.equal(body.choices[0].message.content, "hello ");
+      assert.equal(body.choices[0].message.content, "hello STOPHERE world");
       assert.equal(body.choices[0].finish_reason, "stop");
     },
   );
 });
 
-test("an array of stop sequences uses whichever one matches earliest", async () => {
+test("stop arrays are accepted without cutting the answer", async () => {
   useSession("account-limit-2");
   await withFetch(
     stubBackend("account-limit-2", {
@@ -730,12 +730,12 @@ test("an array of stop sequences uses whichever one matches earliest", async () 
         payload: { model: "auto", stop: ["AAA", "BBB"], messages: [{ role: "user", content: "hi" }] },
       });
       const body = res.json();
-      assert.equal(body.choices[0].message.content, "aaa ");
+      assert.equal(body.choices[0].message.content, "aaa BBB ccc AAA");
     },
   );
 });
 
-test("max_tokens truncates a non-streaming response by an estimated character budget and reports finish_reason=length", async () => {
+test("max_tokens never imposes a response length limit", async () => {
   useSession("account-limit-3");
   await withFetch(
     stubBackend("account-limit-3", {
@@ -748,14 +748,13 @@ test("max_tokens truncates a non-streaming response by an estimated character bu
         payload: { model: "auto", max_tokens: 2, messages: [{ role: "user", content: "hi" }] },
       });
       const body = res.json();
-      // CHARS_PER_TOKEN_ESTIMATE=4, so max_tokens:2 -> an 8-char budget.
-      assert.equal(body.choices[0].message.content, "01234567");
-      assert.equal(body.choices[0].finish_reason, "length");
+      assert.equal(body.choices[0].message.content, "0123456789abcdefghij");
+      assert.equal(body.choices[0].finish_reason, "stop");
     },
   );
 });
 
-test("max_completion_tokens takes precedence over max_tokens when both are given", async () => {
+test("both token fields are accepted without limiting the response", async () => {
   useSession("account-limit-4");
   await withFetch(
     stubBackend("account-limit-4", {
@@ -768,12 +767,12 @@ test("max_completion_tokens takes precedence over max_tokens when both are given
         payload: { model: "auto", max_tokens: 100, max_completion_tokens: 1, messages: [{ role: "user", content: "hi" }] },
       });
       const body = res.json();
-      assert.equal(body.choices[0].message.content, "0123");
+      assert.equal(body.choices[0].message.content, "0123456789abcdefghij");
     },
   );
 });
 
-test("a stop sequence also truncates a streaming response, cutting off mid-delta", async () => {
+test("a stop sequence never cuts off a streaming response", async () => {
   useSession("account-limit-5");
   await withFetch(
     stubBackend("account-limit-5", {
@@ -797,7 +796,7 @@ test("a stop sequence also truncates a streaming response, cutting off mid-delta
         .filter((f) => f.json?.choices?.[0]?.delta?.content)
         .map((f) => f.json.choices[0].delta.content)
         .join("");
-      assert.equal(forwardedText, "hello ");
+      assert.equal(forwardedText, "hello STOP more text");
       const finalFrame = frames.find((f) => f.json && f.json.choices[0].finish_reason === "stop");
       assert.ok(finalFrame);
     },
@@ -1458,30 +1457,16 @@ test("a non-Error value thrown mid-turn is still reported as a generic, redacted
 // ---------------------------------------------------------------------------
 // sse()'s slow-consumer guard: reproducing real outbound-socket backpressure
 // end-to-end would be slow/flaky, so it's tested directly as the plain
-// function of reply.raw.writableLength it actually is (see the comment on
-// the exported sse() in openai.ts).
+// function of reply.raw.writableLength (plus elapsed time, injected via the
+// `now` param) it actually is (see the comment on the exported sse() in
+// openai.ts).
 // ---------------------------------------------------------------------------
 
-test("sse() rejects and destroys the connection when the outbound buffer has backed up", () => {
-  const writes = [];
-  let destroyed = false;
-  const reply = {
-    raw: {
-      writableLength: 1_048_577,
-      destroy: () => { destroyed = true; },
-      write: (chunk) => writes.push(chunk),
-    },
-  };
-  assert.throws(() => openai.sse(reply, { hello: "world" }), /Response consumer is too slow/);
-  assert.equal(destroyed, true);
-  assert.deepEqual(writes, []);
-});
-
-test("sse() writes normally at and below the backpressure threshold", () => {
+test("sse() writes normally below the high-water mark, no matter how long it's been", () => {
   const writes = [];
   const reply = {
     raw: {
-      writableLength: 1_048_576,
+      writableLength: 1024,
       destroy: () => { throw new Error("should not have destroyed the connection"); },
       write: (chunk) => writes.push(chunk),
     },
@@ -1489,6 +1474,47 @@ test("sse() writes normally at and below the backpressure threshold", () => {
   openai.sse(reply, { hello: "world" });
   openai.sse(reply, "[DONE]");
   assert.deepEqual(writes, ['data: {"hello":"world"}\n\n', "data: [DONE]\n\n"]);
+});
+
+test("sse() tolerates a bursty backlog that drains before the stall timeout", () => {
+  const writes = [];
+  let destroyed = false;
+  const raw = {
+    writableLength: 9 * 1024 * 1024,
+    destroy: () => { destroyed = true; },
+    write: (chunk) => writes.push(chunk),
+  };
+  const reply = { raw };
+  const t0 = 1_000_000;
+  openai.sse(reply, { hello: "world" }, t0); // starts the stall clock
+  raw.writableLength = 0; // the consumer caught up
+  openai.sse(reply, { hello: "again" }, t0 + 20_000); // long past the timeout, but it drained meanwhile
+  assert.equal(destroyed, false);
+  assert.deepEqual(writes, ['data: {"hello":"world"}\n\n', 'data: {"hello":"again"}\n\n']);
+});
+
+test("sse() destroys the connection once the backlog stays stalled past the timeout", () => {
+  const writes = [];
+  let destroyed = false;
+  const raw = {
+    writableLength: 9 * 1024 * 1024,
+    destroy: () => { destroyed = true; },
+    write: (chunk) => writes.push(chunk),
+  };
+  const reply = { raw };
+  const t0 = 1_000_000;
+  openai.sse(reply, { hello: "world" }, t0); // starts the stall clock
+  openai.sse(reply, { hello: "still backed up" }, t0 + 5_000); // within the grace window - still fine
+  assert.equal(destroyed, false);
+  assert.throws(
+    () => openai.sse(reply, { hello: "still stuck" }, t0 + 15_001),
+    /Response consumer is too slow/,
+  );
+  assert.equal(destroyed, true);
+  assert.deepEqual(writes, [
+    'data: {"hello":"world"}\n\n',
+    'data: {"hello":"still backed up"}\n\n',
+  ]);
 });
 
 // ---------------------------------------------------------------------------

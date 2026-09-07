@@ -31,6 +31,12 @@
     "node": ">=24 <25"
   },
   "allowScripts": {
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.3": true,
+    "chromium@3.0.3": true
+  },
+  "dependencies": {
+    "chromium": "^3.0.3",
+    "playwright": "^1.63.0"
   }
 }

@@ -31,11 +31,11 @@ Because of this, Mirror rejects `role: "tool"` messages outright and doesn't acc
 
 **Separate endpoints that have no ChatGPT-web equivalent at all**: `/v1/embeddings`, `/v1/audio/*` (Whisper transcription, TTS), `/v1/images/generations` as a standalone endpoint (distinct from in-chat DALL-E — see Part 2), `/v1/moderations`, `/v1/fine_tuning/*`, `/v1/batches`, and the Assistants/Responses API surface. None of these map onto anything chatgpt.com's own web client calls, so there's no backend-api traffic to reverse-engineer against in the first place.
 
-### Done, as a soft approximation
+### Accepted for compatibility, without limiting the answer
 
-**`max_tokens` / `max_completion_tokens`.** backend-api doesn't expose a token ceiling per turn, so there's no direct passthrough - implemented instead as a Mirror-side approximation: tokens are estimated from characters (~4 chars/token), and the text handed back through `/v1/chat/completions` is cut once that estimate is exceeded, reporting `finish_reason: "length"`. The underlying ChatGPT turn still runs to completion and is stored in full locally regardless - only what this endpoint returns is trimmed.
+**`max_tokens`, `max_completion_tokens`, and `stop`.** Mirror accepts these fields because clients such as ChatGPTBox send them automatically, but ignores their values. No token estimate, character cap, stop-string cutoff, or synthetic `length` completion is applied. Responses retain the full answer. Generation can still fail or be cancelled; an interrupted turn is not a successful completion.
 
-**`stop` sequences.** Same shape of gap, same fix: no upstream field for it, so Mirror watches the streamed text client-side and cuts the response off at the first match, reporting `finish_reason: "stop"`. Also a soft approximation, not upstream-enforced.
+**Streaming snapshots and continuation.** Backend-api can emit more than one assistant message and can replace a text snapshot. Mirror appends growing text within each message and separates new/replacement segments with a blank line, since bytes already streamed cannot be retracted. The API's saved logical assistant row and transcript fingerprint use exactly the text delivered to the client. The upstream tree and raw captured events remain available independently. JSON completions return the final upstream assistant text. Switching response modes does not change conversation identity.
 
 ### Not structurally impossible, just not implemented
 

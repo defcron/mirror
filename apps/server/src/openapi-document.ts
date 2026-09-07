@@ -109,10 +109,9 @@ const CompletionResponse = z
       z.object({
         index: z.number().int(),
         message: ChatMessageResponse,
-        finish_reason: z.enum(["stop", "length"]).openapi({
+        finish_reason: z.literal("stop").openapi({
           description:
-            "'length' is reported when max_tokens/max_completion_tokens' soft estimate or a " +
-            "stop sequence cut the response short.",
+            "Mirror reports stop on successful completion and never truncates responses based on token limits or stop strings.",
         }),
       }),
     ),

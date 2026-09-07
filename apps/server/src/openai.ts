@@ -13,6 +13,7 @@ import {
 import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
 import {
+  updateMessage,
   getSessionRevision,
   getInstructions,
   branchConversation,
@@ -105,46 +106,17 @@ const CompletionBody = z
      * that will not be resumable by a later /v1/chat/completions call.
      */
     store: z.boolean().default(true),
-    /**
-     * Official field. backend-api has no upstream concept of a token
-     * ceiling, so this is enforced Mirror-side by approximating a character
-     * budget (see CHARS_PER_TOKEN_ESTIMATE below) and cutting the response
-     * off once it's exceeded - it is NOT the same as the real API actually
-     * stopping generation early upstream (ChatGPT keeps generating the full
-     * reply regardless; Mirror still stores that full reply locally so a
-     * continued conversation has the real context, and only trims what this
-     * endpoint hands back). finish_reason is reported as "length" when this
-     * fires. `max_completion_tokens` takes precedence over `max_tokens` if
-     * both are given, matching official precedence.
-     */
+    // Compatibility-only fields: some clients always send these. Mirror never
+    // truncates the answer or stops generation based on them.
     max_tokens: z.number().int().positive().optional().openapi({
-      description:
-        "Soft approximation only: backend-api has no hard token ceiling per turn, so Mirror " +
-        "estimates tokens from characters (~4 chars/token) and cuts the returned text once " +
-        "the estimate is exceeded; the underlying ChatGPT turn still runs to completion and " +
-        "is stored in full locally. Not an exact enforced limit - see COMPATIBILITY.md.",
+      description: "Accepted for client compatibility; ignored. Mirror returns the complete answer without a token or character cap.",
     }),
     max_completion_tokens: z.number().int().positive().optional().openapi({
-      description: "Same soft approximation as max_tokens; takes precedence if both are set.",
+      description: "Accepted for client compatibility; ignored. Mirror does not limit response length.",
     }),
-    /**
-     * Official field. Same caveat as max_tokens: no upstream stop-sequence
-     * support exists, so this is a Mirror-side "watch the stream and cut it
-     * off" implementation - the underlying ChatGPT turn still runs to
-     * completion (and is stored in full locally), only the text handed back
-     * through this endpoint is trimmed at the first match. finish_reason is
-     * reported as "stop" when this fires (same value the API already uses
-     * for a natural end of turn, matching official semantics).
-     */
-    stop: z
-      .union([z.string(), z.array(z.string().min(1)).min(1).max(4)])
-      .optional()
-      .openapi({
-        description:
-          "One string, or up to 4 strings. Backend-api has no native stop-sequence support; " +
-          "Mirror watches the streamed text client-side and cuts the response off at the " +
-          "first match. Soft approximation, not upstream-enforced - see COMPATIBILITY.md.",
-      }),
+    stop: z.union([z.string(), z.array(z.string().min(1)).min(1).max(4)]).optional().openapi({
+      description: "Accepted for client compatibility; ignored. Mirror does not truncate answers at stop strings.",
+    }),
     /**
      * Official OpenAI field (free-form string metadata), repurposed for
      * Mirror-specific routing so the request body needs no non-standard
@@ -291,61 +263,6 @@ function textContent(
     .filter((part): part is z.infer<typeof TextPart> => part.type === "text" && Boolean(part.text))
     .map((part) => part.text)
     .join("\n");
-}
-
-// Rough, documented approximation - backend-api has no tokenizer endpoint to
-// call, and ChatGPT's own real tokenization varies by model. This exists
-// only to give max_tokens/max_completion_tokens *some* effect rather than
-// none; see the CompletionBody doc comment above for the full caveat.
-const CHARS_PER_TOKEN_ESTIMATE = 4;
-
-/**
- * Client-side stand-in for upstream stop-sequence/max-token support (neither
- * exists in backend-api - see CompletionBody above). Watches the growing
- * `full` text as deltas arrive and decides, once, where the response handed
- * back to the caller should be cut. The underlying ChatGPT turn is never
- * itself interrupted - the cutoff only affects what this endpoint forwards
- * and returns, not what actually gets generated or stored locally.
- */
-function createTurnLimiter(stopSequences: string[], charBudget: number | null) {
-  let cutIndex: number | null = null;
-  let finishReason: "stop" | "length" | null = null;
-  let forwarded = 0;
-
-  function scan(full: string) {
-    if (cutIndex !== null) return;
-    if (charBudget !== null && full.length >= charBudget) {
-      cutIndex = charBudget;
-      finishReason = "length";
-    }
-    for (const stopSeq of stopSequences) {
-      const idx = stopSeq ? full.indexOf(stopSeq) : -1;
-      if (idx !== -1 && (cutIndex === null || idx < cutIndex)) {
-        cutIndex = idx;
-        finishReason = "stop";
-      }
-    }
-  }
-
-  return {
-    /** Streaming only: given the newest delta and the full text so far, returns the slice of `delta` still safe to forward, or null once the cutoff has already been reached (nothing more should be sent). */
-    feed(delta: string, full: string): string | null {
-      scan(full);
-      const limit = cutIndex === null ? full.length : cutIndex;
-      if (forwarded >= limit) return null;
-      const safe = full.slice(forwarded, limit);
-      forwarded = limit;
-      return safe;
-    },
-    /** Final assembly for both modes: given the complete text, the truncated text to report plus the finish_reason to use. */
-    finalize(full: string): { text: string; finishReason: "stop" | "length" } {
-      scan(full);
-      return {
-        text: cutIndex === null ? full : full.slice(0, cutIndex),
-        finishReason: finishReason ?? "stop",
-      };
-    },
-  };
 }
 
 /**
@@ -518,17 +435,47 @@ function firstHistoryDifference(
   return index;
 }
 
-// Exported (only) so a unit test can drive the slow-consumer guard
-// directly with a fake `reply.raw` - reproducing real outbound-socket
-// backpressure (a client reading slower than we can write) inside a test
-// is impractical/flaky, but the guard itself is a plain function of
-// `reply.raw.writableLength` and is fully specified without a real socket.
-export function sse(reply: FastifyReply, data: unknown): void {
-  if (reply.raw.writableLength > 1_048_576) {
-    reply.raw.destroy();
-    throw new Error("Response consumer is too slow");
+// Slow-consumer guard. Real backpressure (a client reading slower than we
+// can write) is normal and must be tolerated, not treated as "the client is
+// gone" on the first snapshot over some byte count - ChatGPTBox in particular
+// relays every SSE chunk through a Chrome extension `runtime.Port`, which can
+// legitimately let the outbound buffer climb for a few seconds without the
+// far end actually having disappeared. So this only gives up once the buffer
+// has stayed backed up past SLOW_CONSUMER_STALL_MS *continuously*; a burst
+// that drains again resets the clock and is invisible to the caller. This is
+// still not real drain-event-driven backpressure (pausing production and
+// resuming on a `drain` event) - it's a stall timeout layered on top of a
+// byte-count high-water mark - but it stops a merely-bursty consumer from
+// getting its connection killed mid-turn, which previously meant the
+// in-flight generation's transcript never got persisted and the next request
+// from the same client would fail to match it as a continuation, silently
+// starting a brand-new conversation every turn.
+//
+// Exported (only) so a unit test can drive this directly with a fake
+// `reply.raw` - reproducing real outbound-socket backpressure end-to-end
+// inside a test is impractical/flaky, but the guard is a plain function of
+// `reply.raw.writableLength` plus elapsed time and is fully specified
+// without a real socket. `now` is likewise only for tests to drive the
+// stall clock deterministically; production call sites always omit it.
+const SLOW_CONSUMER_HIGH_WATER_BYTES = 8 * 1024 * 1024;
+const SLOW_CONSUMER_STALL_MS = 15_000;
+const slowConsumerStalledSince = new WeakMap<object, number>();
+
+export function sse(reply: FastifyReply, data: unknown, now: number = Date.now()): void {
+  const raw = reply.raw;
+  if (raw.writableLength > SLOW_CONSUMER_HIGH_WATER_BYTES) {
+    const stalledSince = slowConsumerStalledSince.get(raw);
+    if (stalledSince === undefined) {
+      slowConsumerStalledSince.set(raw, now);
+    } else if (now - stalledSince > SLOW_CONSUMER_STALL_MS) {
+      slowConsumerStalledSince.delete(raw);
+      raw.destroy();
+      throw new Error("Response consumer is too slow");
+    }
+  } else if (slowConsumerStalledSince.has(raw)) {
+    slowConsumerStalledSince.delete(raw);
   }
-  reply.raw.write(
+  raw.write(
     `data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`,
   );
 }
@@ -631,12 +578,8 @@ export async function registerOpenAiRoutes(
     const requestRevision = getSessionRevision();
     const body = parsed.data;
     if ((body.metadata?.mirror_model ?? body.model).endsWith("-wm")) return reply.code(400).send({ error: {message: "Work Mode is not supported by Mirror; select an interactive model", type: "unsupported_parameter"} });
-    const stopSequences = body.stop === undefined ? [] : Array.isArray(body.stop) ? body.stop : [body.stop];
-    const tokenBudget = body.max_completion_tokens ?? body.max_tokens ?? null;
-    const limiter = createTurnLimiter(
-      stopSequences,
-      tokenBudget === null ? null : tokenBudget * CHARS_PER_TOKEN_ESTIMATE,
-    );
+    let streamedText = "";
+    const streamedMessages = new Map<string | null, string>();
     const capturedEvents: NormalizedConversationEvent[] = [];
     let messages = normalized(body.messages);
     if (messages.some((message) => message.role === "tool")) {
@@ -722,50 +665,71 @@ export async function registerOpenAiRoutes(
     const created = Math.floor(Date.now() / 1000);
     const controller = new AbortController();
     const deadline = turnDeadline(controller);
+    const startedAt = Date.now();
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
     req.raw.once("aborted", () => controller.abort());
     reply.raw.once("close", () => {
-      if (!reply.raw.writableEnded) controller.abort();
+      clearInterval(heartbeat);
+      if (!reply.raw.writableEnded) {
+        recordFailure("client_disconnected", req.id);
+        req.log.info(
+          { elapsedMs: Date.now() - startedAt, code: "client_disconnected" },
+          "Completion client disconnected",
+        );
+        controller.abort();
+      }
     });
 
-    if (body.stream) {
-      reply.hijack();
-      for (const [name, value] of Object.entries(reply.getHeaders())) {
-        if (value !== undefined) reply.raw.setHeader(name, value);
-      }
-      reply.raw.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no",
-      });
-      // `setNoDelay` disables Nagle's algorithm on a real TCP socket so
-      // each small SSE chunk reaches the client immediately instead of
-      // being batched - but not every transport a reply's raw socket can
-      // be exposes it (Fastify's own test harness (light-my-request)
-      // stands in a plain Writable with no such method; the same is true
-      // of some HTTP/2 socket wrappers). Calling it unconditionally throws
-      // synchronously *after* reply.hijack() has already taken the reply
-      // out of Fastify's normal error handling, so nothing ever reaches
-      // the try/catch below or calls reply.raw.end() - the request just
-      // hangs forever from the caller's perspective. Guard it instead.
-      if (typeof reply.raw.socket?.setNoDelay === "function")
-        reply.raw.socket.setNoDelay(true);
-      sse(reply, {
-        id: completionId,
-        object: "chat.completion.chunk",
-        created,
-        model: body.model,
-        choices: [
-          {
-            index: 0,
-            delta: { role: "assistant", content: "" },
-            finish_reason: null,
-          },
-        ],
-      });
-    }
-
     try {
+      if (body.stream) {
+        reply.hijack();
+        for (const [name, value] of Object.entries(reply.getHeaders())) {
+          if (value !== undefined) reply.raw.setHeader(name, value);
+        }
+        reply.raw.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        // Flush small chunks promptly on TCP; test transports and some
+        // HTTP/2 socket wrappers do not expose setNoDelay. Keep all stream
+        // setup inside try/finally so a failure after hijack still cleans up.
+        if (typeof reply.raw.socket?.setNoDelay === "function")
+          reply.raw.socket.setNoDelay(true);
+        sse(reply, {
+          id: completionId,
+          object: "chat.completion.chunk",
+          created,
+          model: body.model,
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "" },
+              finish_reason: null,
+            },
+          ],
+        });
+        // ChatGPTBox forwards every data event through a runtime.Port, keeping
+        // Chrome's extension worker alive. SSE comments are ignored by its
+        // parser, so use an empty content delta during silent preparation or
+        // reasoning. This is transport activity only: never extend deadlines,
+        // modify the transcript, or signal that generation has finished.
+        heartbeat = setInterval(() => {
+          try {
+            sse(reply, {
+              id: completionId,
+              object: "chat.completion.chunk",
+              created,
+              model: body.model,
+              choices: [{ index: 0, delta: { content: "" }, finish_reason: null }],
+            });
+          } catch (error) {
+            controller.abort(error);
+          }
+        }, 10_000);
+      }
+
       await abortable(withConversationLock(lockKey, async () => {
         controller.signal.throwIfAborted();
         assertSessionRevision(requestRevision);
@@ -1001,27 +965,29 @@ export async function registerOpenAiRoutes(
             ephemeral: oneShot,
             attachments: resolvedAttachments,
             signal: controller.signal,
-            onDelta: body.stream
-              ? (delta, full) => {
-                  deadline.touch();
-                  const safe = limiter.feed(delta, full);
-                  if (!safe) return;
-                  sse(reply, {
-                    id: completionId,
-                    object: "chat.completion.chunk",
-                    created,
-                    model: body.model,
-                    choices: [
-                      {
-                        index: 0,
-                        delta: { content: safe },
-                        finish_reason: null,
-                      },
-                    ],
-                  });
-                }
-              : undefined,
-            onEvent: (event) => { deadline.touch(); capturedEvents.push(event); },
+            onEvent: (event) => {
+              deadline.touch();
+              capturedEvents.push(event);
+              if (!body.stream || event.kind !== "assistant_text") return;
+              const previous = streamedMessages.get(event.messageId) ?? "";
+              streamedMessages.set(event.messageId, event.text);
+              if (!event.text || event.text === previous) return;
+              // Upstream snapshots are per message; OpenAI deltas are one
+              // append-only answer. Never reuse another message's offset.
+              // A replacement cannot retract bytes already sent, so retain
+              // it as a separate complete segment, with its raw event intact.
+              const append = previous && event.text.startsWith(previous)
+                ? event.text.slice(previous.length)
+                : (streamedText ? "\n\n" : "") + event.text;
+              sse(reply, {
+                id: completionId,
+                object: "chat.completion.chunk",
+                created,
+                model: body.model,
+                choices: [{ index: 0, delta: { content: append }, finish_reason: null }],
+              });
+              streamedText += append;
+            },
           });
         } catch (error) {
           // runChat necessarily records the synthetic replay prompt (and an
@@ -1035,6 +1001,10 @@ export async function registerOpenAiRoutes(
           throw error;
         }
         const { conversation, result, storedAssistantMessageId } = chat;
+        // The API transcript must be exactly what the caller can send back.
+        // The upstream retains its own full tree; captured events preserve
+        // the underlying snapshots independently of this logical API answer.
+        const responseText = body.stream ? streamedText : result.text;
         if (!oneShot) {
           if (!continuing) {
             // A first/rebased upstream turn is sent as one synthetic prompt
@@ -1071,7 +1041,7 @@ export async function registerOpenAiRoutes(
               ),
               {
                 role: "assistant",
-                content: result.text,
+                content: responseText,
                 ...(storedAssistant
                   ? {
                       id: storedAssistant.id,
@@ -1084,6 +1054,7 @@ export async function registerOpenAiRoutes(
               },
             ]);
           }
+          updateMessage(storedAssistantMessageId, responseText, result.status ?? "done", result.messageId, capturedEvents);
           saveInstructions(conversation.id, messages);
           saveOpenAiContext(conversation.id, instructionsHash(messages));
           saveOpenAiTranscript(
@@ -1091,12 +1062,12 @@ export async function registerOpenAiRoutes(
             accountId,
             fingerprintValue([
               ...messages,
-              { role: "assistant", content: result.text },
+              { role: "assistant", content: responseText },
             ]),
           );
         }
 
-        const { finishReason } = limiter.finalize(result.text);
+
         const responseMetadata = buildResponseMetadata(capturedEvents, conversation.conversationId);
 
         if (body.stream) {
@@ -1112,7 +1083,7 @@ export async function registerOpenAiRoutes(
             object: "chat.completion.chunk",
             created,
             model: conversation.model,
-            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
             ...(responseMetadata ? { metadata: responseMetadata } : {}),
           });
           sse(reply, "[DONE]");
@@ -1128,8 +1099,8 @@ export async function registerOpenAiRoutes(
           choices: [
             {
               index: 0,
-              message: { role: "assistant", content: limiter.finalize(result.text).text },
-              finish_reason: finishReason,
+              message: { role: "assistant", content: responseText },
+              finish_reason: "stop",
             },
           ],
           usage: null,
@@ -1149,6 +1120,7 @@ export async function registerOpenAiRoutes(
       }
       return reply.code(status).send(envelope);
     } finally {
+      clearInterval(heartbeat);
       deadline.close();
     }
   });
