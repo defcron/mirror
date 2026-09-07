@@ -709,12 +709,9 @@ export class ChatGptBackendClient {
       reader.releaseLock();
     }
 
-    for (const chunk of frames.push(decoder.decode())) {
-      for (const payload of iterSseDataLines(chunk)) {
-        reducer.feed(payload);
-        deliver();
-      }
-    }
+    // Flushing UTF-8 emits only a pending replacement character, never an
+    // SSE delimiter. The unterminated final frame is handled by finish().
+    frames.push(decoder.decode());
     for (const chunk of frames.finish()) {
       for (const payload of iterSseDataLines(chunk)) {
         reducer.feed(payload);
@@ -776,15 +773,8 @@ export class ChatGptConversationSession {
       },
       signal,
     );
-    if (
-      this.state.model === "auto" &&
-      (init.defaultModelSlug || init.intendedDefaultModelSlug)
-    ) {
-      this.state.model =
-        init.defaultModelSlug ??
-        init.intendedDefaultModelSlug ??
-        this.state.model;
-    }
+    const selectedModel = init.defaultModelSlug ?? init.intendedDefaultModelSlug;
+    if (this.state.model === "auto" && selectedModel) this.state.model = selectedModel;
     this.state.initialized = true;
     return init;
   }

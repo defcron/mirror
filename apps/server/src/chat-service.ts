@@ -38,7 +38,7 @@ export interface RunChatOptions {
   /** Do not retain locally and force upstream temporary-chat semantics. */
   ephemeral?: boolean;
   signal?: AbortSignal;
-  onDelta?: (delta: string) => void;
+  onDelta?: (delta: string, full: string) => void;
   onEvent?: (event: NormalizedConversationEvent) => void;
 }
 
@@ -123,6 +123,7 @@ export async function runChat(
 
   let fullText = "";
   const events: NormalizedConversationEvent[] = [];
+  let outcome: Awaited<ReturnType<typeof runChat>>;
   try {
     const creds = await getValidCredentials();
     assertSessionRevision(revision);
@@ -179,7 +180,7 @@ export async function runChat(
       signal: controller.signal,
       onDelta: (delta, full) => {
         fullText = full;
-        opts.onDelta?.(delta);
+        opts.onDelta?.(delta, full);
       },
       onEvent: (event) => {
         events.push(event);
@@ -199,7 +200,7 @@ export async function runChat(
       result.messageId,
       events,
     );
-    return {
+    outcome = {
       conversation: transient ? conversation : getConversation(conversation.id)!,
       result,
       storedAssistantMessageId: assistant.id,
@@ -221,6 +222,7 @@ export async function runChat(
     activeTurns.delete(conversation.id);
     unsubscribe();
   }
+  return outcome;
 }
 
 export function stopConversation(id: string): boolean {

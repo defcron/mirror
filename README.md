@@ -1,5 +1,7 @@
 # Mirror
 
+See [TODO.md](TODO.md) for prioritized remaining work, verification gaps, and suggested improvements.
+
 Mirror is a local, self-hosted ChatGPT client with an OpenAI-compatible API bolted on. It logs you into the *real* chatgpt.com web app — proxied through Mirror's own server, using your existing ChatGPT session — so you get the actual ChatGPT interface, Custom GPTs and all, with no OpenAI API key and no browser automation involved. Alongside that, Mirror ships a separate **Playground** page for testing its OpenAI-compatible `/v1/chat/completions` endpoint directly.
 
 > **Unofficial project.** Mirror depends on ChatGPT's private web protocol, which OpenAI can change at any time without notice. Keep it on localhost. See [PROTOCOL.md](./PROTOCOL.md) for the full reverse-engineered protocol notes.
@@ -74,7 +76,7 @@ Browser navigation to `/` or `/mirror/playground` creates a process-local, HttpO
 SameSite=Strict control cookie, so the proxied ChatGPT UI and the Playground keep working
 in a browser without any extra setup. Reload after restarting Mirror. Everything else —
 `curl`, an OpenAI SDK, any non-browser client hitting `/v1/*` or Mirror's own `/api/*`
-routes — now requires a configured `MIRROR_API_KEY` (or one of `MIRROR_API_KEYS`); Mirror
+routes — now requires a configured `MIRROR_API_KEY` (or one of `MIRROR_API_KEYS`, or `OPENAI_API_KEY`); Mirror
 will reject those requests with 401 if none is set. These keys protect control routes,
 conversations, proxy access, and `/v1/*`; they are unrelated to OpenAI credentials.
 Health and compiled static assets are public.
@@ -94,9 +96,15 @@ npm run gen-api-key -- 24      # optional byte length (min 16)
 
 This only prints a key to your terminal — copy it into `MIRROR_API_KEY` (or append another to `MIRROR_API_KEYS`) yourself; it doesn't write your `.env` file for you.
 
-**What's supported:** `model`, `messages`, `stream`, `store`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option.
+**What's supported:** `model`, `messages`, `stream`, `store`, `max_tokens` / `max_completion_tokens`, `stop`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option. The final user message's `content` may also include `image_url` parts (`{"type": "image_url", "image_url": {"url": "..."}}`) — both `data:` URIs and `https://` URLs are accepted; Mirror uploads the image to ChatGPT's file service on your behalf before sending the turn, same as attaching it in the real UI would.
 
-**What's not supported (yet):** tool calls, image/audio content parts, response-format constraints, sampling controls (temperature, top_p, etc.), token limits, penalties, seeds, stop sequences, and multiple choices per request.
+`max_tokens`/`max_completion_tokens` and `stop` are **soft, client-side approximations**, not real upstream enforcement — backend-api has no token ceiling or stop-sequence concept of its own, so Mirror estimates tokens from characters and watches the streamed text for a match, then trims what it hands back through this endpoint (`finish_reason` reports `"length"` or `"stop"` accordingly). The underlying ChatGPT turn always runs to completion and is stored in full locally either way. ChatGPT-only behavior that happens mid-turn — a web search, the code-interpreter sandbox running, or an in-chat generated image — is surfaced back to you via `metadata.mirror_tool_events` / `metadata.mirror_images` on the response, since the official response schema has no field for any of that. See [COMPATIBILITY.md](./COMPATIBILITY.md) for the exact shape of both.
+
+**What's not supported (yet):** tool/function calling, audio content parts, response-format constraints, sampling controls (temperature, top_p, etc.), penalties, seeds, and multiple choices per request. See [COMPATIBILITY.md](./COMPATIBILITY.md) for the full rundown of what's structurally possible against ChatGPT's backend-api and what isn't, in both directions.
+
+### API docs and the OpenAPI schema
+
+Mirror generates an OpenAPI 3.1 document straight from the same Zod schemas every route (both `/v1/*` and `/api/*`) validates requests against — there's no hand-written spec to fall out of sync; only the small, plain-object response shapes on the `/api/*` routes are still described by hand, since they aren't Zod-validated at runtime to begin with. Get the spec as JSON from `GET /mirror/openapi`, or as YAML from `GET /mirror/openapi?format=yaml`; browse and try it live at `/mirror/api-docs` (Swagger UI). Both are also linked from the Playground's nav bar and from the "Mirror controls" widget in the proxied ChatGPT UI.
 
 **Continuing a conversation:** pass `metadata.conversation_id` to keep talking in the same upstream ChatGPT thread. Mirror only sends your latest message in that case, since ChatGPT already has the history server-side. User edits and changed instructions rebase the tracked conversation; assistant turns are read-only. Supply the complete prior transcript when continuing through the Playground. Pass `store: false` for a one-off, upstream "temporary chat" whose conversation and messages remain in memory only, without database insertion.
 
@@ -178,6 +186,7 @@ Plus the OpenAI-compatible surface:
 ```sh
 npm run typecheck
 npm test
+npm run coverage
 npm run build
 npx playwright install chromium
 npm run test:e2e
@@ -187,9 +196,16 @@ npm audit --omit=dev
 
 Tests cover SSE framing, conversation-tree/branch logic, encrypted credential storage, OpenAI-compatible request validation, and the loopback Host/origin policy. They never touch a live ChatGPT account — no credential is read or injected during the test run.
 
+`npm run coverage` builds the protocol and server, then runs the same unit and integration tests as `npm test` under C8. It collects one fresh report across the server, protocol workers, and React tests, and requires **100% statements, branches, functions, and lines in every application source file**. Unimported files are included so adding untested code fails the gate. CI runs this command as well.
+
+Open `coverage/index.html` for the annotated report. Machine-readable results are in `coverage/coverage-summary.json`, `coverage/coverage-final.json`, and `coverage/lcov.info`. Reports and raw V8 data are generated artifacts and are ignored by Git.
+
+The coverage scope is the executable TypeScript in `apps/server/src`, `apps/web/src`, and `packages/protocol/src`, mapped from compiled JavaScript where applicable. It excludes dependencies, declarations, test code, build/maintenance scripts, configuration, and macOS resource-fork files. CSS, shell scripts, and JavaScript embedded in injection-template strings are not instrumented as browser executions by C8. Browser smoke tests run separately with `npm run test:e2e`; coverage percentages do not establish live ChatGPT compatibility.
+
 ## Learn more
 
 - [PROTOCOL.md](./PROTOCOL.md) — the reverse-engineered ChatGPT backend protocol Mirror implements against, including known gaps and open questions.
+- [COMPATIBILITY.md](./COMPATIBILITY.md) — every point where Mirror's OpenAI-compatible API diverges from the real OpenAI API, in both directions, and why each one is (or isn't) fixable.
 
 ## Reliability and compatibility
 
@@ -238,3 +254,5 @@ not an automatic retention policy.
 
 `SHA256-MANIFEST.json` describes tracked source/configuration files. Regenerate it
 with `npm run manifest` after changing files; CI checks that it is current.
+
+`OPENAI_API_KEY` is also accepted as an additional inbound Mirror API key, including in Docker Compose. Blank values are ignored. Configure your OpenAI-compatible client with the same value and Mirror's base URL; the client sends it using `Authorization: Bearer ...`. This setting authenticates requests to Mirror and is not an upstream OpenAI API credential or a replacement for Mirror's ChatGPT session.

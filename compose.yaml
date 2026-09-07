@@ -33,7 +33,14 @@ services:
       MIRROR_DATA_DIR: /home/node/.mirror
       MIRROR_API_KEY: ${MIRROR_API_KEY:-}
       MIRROR_API_KEYS: ${MIRROR_API_KEYS:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       MIRROR_STORE_KEY: ${MIRROR_STORE_KEY:-}
+      # DEMO-ONLY: lets a specific external hostname (e.g. a localtunnel
+      # URL) through the loopback-only Host/Origin checks in security.ts.
+      # Leave unset for normal use - only set these for a short-lived,
+      # throwaway demo recording, then unset and recreate the container.
+      MIRROR_ALLOWED_HOSTS: ${MIRROR_ALLOWED_HOSTS:-}
+      MIRROR_WEB_ORIGIN: ${MIRROR_WEB_ORIGIN:-}
     volumes:
       - mirror-data:/home/node/.mirror
     restart: unless-stopped

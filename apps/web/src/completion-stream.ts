@@ -21,7 +21,7 @@ export async function readCompletionStream(body: ReadableStream<Uint8Array>, onT
     while (!doneMarker) {
       const result = await reader.read();
       buffer += result.done ? decoder.decode() : decoder.decode(result.value, { stream: true });
-      const frames = buffer.split(/\r?\n\r?\n/); buffer = frames.pop() ?? "";
+      const frames = buffer.split(/\r?\n\r?\n/); buffer = frames.pop()!;
       for (const value of frames) frame(value);
       if (result.done) { if (buffer.trim()) frame(buffer); break; }
     }

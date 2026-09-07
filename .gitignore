@@ -12,3 +12,7 @@ node_modules/
 
 playwright-report/
 test-results/
+
+# Generated coverage reports and V8 execution data
+coverage/
+.nyc_output_tmp/

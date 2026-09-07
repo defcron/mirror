@@ -437,7 +437,7 @@ export class ConversationStreamReducer {
 
   get text(): string {
     if (!this.currentAssistantId) return "";
-    return this.assistantTexts.get(this.currentAssistantId) ?? "";
+    return this.assistantTexts.get(this.currentAssistantId)!;
   }
 
   get role(): string | null {

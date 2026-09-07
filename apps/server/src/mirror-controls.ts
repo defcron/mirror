@@ -14,10 +14,10 @@ export const injectionCss = `
 #mirror-launcher .mirror-panel strong,#mirror-launcher .mirror-panel label{display:block;margin-bottom:7px}
 #mirror-launcher .mirror-panel p{color:#aaa;font-size:11px}
 #mirror-launcher .mirror-panel textarea{width:100%;height:64px;resize:vertical;border:1px solid #444;border-radius:8px;background:#111;color:#eee;padding:8px;font:11px monospace}
-#mirror-launcher .mirror-actions{display:flex;gap:7px;margin-top:8px}
-#mirror-launcher .mirror-actions button,#mirror-launcher .mirror-actions a{flex:1;border:0;border-radius:8px;padding:8px;text-align:center;text-decoration:none;cursor:pointer}
+#mirror-launcher .mirror-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
+#mirror-launcher .mirror-actions button,#mirror-launcher .mirror-actions a{flex:1 1 auto;min-width:72px;border:0;border-radius:8px;padding:8px;text-align:center;text-decoration:none;cursor:pointer}
 #mirror-launcher .mirror-save{background:#fff;color:#111}
-#mirror-launcher .mirror-play{background:#343434;color:#eee}
+#mirror-launcher .mirror-play,#mirror-launcher .mirror-docs{background:#343434;color:#eee}
 #mirror-launcher .mirror-status{min-height:16px;margin-top:6px;color:#9adfce;font-size:11px}
 #mirror-launcher .mirror-egress{margin-top:8px;color:#aaa;font-size:11px}
 `;
@@ -45,7 +45,7 @@ function buildWidget(){
   var root=document.createElement('div');
   root.id='mirror-launcher';
   root.innerHTML='<button type="button" class="mirror-row"><span class="mirror-dot"></span><span>Mirror controls</span></button>'
-    +'<div class="mirror-panel"><strong>Mirror controls</strong><p>Connect with a sessionToken. The credential stays encrypted on this server and is never inserted into ChatGPT page scripts.</p><label>sessionToken</label><textarea autocomplete="off" spellcheck="false" placeholder="Paste sessionToken"></textarea><div class="mirror-actions"><button class="mirror-save">Save &amp; reload</button><a class="mirror-play" href="/mirror/playground" target="_blank" rel="noopener noreferrer">API tester</a></div><div class="mirror-status"></div><div class="mirror-egress">Egress: checking…</div></div>';
+    +'<div class="mirror-panel"><strong>Mirror controls</strong><p>Connect with a sessionToken. The credential stays encrypted on this server and is never inserted into ChatGPT page scripts.</p><label>sessionToken</label><textarea autocomplete="off" spellcheck="false" placeholder="Paste sessionToken"></textarea><div class="mirror-actions"><button class="mirror-save">Save &amp; reload</button><a class="mirror-play" href="/mirror/playground" target="_blank" rel="noopener noreferrer">API tester</a><a class="mirror-docs" href="/mirror/api-docs" target="_blank" rel="noopener noreferrer">API docs</a></div><div class="mirror-status"></div><div class="mirror-egress">Egress: checking…</div></div>';
   return root;
 }
 function getWidget(){if(!widgetRoot)widgetRoot=buildWidget();return widgetRoot;}
@@ -73,11 +73,13 @@ function wireWidget(root){
   };
   window.addEventListener('resize',function(){if(panel.classList.contains('open'))positionPanel(row,panel);});
   window.addEventListener('scroll',function(){if(panel.classList.contains('open'))positionPanel(row,panel);},true);
-  var apiLink=root.querySelector('.mirror-play');
-  apiLink.addEventListener('click',function(e){
-    e.preventDefault();
-    window.open(apiLink.href,'_blank','noopener,noreferrer');
-  });
+  var apiLinks=root.querySelectorAll('.mirror-play,.mirror-docs');
+  for(var li=0;li<apiLinks.length;li++)(function(link){
+    link.addEventListener('click',function(e){
+      e.preventDefault();
+      window.open(link.href,'_blank','noopener,noreferrer');
+    });
+  })(apiLinks[li]);
   root.querySelector('.mirror-save').onclick=async function(){
     var token=area.value.trim();if(!token)return;
     status.textContent='Verifying…';

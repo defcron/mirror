@@ -28,6 +28,16 @@ test("assistant messages cannot be edited", () => {
   assert.equal(result.messages[2]?.content, "First answer");
 });
 
+test("editing to the same value is a no-op", () => {
+  const result = editPlaygroundMessage(trackedHistory, 1, "content", "First question", true);
+  assert.equal(result.messages, trackedHistory);
+  assert.equal(result.invalidatesConversation, false);
+});
+
+test("editing an out-of-bounds index throws", () => {
+  assert.throws(() => editPlaygroundMessage(trackedHistory, 99, "content", "x", true), RangeError);
+});
+
 test("editing a committed user message preserves the conversation and drops dependent turns", () => {
   const result = editPlaygroundMessage(
     trackedHistory,
@@ -86,6 +96,10 @@ test("assistant messages cannot be removed", () => {
   assert.equal(result.messages, trackedHistory);
 });
 
+test("removing an out-of-bounds index throws", () => {
+  assert.throws(() => removePlaygroundMessage(trackedHistory, 99, true), RangeError);
+});
+
 test("removing a committed user message drops its dependent turns", () => {
   const result = removePlaygroundMessage(trackedHistory, 1, true);
   assert.equal(result.invalidatesConversation, false);
@@ -93,4 +107,17 @@ test("removing a committed user message drops its dependent turns", () => {
     { role: "system", content: "Be concise." },
     { role: "user", content: "" },
   ]);
+});
+
+test("removing the final user draft simply drops it", () => {
+  const result = removePlaygroundMessage(trackedHistory, trackedHistory.length - 1, true);
+  assert.equal(result.invalidatesConversation, false);
+  assert.deepEqual(result.messages, trackedHistory.slice(0, -1));
+});
+
+test("removing from an untracked history simply filters it out", () => {
+  const untracked = trackedHistory.slice(0, 2); // [system, user] - no assistant turn yet
+  const result = removePlaygroundMessage(untracked, 1, false);
+  assert.equal(result.invalidatesConversation, false);
+  assert.deepEqual(result.messages, [{ role: "system", content: "Be concise." }]);
 });

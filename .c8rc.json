@@ -1,0 +1,38 @@
+{
+  "reporter": [
+    "text",
+    "html",
+    "lcov",
+    "json-summary",
+    "json"
+  ],
+  "report-dir": "coverage",
+  "exclude": [
+    "**/*.test.mjs",
+    "**/*.test.ts",
+    "**/tests/**",
+    "**/*.config.*",
+    "**/node_modules/**",
+    "scripts/**",
+    "**/*.d.ts",
+    "**/._*"
+  ],
+  "check-coverage": true,
+  "clean": true,
+  "all": true,
+  "src": [
+    "apps/server/dist",
+    "packages/protocol/dist",
+    "apps/web/src"
+  ],
+  "include": [
+    "apps/server/{src,dist}/**/*.{js,ts}",
+    "packages/protocol/{src,dist}/**/*.{js,ts}",
+    "apps/web/src/**/*.{ts,tsx}"
+  ],
+  "per-file": true,
+  "lines": 100,
+  "statements": 100,
+  "functions": 100,
+  "branches": 100
+}

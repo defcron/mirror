@@ -14,7 +14,7 @@ function hostnameFromHost(host: string): string | null {
 export function configuredApiKeys(
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  return [env.MIRROR_API_KEY, ...(env.MIRROR_API_KEYS ?? "").split(",")]
+  return [env.MIRROR_API_KEY, ...(env.MIRROR_API_KEYS ?? "").split(","), env.OPENAI_API_KEY]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
 }
@@ -29,11 +29,29 @@ export function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
-export function isAllowedRequestHost(host: string | undefined): boolean {
+function extraAllowedHostnames(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  // DEMO-ONLY escape hatch: lets a specific external hostname (e.g. a
+  // localtunnel/ngrok URL used to record a demo GIF) through the
+  // loopback-only Host check below. Unset/empty by default, so normal
+  // deployments keep the DNS-rebinding protection fully intact. Never
+  // leave this set for anything but a short-lived, throwaway demo.
+  return (env.MIRROR_ALLOWED_HOSTS ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function isAllowedRequestHost(
+  host: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
   if (!host) return false;
   const hostname = hostnameFromHost(host);
   if (!hostname) return false;
-  return isLoopbackHostname(hostname);
+  if (isLoopbackHostname(hostname)) return true;
+  return extraAllowedHostnames(env).includes(hostname);
 }
 
 export function isAllowedOrigin(
@@ -46,7 +64,7 @@ export function isAllowedOrigin(
     const requestHostname = requestHost ? hostnameFromHost(requestHost) : null;
     if (requestHostname && originUrl.origin === new URL(`http://${requestHost}`).origin) return true;
     const developmentOrigin =
-      process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173";
+      process.env.MIRROR_WEB_ORIGIN?.trim() || "http://localhost:5173";
     return originUrl.origin === new URL(developmentOrigin).origin;
   } catch {
     return false;

@@ -1,12 +1,26 @@
 import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
+import fastifySwagger from "@fastify/swagger";
+import fastifySwaggerUi from "@fastify/swagger-ui";
+import { stringify as toYaml } from "yaml";
 import { z, ZodError } from "zod";
+import { buildOpenApiDocument } from "./openapi-document.js";
+import {
+  SetSessionBody,
+  ConversationIdParam,
+  ModelUpdateBody,
+  BranchBody,
+  NewConversationBody,
+  ConversationsQuery,
+  AssetsQuery,
+  ChatBody,
+} from "./api-schemas.js";
 import {
   ChatGptBackendClient,
   normalizeGizmos,
@@ -64,6 +78,12 @@ import {
   ownsUpstreamConversation,
 } from "./store.js";
 
+
+function isPublicApiPath(url: string): boolean {
+  const pathname = url.split("?", 1)[0];
+  return pathname === "/v1/models" || pathname === "/v1/chat/completions";
+}
+
 export async function buildApp() {
 const app = Fastify({
   logger: {
@@ -89,8 +109,17 @@ const app = Fastify({
   bodyLimit: 30 * 1024 * 1024,
 });
 await app.register(cors, {
-  origin: process.env.MIRROR_WEB_ORIGIN ?? "http://localhost:5173",
-  exposedHeaders: ["x-mirror-conversation-id"],
+  delegator: async (req: FastifyRequest) => ({
+    // API clients authenticate with explicit bearer keys, not ambient cookies.
+    // Preflight has no key; the actual request is authenticated below.
+    origin: isAllowedRequestHost(req.headers.host) &&
+      (isPublicApiPath(req.url) || isAllowedOrigin(req.headers.origin, req.headers.host))
+      ? (req.headers.origin || false) : false,
+    credentials: false,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Authorization", "Content-Type"],
+    exposedHeaders: ["x-mirror-conversation-id"],
+  }),
 });
 await app.register(rateLimit, {
   global: true,
@@ -106,6 +135,15 @@ const accountKey = () => getSession()?.accountId ?? "default";
 app.addHook("onRequest", async (req, reply) => {
   if (!isAllowedRequestHost(req.headers.host)) {
     return reply.code(421).send({ error: "Untrusted Host header" });
+  }
+  if (isPublicApiPath(req.url) && !isAllowedOrigin(req.headers.origin, req.headers.host)) {
+    if (!tokenMatches(bearerToken(req.headers.authorization), configuredApiKeys())) {
+      return reply.code(401).send({ error: {
+        message: "Cross-origin API requests require a configured Mirror API key",
+        type: "authentication_error",
+      } });
+    }
+    return;
   }
   const mutating = !["GET", "HEAD", "OPTIONS"].includes(req.method);
   if (mutating && !isAllowedOrigin(req.headers.origin, req.headers.host)) {
@@ -149,11 +187,6 @@ app.get("/api/health", async () => ({
   egress: getEgressStatus(),
 }));
 
-const SetSessionBody = z.object({
-  sessionToken: z
-    .string()
-    .min(20, "That doesn't look like a valid session token"),
-});
 app.post("/api/session", async (req) => {
   const body = SetSessionBody.parse(req.body);
   const revision = getSessionRevision();
@@ -216,10 +249,6 @@ app.get("/api/gpts", async () => {
     .map(({ raw: _raw, ...gizmo }) => gizmo);
 });
 
-const NewConversationBody = z.object({
-  model: z.string().default("auto"),
-  gizmoId: z.string().nullable().optional(),
-});
 // Paginated so a UI (the Playground's "Load a conversation" list) can lazy
 // load a large history as the user scrolls, instead of eagerly fetching
 // every page of it up front. The full remote-sidebar sync - which walks
@@ -230,16 +259,6 @@ const NewConversationBody = z.object({
 // "re-fetch your entire ChatGPT history" on every scroll tick, so callers
 // paging past offset 0 pass sync=false and get served straight from the
 // local mirror of it instead.
-const queryBoolean = z.enum(["true", "false"]).transform((value) => value === "true");
-const ConversationsQuery = z.object({
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-  sync: queryBoolean.default("true"),
-  // Restart the incremental sync cursor from the very top instead of
-  // resuming where a previous call left off - only worth paying for on an
-  // explicit user-initiated refresh (see App.tsx), not on every page load.
-  resync: queryBoolean.default("false"),
-});
 app.get("/api/conversations", async (req) => {
   const { limit, offset, sync, resync } = ConversationsQuery.parse(req.query);
   if (sync) {
@@ -270,7 +289,7 @@ app.get("/api/conversations/:id", async (req, reply) => {
   // (e.g. an arbitrary slug) - accept any non-empty id here so a
   // Playground/API-driven conversation created that way can still be
   // browsed, loaded, and managed through these routes.
-  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+  const { id } = ConversationIdParam.parse(req.params);
   let conversation = getConversation(id);
   if (conversation?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
@@ -289,13 +308,10 @@ app.patch("/api/conversations/:id", async (req, reply) => {
   // (e.g. an arbitrary slug) - accept any non-empty id here so a
   // Playground/API-driven conversation created that way can still be
   // browsed, loaded, and managed through these routes.
-  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+  const { id } = ConversationIdParam.parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
-  return setConversationModel(
-    id,
-    z.object({ model: z.string().min(1) }).parse(req.body).model,
-  );
+  return setConversationModel(id, ModelUpdateBody.parse(req.body).model);
 });
 app.delete("/api/conversations/:id", async (req) => {
   // Mirror conversation ids are UUIDs when auto-generated, but a caller can
@@ -303,7 +319,7 @@ app.delete("/api/conversations/:id", async (req) => {
   // (e.g. an arbitrary slug) - accept any non-empty id here so a
   // Playground/API-driven conversation created that way can still be
   // browsed, loaded, and managed through these routes.
-  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+  const { id } = ConversationIdParam.parse(req.params);
   if (getConversation(id)?.accountId !== accountKey()) return { ok: false };
   stopConversation(id);
   deleteConversation(id);
@@ -315,7 +331,7 @@ app.post("/api/conversations/:id/stop", async (req, reply) => {
   // (e.g. an arbitrary slug) - accept any non-empty id here so a
   // Playground/API-driven conversation created that way can still be
   // browsed, loaded, and managed through these routes.
-  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+  const { id } = ConversationIdParam.parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
   return { ok: stopConversation(id) };
@@ -326,12 +342,10 @@ app.post("/api/conversations/:id/branch", async (req, reply) => {
   // (e.g. an arbitrary slug) - accept any non-empty id here so a
   // Playground/API-driven conversation created that way can still be
   // browsed, loaded, and managed through these routes.
-  const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+  const { id } = ConversationIdParam.parse(req.params);
   if (getConversation(id)?.accountId !== accountKey())
     return reply.code(404).send({ error: "Conversation not found" });
-  const body = z
-    .object({ messageId: z.string().uuid(), title: z.string().optional() })
-    .parse(req.body);
+  const body = BranchBody.parse(req.body);
   const target = listMessages(id).find(
     (message) => message.id === body.messageId && message.upstreamNodeId,
   );
@@ -364,12 +378,7 @@ app.post("/api/files", async (req, reply) => {
 });
 
 app.get("/api/assets", async (req, reply) => {
-  const query = z
-    .object({
-      pointer: z.string(),
-      upstreamConversationId: z.string().optional(),
-    })
-    .parse(req.query);
+  const query = AssetsQuery.parse(req.query);
   if (
     !query.pointer.startsWith("file-service://") &&
     !query.pointer.startsWith("sediment://")
@@ -412,28 +421,6 @@ function publicEvent(
   return safe;
 }
 
-const ChatBody = z.object({
-  prompt: z.string().min(1),
-  model: z.string().default("auto"),
-  conversationId: z.string().uuid().nullable().optional(),
-  gizmoId: z.string().nullable().optional(),
-  timezone: z.string().optional(),
-  timezoneOffsetMin: z.number().optional(),
-  attachments: z
-    .array(
-      z.object({
-        fileId: z.string(),
-        fileName: z.string(),
-        fileSize: z.number(),
-        mimeType: z.string(),
-        useCase: z.enum(["multimodal", "my_files"]),
-        width: z.number().optional(),
-        height: z.number().optional(),
-        raw: z.record(z.unknown()).default({}),
-      }),
-    )
-    .default([]),
-});
 
 app.post("/api/chat", async (req, reply) => {
   const body = ChatBody.parse(req.body);
@@ -494,6 +481,30 @@ app.post("/api/chat", async (req, reply) => {
 });
 
 await registerOpenAiRoutes(app);
+
+// OpenAPI: generated from the same Zod schemas the routes validate against
+// (see openapi-document.ts) rather than a hand-maintained JSON file. `mode:
+// "static"` tells @fastify/swagger to serve this document as-is instead of
+// trying to introspect Fastify route schemas (most routes here validate
+// manually with Zod inside the handler body, not via Fastify's own `schema`
+// option, so there'd be nothing for the automatic mode to find).
+await app.register(fastifySwagger, {
+  mode: "static",
+  // zod-openapi's OpenAPIObject type models the OpenAPI spec slightly more
+  // strictly than @fastify/swagger's own openapi-types import (e.g. server
+  // variable `enum` as string[] only, vs string[] | number[] | boolean[]) -
+  // both describe the same real document shape, so this is a type-only cast,
+  // not a runtime one.
+  specification: { document: buildOpenApiDocument() as any },
+});
+await app.register(fastifySwaggerUi, { routePrefix: "/mirror/api-docs" });
+const OpenApiQuery = z.object({ format: z.enum(["json", "yaml"]).default("json") });
+app.get("/mirror/openapi", async (req, reply) => {
+  const { format } = OpenApiQuery.parse(req.query);
+  const doc = app.swagger();
+  if (format === "yaml") return reply.type("application/yaml").send(toYaml(doc));
+  return reply.type("application/json").send(doc);
+});
 
 const staticRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

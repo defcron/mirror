@@ -5,7 +5,7 @@ test.beforeEach(async({page})=>{
 });
 test("stream error is shown as Error",async({page})=>{
  await page.route("**/v1/chat/completions",route=>route.fulfill({contentType:"text/event-stream",body:'data: {"error":{"message":"Synthetic failure"}}\n\ndata: [DONE]\n\n'}));
- await page.goto("/mirror/playground");await page.getByRole("button",{name:/Run/}).click();
+ await page.goto("/mirror/playground");await page.getByRole("button",{name:/^Run\b/}).click();
  await expect(page.locator(".run-status")).toHaveText("Error");
  await expect(page.locator(".output")).toContainText("Synthetic failure");
 });
@@ -22,5 +22,5 @@ test("pagination loads more when remote history remains",async({page})=>{
 });
 test("Stop cancels a pending response",async({page})=>{
  await page.route("**/v1/chat/completions",async route=>{await new Promise(resolve=>setTimeout(resolve,1000));await route.abort().catch(()=>{});});
- await page.goto("/mirror/playground");await page.getByRole("button",{name:/Run/}).click();await page.getByRole("button",{name:"Stop",exact:true}).click();await expect(page.locator(".run-status")).toHaveText("Stopped");
+ await page.goto("/mirror/playground");await page.getByRole("button",{name:/^Run\b/}).click();await page.getByRole("button",{name:"Stop",exact:true}).click();await expect(page.locator(".run-status")).toHaveText("Stopped");
 });

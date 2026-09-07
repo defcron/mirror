@@ -49,8 +49,7 @@ function loadStoredMessages(): PlaygroundMessage[] {
   try {
     if (localStorage.getItem(STORAGE_KEY_REMEMBER) !== "true")
       return DEFAULT_MESSAGES;
-    const raw = JSON.stringify(JSON.parse(localStorage.getItem("mirror-playground-snapshot") ?? "null")?.messages ?? null);
-    const parsed = raw ? JSON.parse(raw) : null;
+    const parsed = JSON.parse(localStorage.getItem("mirror-playground-snapshot") ?? "null")?.messages;
     if (
       Array.isArray(parsed) &&
       parsed.length &&
@@ -82,6 +81,12 @@ function Header() {
         </a>
         <a href="/v1/models" target="_blank" rel="noreferrer">
           Models
+        </a>
+        <a href="/mirror/api-docs" target="_blank" rel="noreferrer">
+          API docs
+        </a>
+        <a href="/mirror/openapi" target="_blank" rel="noreferrer">
+          OpenAPI schema
         </a>
       </nav>
       <div className="environment">Local server</div>
@@ -310,7 +315,7 @@ export default function App() {
     if (runningRef.current) return;
     if (!canRun) {
       setStatus("Blocked");
-      setRaw(runBlockedReason ?? "Cannot run.");
+      setRaw(runBlockedReason!);
       setShowRaw(true);
       return;
     }
@@ -437,7 +442,7 @@ export default function App() {
             ) : (
               <button
                 className="run-button"
-                title={canRun ? undefined : (runBlockedReason ?? undefined)}
+                title={runBlockedReason ?? undefined}
                 onClick={() => void run()}
               >
                 Run <span>⌘ ↵</span>

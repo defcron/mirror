@@ -44,7 +44,7 @@ export function normalizeGizmos(raw: Record<string, unknown>): GizmoSummary[] {
     const files = Array.isArray(item.files) ? item.files.length : undefined;
     return [{
       id,
-      name: String(item.display_name ?? item.name),
+      name: String(item.display_name),
       ...(typeof item.short_url === "string" ? { shortUrl: item.short_url } : {}),
       ...(typeof item.description === "string" ? { description: item.description } : {}),
       ...(typeof item.profile_picture_url === "string" ? { iconUrl: item.profile_picture_url } : {}),

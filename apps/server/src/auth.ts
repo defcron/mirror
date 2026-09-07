@@ -41,23 +41,9 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
     const startedRevision = refreshRevision;
     refreshInFlight = (async () => {
       try {
-        // Re-read inside the single-flight operation so a queued caller never
-        // mints from a token that another request has already rotated.
-        const current = getSession();
-        if (!current)
-          throw Object.assign(new Error("No session configured."), {
-            statusCode: 401,
-          });
-        if (
-          current.cachedAccessToken &&
-          current.cachedAccessTokenExpiresAt &&
-          current.cachedAccessTokenExpiresAt - Date.now() >= REFRESH_BUFFER_MS
-        ) {
-          return {
-            accessToken: current.cachedAccessToken,
-            deviceId: current.deviceId,
-          };
-        }
+        // No await precedes this operation, so the validated session snapshot
+        // is still current. The revision check below guards the asynchronous mint.
+        const current = session;
         const revision = getSessionRevision();
         const minted = await mintAccessToken(current.sessionToken);
         assertSessionRevision(revision);

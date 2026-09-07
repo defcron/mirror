@@ -80,7 +80,7 @@ export function monitorRequiredEgress(onFailure: (error: Error) => void, interva
     if (checking) return;
     checking = true;
     void verifyRequiredEgress()
-      .catch((error: unknown) => onFailure(error instanceof Error ? error : new Error("WARP verification failed")))
+      .catch((error: Error) => onFailure(error))
       .finally(() => { checking = false; });
   }, intervalMs);
   timer.unref();

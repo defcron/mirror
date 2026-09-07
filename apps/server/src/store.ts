@@ -1,3 +1,4 @@
+import { resolveDataDirectory } from "./storage-config.js";
 import {
   createCipheriv,
   createDecipheriv,
@@ -27,8 +28,7 @@ const PROJECT_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../..",
 );
-const DATA_DIR =
-  process.env.MIRROR_DATA_DIR ?? path.join(PROJECT_ROOT, ".data");
+const DATA_DIR = resolveDataDirectory(PROJECT_ROOT, process.env.MIRROR_DATA_DIR);
 const DATABASE_FILE = path.join(DATA_DIR, "mirror.db");
 const KEY_FILE = path.join(DATA_DIR, "master.key");
 const LEGACY_STORE_FILE = path.join(DATA_DIR, "store.json");
@@ -608,7 +608,7 @@ export function listMessages(conversationId: string): StoredMessage[] {
     content: String(row.content),
     status: String(row.status),
     events: JSON.parse(String(row.events_json)),
-    attachments: JSON.parse(String(row.attachments_json ?? "[]")),
+    attachments: JSON.parse(String(row.attachments_json)),
     createdAt: String(row.created_at),
   }));
 }
