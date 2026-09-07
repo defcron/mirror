@@ -22,7 +22,27 @@ if (command === "backup" && argument) {
   copyFileSync(path.join(source,"mirror.db"), dbPath); chmodSync(dbPath,0o600);
   if (existsSync(path.join(source,"master.key"))) { copyFileSync(path.join(source,"master.key"),path.join(dir,"master.key")); chmodSync(path.join(dir,"master.key"),0o600); }
   console.log("Restored. If the backup used MIRROR_STORE_KEY, supply the same key before startup.");
-} else if (command === "prune" && /^\d+$/.test(argument ?? "") && Number(argument) > 0 && confirmation === "--offline") {
-  const db = new DatabaseSync(dbPath);
-  try { db.exec("PRAGMA foreign_keys=ON"); const before = new Date(Date.now()-Number(argument)*86400000).toISOString(); const result = db.prepare("DELETE FROM conversations WHERE updated_at < ?").run(before); db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;"); console.log(`Removed ${result.changes} conversations older than ${argument} days. This is not a secure-erasure guarantee.`); } finally {db.close();}
-} else throw new Error("Usage: npm run storage -- backup NEW_DIRECTORY | restore BACKUP_DIRECTORY --offline | prune DAYS --offline. Stop Mirror before restore/prune.");
+} else if (command === "prune" && /^\d+$/.test(argument ?? "") && Number(argument) > 0 && ["--offline", "--dry-run"].includes(confirmation)) {
+  const preview = confirmation === "--dry-run";
+  const db = new DatabaseSync(dbPath, { readOnly: preview });
+  try {
+    db.exec("PRAGMA foreign_keys=ON");
+    const before = new Date(Date.now() - Number(argument) * 86400000).toISOString();
+    const count = (sql) => db.prepare(sql).get(before).n;
+    const report = {
+      dryRun: preview, cutoff: before, retentionDays: Number(argument),
+      conversations: count("SELECT count(*) AS n FROM conversations WHERE updated_at < ?"),
+      messages: count("SELECT count(*) AS n FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE updated_at < ?)"),
+      events: count("SELECT coalesce(sum(json_array_length(events_json)),0) AS n FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE updated_at < ?)"),
+      instructions: count("SELECT count(*) AS n FROM conversation_instructions WHERE conversation_id IN (SELECT id FROM conversations WHERE updated_at < ?)"),
+      filesRemoved: 0,
+      fileRecordsRetained: db.prepare("SELECT count(*) AS n FROM files").get().n,
+      policy: "Delete local conversations older than cutoff, cascading messages, instructions and transcript/context hashes. Retain session, sync cursors, all file records, and upstream history/assets. No secure-erasure guarantee.",
+    };
+    if (!preview) {
+      db.prepare("DELETE FROM conversations WHERE updated_at < ?").run(before);
+      db.exec("PRAGMA wal_checkpoint(TRUNCATE); VACUUM;");
+    }
+    console.log(JSON.stringify(report, null, 2));
+  } finally { db.close(); }
+} else throw new Error("Usage: npm run storage -- backup NEW_DIRECTORY | restore BACKUP_DIRECTORY --offline | prune DAYS --dry-run | prune DAYS --offline. Stop Mirror before restore/prune deletion.");

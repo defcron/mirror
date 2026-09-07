@@ -1,3 +1,5 @@
+import { registerInsightRoutes } from "./insights.js";
+import { apiError, recordFailure } from "./api-errors.js";
 import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -81,7 +83,7 @@ import {
 
 function isPublicApiPath(url: string): boolean {
   const pathname = url.split("?", 1)[0];
-  return pathname === "/v1/models" || pathname === "/v1/chat/completions";
+  return pathname === "/v1/models" || pathname === "/v1/chat/completions" || pathname === "/v1/capabilities";
 }
 
 export async function buildApp() {
@@ -118,7 +120,7 @@ await app.register(cors, {
     credentials: false,
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Authorization", "Content-Type"],
-    exposedHeaders: ["x-mirror-conversation-id"],
+    exposedHeaders: ["x-mirror-conversation-id", "x-request-id"],
   }),
 });
 await app.register(rateLimit, {
@@ -133,6 +135,7 @@ await app.register(multipart, {
 const apiKeys = configuredApiKeys();
 const accountKey = () => getSession()?.accountId ?? "default";
 app.addHook("onRequest", async (req, reply) => {
+  reply.header("x-request-id", req.id);
   if (!isAllowedRequestHost(req.headers.host)) {
     return reply.code(421).send({ error: "Untrusted Host header" });
   }
@@ -159,6 +162,24 @@ app.addHook("onRequest", async (req, reply) => {
   }
   if (req.url === "/api/health" || req.url.startsWith("/mirror/assets/")) return;
   if (!authorizedLocalRequest(req.headers)) return reply.code(401).send({ error: { message: "Open Mirror in your browser or supply a configured Mirror API key", type: "authentication_error" } });
+});
+
+app.addHook("onSend", async (req, reply, payload) => {
+  if (req.url.startsWith("/v1/") && reply.statusCode >= 400) {
+    // Format direct route replies and Fastify/plugin failures alike. Every
+    // /v1/ response - a route's own .send(), the notFoundHandler, the rate
+    // limiter, and setErrorHandler above - is JSON, and Fastify's default
+    // serializer has already turned it into a string by the time onSend
+    // hooks run; likewise, every /v1/ error object this app itself
+    // produces is shaped one of two ways: a bare string, or an object
+    // with a .message (see openai.ts, insights.ts, and setErrorHandler).
+    const parsed = JSON.parse(payload as string);
+    const message = typeof parsed.error === "string" ? parsed.error : parsed.error.message;
+    const envelope = apiError(reply.statusCode, message, req.id);
+    recordFailure(envelope.error.code, req.id);
+    return JSON.stringify(envelope);
+  }
+  return payload;
 });
 
 app.setErrorHandler((error, _req, reply) => {
@@ -481,6 +502,7 @@ app.post("/api/chat", async (req, reply) => {
 });
 
 await registerOpenAiRoutes(app);
+await registerInsightRoutes(app);
 
 // OpenAPI: generated from the same Zod schemas the routes validate against
 // (see openapi-document.ts) rather than a hand-maintained JSON file. `mode:

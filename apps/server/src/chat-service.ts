@@ -1,3 +1,4 @@
+import { abortable, turnDeadline } from "./deadlines.js";
 import { randomUUID } from "node:crypto";
 import {
   ChatGptBackendClient,
@@ -66,6 +67,12 @@ export async function runChat(
   result: SendMessageResult;
   storedAssistantMessageId: string;
 }> {
+  // Do not throwIfAborted() here, before the conversation/messages
+  // exist: an already-aborted signal must still leave a real
+  // conversation row with the assistant message recorded as
+  // "stopped" (see the try/catch below), not silently produce no
+  // local record at all. The first real abort check happens inside
+  // the try block via abortable()/controller.signal.
   const revision = getSessionRevision();
   const transient = Boolean(opts.ephemeral);
   const conversation = transient ? {
@@ -98,6 +105,7 @@ export async function runChat(
     );
 
   const controller = linkedAbortController(opts.signal);
+  const deadline = turnDeadline(controller);
   activeTurns.set(conversation.id, controller);
   const unsubscribe = onSessionChange(() => controller.abort(new DOMException("Session changed", "AbortError")));
   const recordMessage: typeof addMessage = (input) => transient
@@ -125,14 +133,15 @@ export async function runChat(
   const events: NormalizedConversationEvent[] = [];
   let outcome: Awaited<ReturnType<typeof runChat>>;
   try {
-    const creds = await getValidCredentials();
+    const creds = await abortable(getValidCredentials(), controller.signal);
     assertSessionRevision(revision);
     const client = new ChatGptBackendClient(creds);
-    await client.fetchMe(controller.signal).catch(() => undefined);
+    await abortable(client.fetchMe(controller.signal).catch(() => undefined), controller.signal);
+    controller.signal.throwIfAborted();
 
     let init: ConversationInitResult | null = null;
     if (!conversation.initialized) {
-      init = await client.initConversation(
+      init = await abortable(client.initConversation(
         {
           timezone: opts.timezone ?? "UTC",
           timezoneOffsetMin: opts.timezoneOffsetMin ?? 0,
@@ -143,7 +152,7 @@ export async function runChat(
           historyAndTrainingDisabled: conversation.private,
         },
         controller.signal,
-      );
+      ), controller.signal);
       if (conversation.model === "auto") {
         conversation.model =
           init.defaultModelSlug ??
@@ -162,11 +171,11 @@ export async function runChat(
 
     const gizmoPayload =
       conversation.gizmoId && !conversation.conversationId
-        ? await client
+        ? await abortable(client
             .fetchGizmo(conversation.gizmoId, controller.signal)
-            .catch(() => null)
+            .catch(() => null), controller.signal)
         : null;
-    const result = await client.sendMessage({
+    const result = await abortable(client.sendMessage({
       prompt: opts.prompt,
       model: conversation.model,
       conversationId: conversation.conversationId,
@@ -179,15 +188,20 @@ export async function runChat(
       historyAndTrainingDisabled: conversation.private,
       signal: controller.signal,
       onDelta: (delta, full) => {
+        controller.signal.throwIfAborted();
+        deadline.touch();
         fullText = full;
         opts.onDelta?.(delta, full);
       },
       onEvent: (event) => {
+        controller.signal.throwIfAborted();
+        deadline.touch();
         events.push(event);
         opts.onEvent?.(event);
       },
-    });
+    }), controller.signal);
 
+    controller.signal.throwIfAborted();
     assertSessionRevision(revision);
     conversation.conversationId = result.conversationId;
     if (result.messageId) conversation.currentNodeId = result.messageId;
@@ -219,6 +233,7 @@ export async function runChat(
     );
     throw error;
   } finally {
+    deadline.close();
     activeTurns.delete(conversation.id);
     unsubscribe();
   }

@@ -96,6 +96,17 @@ npm run gen-api-key -- 24      # optional byte length (min 16)
 
 This only prints a key to your terminal — copy it into `MIRROR_API_KEY` (or append another to `MIRROR_API_KEYS`) yourself; it doesn't write your `.env` file for you.
 
+### Connecting cm, ChatGPTBox, and other OpenAI-compatible clients
+
+Mirror exposes two different base URLs, and which one a client wants depends on what it's actually built to talk to:
+
+- **The server root** (`http://127.0.0.1:8799`, or `http://127.0.0.1:8787` outside Compose) — for a client that already knows it's talking to a Mirror-shaped API and appends its own path, such as `cm` (a separate, sibling Rust CLI project for persistent Mirror chat threads): set `CM_BASE_URL=http://127.0.0.1:8799`.
+- **The `/v1` path** (`http://127.0.0.1:8799/v1`) — for a generic OpenAI-compatible client or SDK that expects an `api.openai.com`-shaped base URL and appends `/chat/completions` itself, e.g. the Python example above, or a client field literally labeled "API Base URL" / "OpenAI Base URL".
+
+[ChatGPTBox](https://github.com/josStorer/chatGPTBox) (the browser extension) falls into the second category: pick its **OpenAI API (Custom)** / OpenAI-compatible provider, set the API base URL to `http://127.0.0.1:8799/v1` (some client UIs instead ask for the full completion URL — in that case use `http://127.0.0.1:8799/v1/chat/completions`), set the API key to your configured `MIRROR_API_KEY`, and set the model to any id `GET /v1/models` returns (`auto` picks your account's current default). This has been confirmed working end-to-end (streaming, model discovery, and normal completions) against a real account.
+
+Either base URL requires a configured `MIRROR_API_KEY` (or `MIRROR_API_KEYS` / `OPENAI_API_KEY`) sent as `Authorization: Bearer ...` for any **cross-origin** request — that's what lets a browser extension on its own origin, or a script on a different host/port, reach `/v1/*` at all. Mirror's *other* routes (`/api/*`, the proxied ChatGPT UI, the Playground) are deliberately not exposed this way: they stay restricted to same-origin browser requests (backed by the control cookie from step 3 of the Quickstart) specifically so a bearer key alone can't be used to drive them. A same-origin browser client (the Playground itself, for instance) doesn't need a bearer key for `/v1/*` either, for the same reason.
+
 **What's supported:** `model`, `messages`, `stream`, `store`, `max_tokens` / `max_completion_tokens`, `stop`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option. The final user message's `content` may also include `image_url` parts (`{"type": "image_url", "image_url": {"url": "..."}}`) — both `data:` URIs and `https://` URLs are accepted; Mirror uploads the image to ChatGPT's file service on your behalf before sending the turn, same as attaching it in the real UI would.
 
 `max_tokens`/`max_completion_tokens` and `stop` are **soft, client-side approximations**, not real upstream enforcement — backend-api has no token ceiling or stop-sequence concept of its own, so Mirror estimates tokens from characters and watches the streamed text for a match, then trims what it hands back through this endpoint (`finish_reason` reports `"length"` or `"stop"` accordingly). The underlying ChatGPT turn always runs to completion and is stored in full locally either way. ChatGPT-only behavior that happens mid-turn — a web search, the code-interpreter sandbox running, or an in-chat generated image — is surfaced back to you via `metadata.mirror_tool_events` / `metadata.mirror_images` on the response, since the official response schema has no field for any of that. See [COMPATIBILITY.md](./COMPATIBILITY.md) for the exact shape of both.
@@ -132,13 +143,16 @@ Because the main interface is the real ChatGPT web app (proxied through Mirror r
 | Variable            | Default                 | Purpose                                       |
 | ------------------- | ------------------------ | ---------------------------------------------- |
 | `WARP_ACCEPT_TOS`    | (unset)                  | Must be `yes` — acknowledges Cloudflare's WARP terms before the tunnel will register |
-| `MIRROR_PORT`        | `8799`                   | Host port for the combined WARP + Mirror stack (Compose) |
-| `HOST`               | `127.0.0.1`               | Server bind address (direct/non-Compose runs) |
-| `PORT`               | `8787`                    | Server port (direct/non-Compose runs) |
+| `MIRROR_PORT`        | `8799`                   | **Compose only** — the host port you actually connect to (`http://127.0.0.1:8799`) when running `docker compose up`. Not read by a direct/non-Compose run. |
+| `HOST`               | `127.0.0.1`               | Server bind address for a **direct, non-Compose** run (`npm run dev` / `npm start`) |
+| `PORT`               | `8787`                    | Server port for a **direct, non-Compose** run — a locally overridden `PORT` changes this, but has no effect on Compose's `MIRROR_PORT` |
 | `MIRROR_WEB_ORIGIN`  | `http://localhost:5173`   | Dev-mode CORS origin |
 | `MIRROR_DATA_DIR`    | project `.data`           | Where the database and encryption key live |
 | `MIRROR_STORE_KEY`   | auto-generated            | Fixed 32-byte credential encryption key (base64 or hex) |
 | `MIRROR_API_KEY(S)`  | **required for API access** | Application key(s) gating `/v1/*` and other non-browser routes (comma-separate `MIRROR_API_KEYS` for multiple) |
+| `OPENAI_API_KEY`     | (unset)                  | Accepted as an additional inbound Mirror key alongside `MIRROR_API_KEY(S)` — convenient because it's also the variable name most OpenAI-compatible clients already look for. Not an outbound OpenAI credential; Mirror never calls `api.openai.com`. Blank values are ignored. |
+
+So: **Compose** users connect to `MIRROR_PORT` (`8799` by default); a **direct/non-Compose** run listens on `HOST:PORT` (`127.0.0.1:8787` by default) instead — the two are independent knobs for two different ways of running Mirror, not the same port under two names.
 
 ## Running without Docker
 
@@ -255,4 +269,4 @@ not an automatic retention policy.
 `SHA256-MANIFEST.json` describes tracked source/configuration files. Regenerate it
 with `npm run manifest` after changing files; CI checks that it is current.
 
-`OPENAI_API_KEY` is also accepted as an additional inbound Mirror API key, including in Docker Compose. Blank values are ignored. Configure your OpenAI-compatible client with the same value and Mirror's base URL; the client sends it using `Authorization: Bearer ...`. This setting authenticates requests to Mirror and is not an upstream OpenAI API credential or a replacement for Mirror's ChatGPT session.
+`OPENAI_API_KEY` also works as an inbound Mirror API key (including in Docker Compose) — see the [configuration reference](#configuration-reference) and [client setup](#connecting-cm-chatgptbox-and-other-openai-compatible-clients) above for the full explanation; it is not an upstream OpenAI credential.

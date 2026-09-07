@@ -672,6 +672,12 @@ export function branchConversation(
       if (message.id === throughMessageId) break;
     }
   }
+  const instructions = getInstructions(sourceId);
+  saveInstructions(branch.id, instructions);
+  saveOpenAiContext(branch.id, fingerprintValue(instructions));
+  saveOpenAiTranscript(branch.id, source.accountId, fingerprintValue([
+    ...instructions, ...listMessages(branch.id).map(({ role, content }) => ({ role, content })),
+  ]));
   return getConversation(branch.id);
 }
 
@@ -827,4 +833,18 @@ export function saveInstructions(id: string, messages: Array<{role: string; cont
 export function getInstructions(id: string): Array<{role: string; content: string}> {
   const row = db.prepare("SELECT messages_json FROM conversation_instructions WHERE conversation_id=?").get(id) as {messages_json: string} | undefined;
   return row ? JSON.parse(row.messages_json) : [];
+}
+
+/** Search only local history owned by this account; never initiates upstream sync. */
+export function searchConversations(accountId: string, query: string): StoredConversation[] {
+  const rows = db.prepare(`SELECT c.* FROM conversations c WHERE account_id = ? AND
+    (instr(lower(title), lower(?)) > 0 OR EXISTS
+      (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND instr(lower(m.content), lower(?)) > 0))
+    ORDER BY updated_at DESC LIMIT 100`).all(accountId, query, query) as Record<string, unknown>[];
+  return rows.map(mapConversation);
+}
+
+export function relatedConversations(accountId: string, upstreamId: string): StoredConversation[] {
+  return (db.prepare("SELECT * FROM conversations WHERE account_id = ? AND upstream_id = ? ORDER BY updated_at DESC")
+    .all(accountId, upstreamId) as Record<string, unknown>[]).map(mapConversation);
 }

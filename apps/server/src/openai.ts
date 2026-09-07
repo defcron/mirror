@@ -1,3 +1,5 @@
+import { abortable, turnDeadline } from "./deadlines.js";
+import { apiError, recordFailure } from "./api-errors.js";
 import "./zod-openapi-init.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -12,6 +14,8 @@ import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
 import {
   getSessionRevision,
+  getInstructions,
+  branchConversation,
   saveFile,
   assertSessionRevision,
   saveInstructions,
@@ -514,7 +518,16 @@ function firstHistoryDifference(
   return index;
 }
 
-function sse(reply: FastifyReply, data: unknown): void {
+// Exported (only) so a unit test can drive the slow-consumer guard
+// directly with a fake `reply.raw` - reproducing real outbound-socket
+// backpressure (a client reading slower than we can write) inside a test
+// is impractical/flaky, but the guard itself is a plain function of
+// `reply.raw.writableLength` and is fully specified without a real socket.
+export function sse(reply: FastifyReply, data: unknown): void {
+  if (reply.raw.writableLength > 1_048_576) {
+    reply.raw.destroy();
+    throw new Error("Response consumer is too slow");
+  }
   reply.raw.write(
     `data: ${typeof data === "string" ? data : JSON.stringify(data)}\n\n`,
   );
@@ -625,7 +638,7 @@ export async function registerOpenAiRoutes(
       tokenBudget === null ? null : tokenBudget * CHARS_PER_TOKEN_ESTIMATE,
     );
     const capturedEvents: NormalizedConversationEvent[] = [];
-    const messages = normalized(body.messages);
+    let messages = normalized(body.messages);
     if (messages.some((message) => message.role === "tool")) {
       return reply.code(400).send({
         error: {
@@ -708,6 +721,7 @@ export async function registerOpenAiRoutes(
     const completionId = `chatcmpl-${crypto.randomUUID().replaceAll("-", "")}`;
     const created = Math.floor(Date.now() / 1000);
     const controller = new AbortController();
+    const deadline = turnDeadline(controller);
     req.raw.once("aborted", () => controller.abort());
     reply.raw.once("close", () => {
       if (!reply.raw.writableEnded) controller.abort();
@@ -752,7 +766,8 @@ export async function registerOpenAiRoutes(
     }
 
     try {
-      await withConversationLock(lockKey, async () => {
+      await abortable(withConversationLock(lockKey, async () => {
+        controller.signal.throwIfAborted();
         assertSessionRevision(requestRevision);
         // Resolve state after acquiring the lock. Two concurrent calls using a
         // brand-new caller-selected id must not both decide to INSERT it.
@@ -776,6 +791,18 @@ export async function registerOpenAiRoutes(
             ? explicitConversationId
             : undefined;
         const route = routeModel(body.model, body.metadata);
+
+        // An ID plus only the next user message is the cm continuation contract.
+        // Expand from local canonical history before comparing or saving hashes.
+        // Omitted instructions inherit; an explicitly supplied instruction block
+        // remains an intentional edit, including with full-history clients.
+        if (explicitConversation && messages.length === 1) {
+          messages = [
+            ...getInstructions(explicitConversation.id) as ReturnType<typeof normalized>,
+            ...listMessages(explicitConversation.id).map(({ role, content }) => ({ role, content })),
+            ...messages,
+          ];
+        }
 
         // priorTranscript is everything the caller sent *except* the new
         // final user turn - i.e. what they believe the conversation's
@@ -936,6 +963,12 @@ export async function registerOpenAiRoutes(
         }
 
         if (needsRebase) {
+          const previousMessages = listMessages(explicitConversation!.id);
+          const previousLast = previousMessages.at(-1);
+          if (previousLast?.upstreamNodeId) {
+            branchConversation(explicitConversation!.id, previousLast.upstreamNodeId,
+              "Before edit: " + explicitConversation!.title, previousLast.id);
+          }
           rebaseConversationUpstream(explicitConversation!.id, {
             model: route.model,
             gizmoId: route.gizmoId,
@@ -970,6 +1003,7 @@ export async function registerOpenAiRoutes(
             signal: controller.signal,
             onDelta: body.stream
               ? (delta, full) => {
+                  deadline.touch();
                   const safe = limiter.feed(delta, full);
                   if (!safe) return;
                   sse(reply, {
@@ -987,7 +1021,7 @@ export async function registerOpenAiRoutes(
                   });
                 }
               : undefined,
-            onEvent: (event) => capturedEvents.push(event),
+            onEvent: (event) => { deadline.touch(); capturedEvents.push(event); },
           });
         } catch (error) {
           // runChat necessarily records the synthetic replay prompt (and an
@@ -1101,24 +1135,21 @@ export async function registerOpenAiRoutes(
           usage: null,
           ...(responseMetadata ? { metadata: responseMetadata } : {}),
         });
-      });
+      }), controller.signal);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      if (reply.raw.destroyed) return;
+      const message = error instanceof Error ? error.message : "Generation failed";
+      const status = Number((error as { statusCode?: number }).statusCode ?? 502);
+      const envelope = apiError(status, message, req.id);
       if (body.stream) {
-        sse(reply, { error: { message, type: "mirror_error" } });
-        sse(reply, "[DONE]");
+        recordFailure(envelope.error.code, req.id);
+        sse(reply, envelope);
         reply.raw.end();
         return;
       }
-      const status = Number(
-        (error as { statusCode?: number }).statusCode ?? 502,
-      );
-      return reply.code(status).send({
-        error: {
-          message,
-          type: status === 400 ? "invalid_request_error" : "mirror_error",
-        },
-      });
+      return reply.code(status).send(envelope);
+    } finally {
+      deadline.close();
     }
   });
 }

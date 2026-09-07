@@ -532,6 +532,25 @@ test("sendMessage throws when the stream reports an error_code", () =>
     },
   ));
 
+test("sendMessage throws a clear error when a completed stream never produced an assistant node or an error_code", () =>
+  withFetch(
+    async (url) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/prepare") return Response.json({ prepare_token: "p", proofofwork: { required: false } });
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/finalize") return Response.json({ token: "final" });
+      // A stream that reaches [DONE] having emitted no "add" event at all -
+      // e.g. an upstream response that is technically well-formed SSE but
+      // carries nothing recognizable - must not be treated as a silent
+      // success with an empty reply.
+      if (u.pathname === "/backend-api/f/conversation") return sseBody(["[DONE]"]);
+      throw new Error(`unexpected ${u.href}`);
+    },
+    async () => {
+      const client = new ChatGptBackendClient(fakeCreds());
+      await assert.rejects(client.sendMessage({ prompt: "hi", model: "auto" }), /no assistant node was received/);
+    },
+  ));
+
 test("sendMessage attaches a real sentinel proof token when proof-of-work is required", () =>
   withFetch(
     async (url, init = {}) => {

@@ -961,8 +961,13 @@ test("a rebase that fails upstream restores the locally-edited prefix instead of
         },
       });
       assert.equal(edited.statusCode, 502, edited.body);
-      assert.match(edited.json().error.message, /simulated upstream failure/);
-      assert.equal(edited.json().error.type, "mirror_error");
+      // Public /v1 errors never echo raw upstream exception text (see
+      // api-errors.ts's redaction policy) - only the generic safe category
+      // surfaces, though the failed rebase must still restore local state
+      // correctly (checked below).
+      assert.doesNotMatch(edited.json().error.message, /simulated upstream failure/);
+      assert.equal(edited.json().error.type, "server_error");
+      assert.equal(edited.json().error.code, "upstream_failure");
       // rebasePriorMessages for a system-only prior transcript is empty (the
       // caller has no confirmed user/assistant turns yet at this point), so
       // the restore must leave local history empty rather than some
@@ -977,7 +982,7 @@ test("a rebase that fails upstream restores the locally-edited prefix instead of
 // non-streaming (JSON error body) and streaming (SSE error frame) turns.
 // ---------------------------------------------------------------------------
 
-test("a non-streaming turn that fails upstream with no explicit statusCode reports a generic 502 mirror_error", async () => {
+test("a non-streaming turn that fails upstream with no explicit statusCode reports a generic, redacted 502 error", async () => {
   useSession("account-error-502");
   await withFetch(
     stubBackend("account-error-502", {
@@ -993,13 +998,14 @@ test("a non-streaming turn that fails upstream with no explicit statusCode repor
       });
       assert.equal(res.statusCode, 502, res.body);
       const body = res.json();
-      assert.equal(body.error.type, "mirror_error");
-      assert.match(body.error.message, /upstream is on fire/);
+      assert.equal(body.error.type, "server_error");
+      assert.equal(body.error.code, "upstream_failure");
+      assert.doesNotMatch(body.error.message, /upstream is on fire/);
     },
   );
 });
 
-test("a streaming turn that fails upstream emits an SSE error frame followed by [DONE] instead of hanging", async () => {
+test("a streaming turn that fails upstream emits an SSE error frame and closes the stream instead of hanging", async () => {
   useSession("account-error-stream");
   await withFetch(
     stubBackend("account-error-stream", {
@@ -1020,9 +1026,13 @@ test("a streaming turn that fails upstream emits an SSE error frame followed by 
       const frames = parseSseFrames(res.body);
       const errorFrame = frames.find((f) => f.json?.error);
       assert.ok(errorFrame, "expected an SSE frame carrying an error object");
-      assert.equal(errorFrame.json.error.type, "mirror_error");
-      assert.match(errorFrame.json.error.message, /stream upstream boom/);
-      assert.ok(frames.some((f) => f.done), "expected a trailing [DONE] frame");
+      assert.equal(errorFrame.json.error.type, "server_error");
+      assert.equal(errorFrame.json.error.code, "upstream_failure");
+      assert.doesNotMatch(errorFrame.json.error.message, /stream upstream boom/);
+      // The error frame itself ends the turn by closing the connection,
+      // not by also claiming a normal [DONE] completion - a client must
+      // treat the error object as the terminal signal, not wait for DONE.
+      assert.ok(!frames.some((f) => f.done), "did not expect a trailing [DONE] frame after an error");
     },
   );
 });
@@ -1423,7 +1433,7 @@ test("a legacy conversation with a saved context hash but no transcript hash als
   );
 });
 
-test("a non-Error value thrown mid-turn is still reported with a stringified message and a generic 502", async () => {
+test("a non-Error value thrown mid-turn is still reported as a generic, redacted 502 error", async () => {
   useSession("account-branch-nonerror-turn");
   await withFetch(
     stubBackend("account-branch-nonerror-turn", {
@@ -1438,9 +1448,47 @@ test("a non-Error value thrown mid-turn is still reported with a stringified mes
         payload: { model: "auto", messages: [{ role: "user", content: "hi" }] },
       });
       assert.equal(res.statusCode, 502, res.body);
-      assert.equal(res.json().error.message, "raw string boom");
+      assert.notEqual(res.json().error.message, "raw string boom");
+      assert.equal(res.json().error.type, "server_error");
+      assert.equal(res.json().error.code, "upstream_failure");
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// sse()'s slow-consumer guard: reproducing real outbound-socket backpressure
+// end-to-end would be slow/flaky, so it's tested directly as the plain
+// function of reply.raw.writableLength it actually is (see the comment on
+// the exported sse() in openai.ts).
+// ---------------------------------------------------------------------------
+
+test("sse() rejects and destroys the connection when the outbound buffer has backed up", () => {
+  const writes = [];
+  let destroyed = false;
+  const reply = {
+    raw: {
+      writableLength: 1_048_577,
+      destroy: () => { destroyed = true; },
+      write: (chunk) => writes.push(chunk),
+    },
+  };
+  assert.throws(() => openai.sse(reply, { hello: "world" }), /Response consumer is too slow/);
+  assert.equal(destroyed, true);
+  assert.deepEqual(writes, []);
+});
+
+test("sse() writes normally at and below the backpressure threshold", () => {
+  const writes = [];
+  const reply = {
+    raw: {
+      writableLength: 1_048_576,
+      destroy: () => { throw new Error("should not have destroyed the connection"); },
+      write: (chunk) => writes.push(chunk),
+    },
+  };
+  openai.sse(reply, { hello: "world" });
+  openai.sse(reply, "[DONE]");
+  assert.deepEqual(writes, ['data: {"hello":"world"}\n\n', "data: [DONE]\n\n"]);
 });
 
 // ---------------------------------------------------------------------------

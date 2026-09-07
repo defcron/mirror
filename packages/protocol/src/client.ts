@@ -722,6 +722,10 @@ export class ChatGptBackendClient {
 
     if (!reducer.isDone) throw new BackendApiError("Conversation stream interrupted before completion");
 
+    if (!reducer.error && !reducer.currentAssistantMessageId) {
+      throw new BackendApiError("Unsupported conversation response: no assistant node was received");
+    }
+
     if (reducer.error) {
       throw new BackendApiError(
         `Conversation stream returned error_code=${reducer.error}`,

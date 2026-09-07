@@ -23,7 +23,9 @@ let status: EgressStatus = {
 // all protocol-package fetches use the same tunnel without application-level
 // proxy exceptions or a short-lived local-proxy connection.
 setGlobalDispatcher(new Agent({
-  connect: { ALPNProtocols: ["http/1.1"] },
+  connect: { ALPNProtocols: ["http/1.1"], timeout: 30_000 },
+  headersTimeout: 120_000,
+  bodyTimeout: 120_000,
   keepAliveTimeout: 30_000,
 }));
 

@@ -499,3 +499,22 @@ a {
   color: #999;
   text-align: center;
 }
+
+/* Keyboard focus and utilities remain usable on narrow screens and long output. */
+:focus-visible { outline: 3px solid #097c69; outline-offset: 3px; }
+.utility-panel { margin: 16px 0; border-top: 1px solid #aaa; padding-top: 12px; overflow-wrap: anywhere; }
+.utility-panel summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.utility-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.utility-panel button, .utility-panel a { margin: 4px 0; min-height: 32px; }
+.utility-panel code { display: inline; overflow-wrap: anywhere; }
+.utility-panel ul, .utility-panel ol { padding-left: 18px; }
+.utility-panel label { margin: 10px 0; }
+.output { overflow-wrap: anywhere; }
+@media (max-width: 700px) {
+  .platform-header { flex-wrap: wrap; height: auto; gap: 10px; padding: 12px; }
+  .platform-header nav { flex-wrap: wrap; }
+  .connection-bar { display: flex; flex-direction: column; }
+  .columns { display: flex; flex-direction: column; }
+  .settings-panel, .prompt-panel, .response-panel { width: 100%; min-width: 0; }
+  .workbench { min-width: 0; }
+}

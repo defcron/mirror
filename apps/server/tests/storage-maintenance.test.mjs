@@ -16,6 +16,16 @@ test('backup and restore preserve WAL-committed data; retention preserves creden
   assert.equal(db.prepare('SELECT count(*) AS n FROM conversations').get().n,1);
   assert.equal(db.prepare('SELECT count(*) AS n FROM conversation_instructions').get().n,1);
   db.exec("UPDATE conversations SET updated_at='2000-01-01'");db.close();
+  // A --dry-run preview reports what pruning would remove without
+  // actually touching the database - the conversation must still be
+  // there afterward, and only --offline (below) actually deletes it.
+  const preview=JSON.parse(String(run(['prune','90','--dry-run'],restored)));
+  assert.equal(preview.dryRun,true);
+  assert.equal(preview.conversations,1);
+  assert.equal(preview.instructions,1);
+  const beforeDelete=new DatabaseSync(path.join(restored,'mirror.db'));
+  assert.equal(beforeDelete.prepare('SELECT count(*) AS n FROM conversations').get().n,1);
+  beforeDelete.close();
   run(['prune','90','--offline'],restored);
   const check=new DatabaseSync(path.join(restored,'mirror.db'));
   assert.equal(check.prepare('SELECT count(*) AS n FROM conversations').get().n,0);

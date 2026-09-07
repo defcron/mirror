@@ -701,7 +701,15 @@ test("the not-found handler 404s unmatched /v1/ paths and proxies everything els
     async () => {
       const v1 = await app.inject({ method: "GET", url: "/v1/no-such-route", headers: AUTH });
       assert.equal(v1.statusCode, 404);
-      assert.deepEqual(JSON.parse(v1.body), { error: "Not found" });
+      // The global onSend hook (index.ts) normalizes every /v1/ failure -
+      // including the plain-string 404 the notFoundHandler sends - into
+      // the same structured, safe envelope api-errors.ts's apiError()
+      // produces elsewhere (see openai-routes.test.mjs's error tests).
+      const v1Body = JSON.parse(v1.body);
+      assert.equal(v1Body.error.code, "not_found");
+      assert.equal(v1Body.error.type, "invalid_request_error");
+      assert.equal(v1Body.error.message, "The requested resource was not found.");
+      assert.equal(v1Body.error.request_id, v1.headers["x-request-id"]);
 
       const other = await app.inject({ method: "GET", url: "/some/unrecognized/path", headers: AUTH });
       assert.equal(other.statusCode, 200);

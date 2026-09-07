@@ -1,3 +1,5 @@
+import { ConnectionTools } from "./ConnectionTools.js";
+import { ConversationTools } from "./ConversationTools.js";
 import { readCompletionStream } from "./completion-stream.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -353,22 +355,24 @@ export default function App() {
       const returnedConversationId = response.headers.get(
         "x-mirror-conversation-id",
       );
-      if (returnedConversationId) setConversationId(returnedConversationId);
+      let nextConversationId = returnedConversationId;
       let finalText = "";
       if (!stream) {
         const body = await response.json();
         setRaw(JSON.stringify(body, null, 2));
-        finalText = body.choices?.[0]?.message?.content ?? "";
+        if (typeof body.choices?.[0]?.message?.content !== "string") throw new Error("Unsupported completion response; no assistant content was returned.");
+        finalText = body.choices[0].message.content;
         setOutput(finalText);
       } else if (response.body) {
-        finalText = await readCompletionStream(response.body, setOutput, setRaw, setConversationId);
+        finalText = await readCompletionStream(response.body, setOutput, setRaw, id => { nextConversationId = id; });
       } else {
         throw new Error("Response has no stream body");
       }
       // Keep the exact reply in the visible transcript. The conversation id
       // identifies the upstream thread, while the message prefix lets the
       // server verify that the client has not silently diverged from it.
-      if (finalText && !oneShot) {
+      if (nextConversationId && !oneShot) setConversationId(nextConversationId);
+      if (!oneShot) {
         setMessages((current) => [
           ...current,
           { role: "assistant", content: finalText },
@@ -429,7 +433,7 @@ export default function App() {
             <p>Test an OpenAI-compatible Chat Completions endpoint.</p>
           </div>
           <div className="run-actions">
-            <span className={`run-status ${status.toLowerCase()}`}>
+            <span role="status" aria-live="polite" className={`run-status ${status.toLowerCase()}`}>
               {status}
             </span>
             {running ? (
@@ -496,6 +500,7 @@ export default function App() {
                 <div className="message-editor" key={index}>
                   <div className="message-toolbar">
                     <select
+                      aria-label={`Message ${index + 1} role`}
                       disabled={running || message.role === "assistant"}
                       value={message.role}
                       onChange={(event) =>
@@ -520,6 +525,7 @@ export default function App() {
                     </button>
                   </div>
                   <textarea
+                    aria-label={`Message ${index + 1} ${message.role} content`}
                     readOnly={running || message.role === "assistant"}
                     aria-readonly={running || message.role === "assistant"}
                     title={
@@ -552,6 +558,7 @@ export default function App() {
               </button>
             </div>
             <div
+              role="region" aria-label="Response output" tabIndex={0} aria-busy={running}
               className={`output ${(showRaw ? raw : output) ? "" : "empty"}`}
             >
               {(showRaw ? raw : output) ||
@@ -733,6 +740,8 @@ export default function App() {
                 conversation onto the edited history.
               </p>
             </label>
+            <ConversationTools conversationId={conversationId} disabled={running} onSelect={id => void loadConversation(id)} />
+            <ConnectionTools domain={domain} apiKey={apiKey} generationSucceeded={status === "Completed"} />
             <div className="request-preview">
               <span>Request URL</span>
               <code>{endpoint}</code>

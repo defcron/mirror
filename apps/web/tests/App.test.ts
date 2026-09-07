@@ -43,7 +43,12 @@ function router(handlers: Array<[RegExp, Handler]>): typeof fetch {
         : input instanceof URL
           ? input.href
           : (input as Request).url;
-    const url = new URL(href);
+    // A base is required for bare relative fetches (e.g.
+    // ConnectionTools/ConversationTools deliberately call fetch("/api/...")
+    // directly, unprefixed by the configurable "Server domain" field,
+    // since those always target this local Mirror instance) - harmless
+    // for the already-absolute URLs every other call site here builds.
+    const url = new URL(href, location.origin);
     for (const [pattern, handler] of handlers) {
       if (pattern.test(url.pathname)) return handler(url, init);
     }
@@ -929,11 +934,11 @@ test("model selection and switching back from raw output update the visible UI",
   assert.equal(screen.getByRole("button", { name: "Output" }).className, "active");
 });
 
-test("an empty completion does not append phantom history rows", async () => {
+test("a malformed completion fails without appending phantom history rows", async () => {
   await renderApp([[/^\/v1\/chat\/completions$/, () => jsonResponse({ choices: [] })]]);
   fireEvent.click(screen.getByLabelText(/Stream/));
   fireEvent.click(runButton());
-  await screen.findByText("Completed");
+  await screen.findByText("Error");
   assert.equal(document.querySelectorAll(".message-editor").length, 2);
 });
 
@@ -955,6 +960,281 @@ test("a queued remove click cannot change history after a run has started", asyn
   });
   assert.equal(document.querySelectorAll(".message-editor").length, 2);
   await act(async () => { gate.resolve(jsonResponse({ choices: [] })); });
-  await screen.findByText("Completed");
+  await screen.findByText("Error");
   assert.equal(document.querySelectorAll(".message-editor").length, 2);
+});
+
+// ---------------------------------------------------------------------------
+// ConnectionTools (connection diagnostics + client setup snippet)
+// ---------------------------------------------------------------------------
+
+function connectionToolsPanel() {
+  return screen.getByText("Connection diagnostics and client setup").closest("details") as HTMLElement;
+}
+
+test("Test connection reports diagnostics and model discovery results, and offers a diagnostics export link", async () => {
+  await renderApp([
+    [/^\/api\/diagnostics$/, () => jsonResponse({ schemaVersion: 1, build: { revision: "abc1234" } })],
+    [/^\/v1\/models$/, () => jsonResponse({ data: [{ id: "m1" }, { id: "m2" }] })],
+  ]);
+  const panel = connectionToolsPanel();
+  assert.equal(within(panel).queryByText(/Export local diagnostics/), null);
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText(/Model discovery passed \(2 models\)\. Browser authentication used/);
+  assert.match(within(panel).getByText(/"revision": "abc1234"/).textContent ?? "", /abc1234/);
+  assert.ok(within(panel).getByRole("link", { name: /Export local diagnostics/ }));
+});
+
+test("Test connection reports a supplied bearer credential separately from browser auth", async () => {
+  let modelsAuth: string | undefined;
+  await renderApp([
+    [/^\/api\/diagnostics$/, () => jsonResponse({ schemaVersion: 1 })],
+    [
+      /^\/v1\/models$/,
+      (_url, init) => {
+        modelsAuth = (init?.headers as Record<string, string> | undefined)?.authorization;
+        return jsonResponse({ data: [{ id: "m1" }] });
+      },
+    ],
+  ]);
+  fireEvent.change(screen.getByLabelText("Bearer credential"), { target: { value: "sk-conn" } });
+  const panel = connectionToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText(/Bearer credential supplied\./);
+  assert.equal(modelsAuth, "Bearer sk-conn");
+});
+
+test("Test connection surfaces a failed diagnostics call without touching model discovery", async () => {
+  // /v1/models is also fetched once in the background on mount (for the
+  // model picker), unrelated to the Test Connection button - count calls
+  // rather than asserting it's never called at all.
+  let modelsCalls = 0;
+  await renderApp([
+    [/^\/api\/diagnostics$/, () => new Response("nope", { status: 500 })],
+    [/^\/v1\/models$/, () => { modelsCalls += 1; return jsonResponse({ data: [] }); }],
+  ]);
+  const panel = connectionToolsPanel();
+  const callsBeforeClick = modelsCalls;
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText("Diagnostics returned HTTP 500");
+  assert.equal(modelsCalls, callsBeforeClick);
+});
+
+test("Test connection surfaces a failed model-discovery HTTP status", async () => {
+  await renderApp([
+    [/^\/api\/diagnostics$/, () => jsonResponse({ schemaVersion: 1 })],
+    [/^\/v1\/models$/, () => new Response("nope", { status: 503 })],
+  ]);
+  const panel = connectionToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText(/Model discovery returned HTTP 503\./);
+});
+
+test("Test connection rejects a model-discovery response whose data field isn't an array", async () => {
+  await renderApp([
+    [/^\/api\/diagnostics$/, () => jsonResponse({ schemaVersion: 1 })],
+    [/^\/v1\/models$/, () => jsonResponse({ data: "not-an-array" })],
+  ]);
+  const panel = connectionToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText("Model discovery returned an unsupported response.");
+});
+
+test("Test connection falls back to a generic message when a non-Error value is thrown", async () => {
+  await renderApp([[/^\/api\/diagnostics$/, () => { throw "network offline"; }]]);
+  const panel = connectionToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Test connection" }));
+  await within(panel).findByText("Connection test failed");
+});
+
+test("the generation-status note reflects whether a Playground run has completed yet", async () => {
+  await renderApp([
+    [
+      /^\/v1\/chat\/completions$/,
+      () => jsonResponse({ choices: [{ message: { content: "hi" } }] }, { headers: { "x-mirror-conversation-id": "conv-done" } }),
+    ],
+  ]);
+  const panel = connectionToolsPanel();
+  assert.ok(within(panel).getByText(/not verified; use Run to send a test message/));
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  assert.ok(within(panel).getByText(/completed in this Playground session/));
+});
+
+test("Copy setup snippet reports success or falls back to a manual-copy hint", async () => {
+  await renderApp();
+  const panel = connectionToolsPanel();
+  assert.match(within(panel).getByText(/OpenAI\(base_url=/).textContent ?? "", /YOUR_MIRROR_KEY/);
+  const nav = globalThis.navigator as unknown as { clipboard?: { writeText: (text: string) => Promise<void> } };
+  const originalClipboard = nav.clipboard;
+  try {
+    nav.clipboard = { writeText: async () => {} };
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy setup snippet" }));
+    await within(panel).findByText("Setup snippet copied");
+    nav.clipboard = { writeText: async () => { throw new Error("denied"); } };
+    fireEvent.click(within(panel).getByRole("button", { name: "Copy setup snippet" }));
+    await within(panel).findByText("Select and copy the setup snippet above");
+  } finally {
+    nav.clipboard = originalClipboard;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// ConversationTools (local search, branches, and export)
+// ---------------------------------------------------------------------------
+
+function conversationToolsPanel() {
+  return screen.getByText("Local search, branches, and export").closest("details") as HTMLElement;
+}
+
+test("with no active conversation, only local search is offered (no branches or export controls)", async () => {
+  await renderApp();
+  const panel = conversationToolsPanel();
+  assert.equal(within(panel).queryByRole("button", { name: "Show conversation branches" }), null);
+  assert.equal(within(panel).queryByRole("link", { name: "Export JSON" }), null);
+  assert.ok((within(panel).getByRole("button", { name: "Search history" }) as HTMLButtonElement).disabled);
+});
+
+test("searching local history renders matches and a result count, and selecting one loads it", async () => {
+  await renderApp([
+    [
+      /^\/api\/conversations\/search/,
+      (url) => {
+        assert.equal(url.searchParams.get("q"), "needle");
+        return jsonResponse({ items: [{ id: "found-1", title: "Found conversation" }] });
+      },
+    ],
+  ]);
+  const panel = conversationToolsPanel();
+  fireEvent.change(within(panel).getByLabelText("Search local history"), { target: { value: "needle" } });
+  const searchButton = within(panel).getByRole("button", { name: "Search history" });
+  assert.equal((searchButton as HTMLButtonElement).disabled, false);
+  fireEvent.click(searchButton);
+  await within(panel).findByText("1 local matches (maximum 100)");
+  const resultButton = within(panel).getByRole("button", { name: "Found conversation" });
+  fireEvent.click(resultButton);
+  await screen.findByText("Loaded");
+  assert.equal((screen.getByPlaceholderText(/auto \(filled in/) as HTMLInputElement).value, "found-1");
+});
+
+test("a failed local search reports the error instead of throwing", async () => {
+  await renderApp([[/^\/api\/conversations\/search/, () => new Response("nope", { status: 500 })]]);
+  const panel = conversationToolsPanel();
+  fireEvent.change(within(panel).getByLabelText("Search local history"), { target: { value: "needle" } });
+  fireEvent.click(within(panel).getByRole("button", { name: "Search history" }));
+  await within(panel).findByText(/History request returned HTTP 500\. Reload and try again\./);
+});
+
+test("conversation branches list parents and nodes, and continuing from an assistant node selects the branch", async () => {
+  localStorage.setItem("mirror-playground-remember-history", "true");
+  localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId: "conv-remembered", messages: [] }));
+  let branchBody: unknown;
+  await renderApp([
+    [
+      /^\/api\/conversations\/conv-remembered\/branches$/,
+      () =>
+        jsonResponse({
+          selected: "conv-remembered",
+          parent: "node-7",
+          items: [{ id: "conv-remembered", title: "Current" }, { id: "conv-saved", title: "Saved branch" }],
+          nodes: [
+            { id: "m-user", upstreamNodeId: "node-6", role: "user", status: "done" },
+            { id: "m-pending", upstreamNodeId: null, role: "assistant", status: "streaming" },
+            { id: "m-asst", upstreamNodeId: "node-7", role: "assistant", status: "done" },
+          ],
+        }),
+    ],
+    [
+      /^\/api\/conversations\/conv-remembered\/branch$/,
+      (_url, init) => {
+        branchBody = JSON.parse(String(init?.body));
+        return jsonResponse({ id: "conv-branched" });
+      },
+    ],
+  ]);
+  const panel = conversationToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Show conversation branches" }));
+  const continueButton = await within(panel).findByRole("button", { name: "Continue from this assistant" });
+  assert.ok(within(panel).getByRole("button", { name: "Saved branch" }));
+  // A node with no upstream node id yet (e.g. still streaming) falls back
+  // to a plain label instead of rendering a blank <code> element - and
+  // does not offer to "continue" from it (that button only appears once
+  // an assistant node has a real upstream node id).
+  assert.ok(within(panel).getByText("No upstream node"));
+  fireEvent.click(continueButton);
+  await screen.findByText("Loaded");
+  assert.deepEqual(branchBody, { messageId: "m-asst" });
+  assert.equal((screen.getByPlaceholderText(/auto \(filled in/) as HTMLInputElement).value, "conv-branched");
+  // Selecting a branch resets the branch listing itself (it belonged to the
+  // conversation we just navigated away from).
+  assert.equal(within(panel).queryByRole("button", { name: "Continue from this assistant" }), null);
+});
+
+test("selecting a listed branch (not the current one) loads it", async () => {
+  localStorage.setItem("mirror-playground-remember-history", "true");
+  localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId: "conv-remembered", messages: [] }));
+  await renderApp([
+    [
+      /^\/api\/conversations\/conv-remembered\/branches$/,
+      () =>
+        jsonResponse({
+          selected: "conv-remembered",
+          parent: "node-7",
+          items: [{ id: "conv-remembered", title: "Current" }, { id: "conv-saved", title: "Saved branch" }],
+          nodes: [],
+        }),
+    ],
+  ]);
+  const panel = conversationToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Show conversation branches" }));
+  fireEvent.click(await within(panel).findByRole("button", { name: "Saved branch" }));
+  await screen.findByText("Loaded");
+  assert.equal((screen.getByPlaceholderText(/auto \(filled in/) as HTMLInputElement).value, "conv-saved");
+});
+
+test("a failed request to create a branch reports the error instead of throwing", async () => {
+  localStorage.setItem("mirror-playground-remember-history", "true");
+  localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId: "conv-remembered", messages: [] }));
+  await renderApp([
+    [
+      /^\/api\/conversations\/conv-remembered\/branches$/,
+      () =>
+        jsonResponse({
+          selected: "conv-remembered",
+          parent: "node-7",
+          items: [{ id: "conv-remembered", title: "Current" }],
+          nodes: [{ id: "m-asst", upstreamNodeId: "node-7", role: "assistant", status: "done" }],
+        }),
+    ],
+    [/^\/api\/conversations\/conv-remembered\/branch$/, () => new Response("nope", { status: 500 })],
+  ]);
+  const panel = conversationToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Show conversation branches" }));
+  fireEvent.click(await within(panel).findByRole("button", { name: "Continue from this assistant" }));
+  await within(panel).findByText(/History request returned HTTP 500\. Reload and try again\./);
+});
+
+test("a failed branch listing reports the error instead of throwing", async () => {
+  localStorage.setItem("mirror-playground-remember-history", "true");
+  localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId: "conv-remembered", messages: [] }));
+  await renderApp([[/^\/api\/conversations\/conv-remembered\/branches$/, () => new Response("nope", { status: 404 })]]);
+  const panel = conversationToolsPanel();
+  fireEvent.click(within(panel).getByRole("button", { name: "Show conversation branches" }));
+  await within(panel).findByText(/History request returned HTTP 404\. Reload and try again\./);
+});
+
+test("export links include the selected attachment/metadata flags and format", async () => {
+  localStorage.setItem("mirror-playground-remember-history", "true");
+  localStorage.setItem("mirror-playground-snapshot", JSON.stringify({ conversationId: "conv-remembered", messages: [] }));
+  await renderApp();
+  const panel = conversationToolsPanel();
+  const jsonLink = () => within(panel).getByRole("link", { name: "Export JSON" });
+  const markdownLink = () => within(panel).getByRole("link", { name: "Export Markdown" });
+  assert.equal(jsonLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=false&metadata=false&format=json");
+  assert.equal(markdownLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=false&metadata=false&format=markdown");
+  fireEvent.click(within(panel).getByLabelText("Include attachment references (no file bytes)"));
+  fireEvent.click(within(panel).getByLabelText("Include IDs, model, and message metadata"));
+  assert.equal(jsonLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=true&metadata=true&format=json");
+  assert.equal(markdownLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=true&metadata=true&format=markdown");
 });
