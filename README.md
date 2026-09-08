@@ -12,13 +12,7 @@ You'll need Docker, and a ChatGPT account you're logged into in a browser.
 
 **1. Get your session token.**
 
-While logged into ChatGPT in your browser, navigate to:
-
-```
-https://chatgpt.com/api/auth/session
-```
-
-Open your browser's dev tools on that page and copy the value of the `__Secure-next-auth.session-token` cookie. This is the one credential Mirror needs — it's the same long-lived session cookie your browser already relies on to keep you logged in; Mirror uses it server-side to mint its own short-lived access tokens, and never needs anything else from you.
+While logged into ChatGPT in your browser, open [https://chatgpt.com/api/auth/session](https://chatgpt.com/api/auth/session). The session token is displayed on that page — copy it. This is the one credential Mirror needs — it's the same long-lived session cookie your browser already relies on to keep you logged in; Mirror uses it server-side to mint its own short-lived access tokens, and never needs anything else from you.
 
 **2. Configure and start the stack.**
 
