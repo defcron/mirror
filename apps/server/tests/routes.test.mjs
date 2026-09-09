@@ -881,3 +881,25 @@ test("cross-origin API authenticates with only OPENAI_API_KEY configured", async
     });
   }
 });
+
+test("new Custom GPT native chat hides file-search events but forwards Python events", () =>
+  withFetch(fetchRouter([
+    meRoute("acct-chat-visibility"),
+    [/\/backend-api\/conversation\/init$/, () => Response.json({ default_model_slug: "model-a" })],
+    [/\/backend-api\/gizmos\//, () => new Response("not found", { status: 404 })],
+    [/\/backend-api\/sentinel\/chat-requirements\/prepare$/, () => Response.json({ prepare_token: "p", proofofwork: { required: false } })],
+    [/\/backend-api\/sentinel\/chat-requirements\/finalize$/, () => Response.json({ token: "final" })],
+    [/\/backend-api\/f\/conversation$/, () => sseBody([
+      JSON.stringify({ type: "tool_status", tool_name: "file_search.msearch", text: "hidden search" }),
+      JSON.stringify({ type: "tool_status", tool_name: "python", status: "finished_successfully" }),
+      JSON.stringify({ p: "", o: "add", v: { conversation_id: "up-visibility", message: { id: "final", author: { role: "assistant" }, content: { content_type: "text", parts: ["Normal answer"] }, status: "finished_successfully" } } }),
+      "[DONE]",
+    ])],
+  ]), async () => {
+    useSession("acct-chat-visibility");
+    const res = await app.inject({ method: "POST", url: "/api/chat", headers: AUTH, payload: { prompt: "hello", gizmoId: "g-custom" } });
+    assert.equal(res.statusCode, 200);
+    assert.doesNotMatch(res.body, /file_search|hidden search/);
+    assert.match(res.body, /"name":"python"/);
+    assert.match(res.body, /"text":"Normal answer"/);
+  }));

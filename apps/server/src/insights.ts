@@ -17,12 +17,13 @@ export const IdParams = z.object({ id: z.string().min(1).max(200) });
 export function capabilities() {
   return {
     schemaVersion: 1,
-    routes: ["GET /v1/models", "POST /v1/chat/completions", "GET /v1/capabilities"],
+    routes: ["GET /v1/models", "POST /v1/chat/completions", "POST /v1/responses", "GET /v1/capabilities"],
     fields: Object.keys(CompletionBody.shape),
     metadataFields: ["conversation_id", "mirror_model", "private"],
     approximations: ["system/developer instructions"],
     ignored: ["stop", "max_tokens", "max_completion_tokens"],
     unsupported: ["tools", "tool_choice", "response_format", "temperature", "top_p", "seed", "n", "audio", "work_mode"],
+    responses: { textInput: true, streaming: true, previousResponseId: false, retrieval: false, tools: false, continuation: "metadata.conversation_id or full input history" },
     usage: null,
     conversation: { minimalContinuation: true, fullHistory: true, assistantEditable: false, streamId: "SSE comment", jsonId: "x-mirror-conversation-id" },
   };

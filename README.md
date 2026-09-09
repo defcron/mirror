@@ -45,7 +45,9 @@ Besides the proxied ChatGPT interface, Mirror ships a second page — the **Play
 http://127.0.0.1:8799/mirror/playground
 ```
 
-It's a lightweight chat-completions tester: pick a live model from your account, send messages, and watch streaming or non-streaming responses come back exactly as `/v1/chat/completions` would return them to any OpenAI SDK. You can edit or remove individual turns and re-run from that point, continue an existing upstream ChatGPT thread via its conversation id, and load previous Mirror conversations into the working history. It's meant as a quick way to sanity-check requests and inspect exact response shapes before wiring up real client code — everything it does goes through the same `/v1/chat/completions` endpoint documented below, so anything that works in the Playground will work the same way from `curl` or an SDK.
+The Playground offers **Chat** (`/v1/chat/completions`) and **Responses** (`/v1/responses`) modes. Pick a live model, send text messages, and inspect streamed or JSON output in either API format. Switching modes keeps your transcript and Mirror conversation ID. User turns remain editable; assistant replies remain read-only. Both modes use the same conversation engine and can load and continue saved Mirror conversations.
+
+Responses supports text input, instructions, named streaming events, and one-shot requests. Continue using `metadata.conversation_id` or full input history. This is a documented subset: tools, image/file input, `previous_response_id`, response retrieval, and background mode are not supported.
 
 By default the Playground keeps its bearer token in memory only and doesn't persist message history; there's a "Remember prompt history on this device" toggle if you want it to keep your working history in the browser's `localStorage` between visits — flip it back off to clear it.
 
@@ -268,3 +270,12 @@ not an automatic retention policy.
 with `npm run manifest` after changing files; CI checks that it is current.
 
 `OPENAI_API_KEY` also works as an inbound Mirror API key (including in Docker Compose) — see the [configuration reference](#configuration-reference) and [client setup](#connecting-cm-chatgptbox-and-other-openai-compatible-clients) above for the full explanation; it is not an upstream OpenAI credential.
+
+
+### Optional cm integration test
+
+Mirror's build and test suite do not require cm, its source checkout, or Rust. One optional integration test runs an existing `cm` executable against an isolated Mirror server with synthetic upstream responses. It verifies three turns across SSE and JSON, retained conversation identity, saved instructions, and the upstream assistant parent. It does not use your real session or cm state.
+
+The test looks for an installed `cm` (`cm.exe` on Windows) on `PATH`. Set `CM_TEST_BINARY` to use another executable path. If that binary is missing, only this real-client test is skipped with an explicit reason; all standalone Mirror tests still run. If the binary exists, client failures fail the test. No platform is automatically excluded, and the suite never builds or installs cm.
+
+CI does not check out cm or install Rust. Tests that exercise cm-style API requests using synthetic fixtures remain unconditional because they have no dependency on the cm project.

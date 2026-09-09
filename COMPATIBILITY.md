@@ -29,7 +29,7 @@ Because of this, Mirror rejects `role: "tool"` messages outright and doesn't acc
 
 **Exact token usage (`usage.prompt_tokens` / `completion_tokens` / `total_tokens`).** backend-api doesn't report token counts anywhere in its response envelope — ChatGPT bills by subscription/plan usage windows, not per-token metering, so there's nothing to read. Mirror's completions always return `usage: null` rather than fabricate a number from a tokenizer that may not even match the real one for a given model slug.
 
-**Separate endpoints that have no ChatGPT-web equivalent at all**: `/v1/embeddings`, `/v1/audio/*` (Whisper transcription, TTS), `/v1/images/generations` as a standalone endpoint (distinct from in-chat DALL-E — see Part 2), `/v1/moderations`, `/v1/fine_tuning/*`, `/v1/batches`, and the Assistants/Responses API surface. None of these map onto anything chatgpt.com's own web client calls, so there's no backend-api traffic to reverse-engineer against in the first place.
+**Separate endpoints that have no ChatGPT-web equivalent at all**: `/v1/embeddings`, `/v1/audio/*` (Whisper transcription, TTS), `/v1/images/generations` as a standalone endpoint (distinct from in-chat DALL-E — see Part 2), `/v1/moderations`, `/v1/fine_tuning/*`, `/v1/batches`, and the Assistants API surface. None of these map onto anything chatgpt.com's own web client calls, so there's no backend-api traffic to reverse-engineer against in the first place.
 
 ### Accepted for compatibility, without limiting the answer
 
@@ -72,3 +72,41 @@ These are real features of the product Mirror proxies that have **no equivalent 
 ## Where this leaves "full compatibility"
 
 Given the above, "fully OpenAI-compatible" isn't a reachable end state for this specific pairing — some gaps in Part 1 are permanent by construction (there is no dial upstream to turn), and some gaps in Part 2 are ChatGPT product features that the OpenAI API format has no slot for, no matter how much of backend-api gets reverse-engineered. The realistic target is: match the official request/response *shape* as closely as backend-api's actual capabilities allow, reject unsupported fields loudly and immediately rather than silently ignoring them (this is already Mirror's policy — see the strict Zod schemas in `apps/server/src/openai.ts`), and keep this document current as more of backend-api gets mapped or as OpenAI's own API surface changes.
+
+
+## Responses API text subset
+
+`POST /v1/responses` adapts text generation to the Responses request/output format. It shares the Chat Completions engine, persistence, account checks, immutable assistant history, cancellation, deadlines, and WARP egress.
+
+- `input`: a string or message array with `system`, `developer`, `user`, or `assistant` roles. Content can be a string or `input_text`/`output_text` parts. Returned assistant message items can be included in subsequent input history.
+- `instructions`: optional system instructions. `model`, `stream`, `store`, and Mirror `metadata` routing fields are supported. `max_output_tokens` is accepted but ignored so answers remain complete.
+- JSON returns a `response` object with a completed assistant message in `output` and `output_text` content parts. Token `usage` is null.
+- Streaming emits named `response.created`, `response.in_progress`, output-item/content-part lifecycle events, `response.output_text.delta`, and `response.completed`. Failures emit `response.failed`; truncated streams must not be treated as success. Empty text deltas keep silent connections active every ten seconds. There is no Chat Completions `[DONE]` marker.
+- Continue with the returned `metadata.conversation_id` (also a JSON response header) or resend full input history. Response IDs identify individual results; they are not conversation IDs. `previous_response_id` and GET/retrieve/delete response endpoints are not implemented.
+- Mirror's `store:false` means a non-resumable one-shot, as in Chat mode. It omits the continuation ID. This differs from OpenAI's response-object storage semantics; Mirror does not store retrievable response objects.
+- Tools/function calls, images/files/audio, structured output, background mode, and other unsupported request fields are rejected with HTTP 400 rather than silently ignored.
+
+```json
+{
+  "model": "auto",
+  "input": "Say hello in one sentence.",
+  "stream": true
+}
+```
+
+The Playground's **Responses** sidebar item exercises this endpoint directly. Its Messages editor sends `input` instead of Chat Completions `messages`; its Output/Raw views show text and the Responses payload respectively.
+
+### First response in a Custom GPT or Project
+
+On the first upstream turn of a new Custom GPT (`g-…`) or Project (`g-p-…`)
+conversation, Mirror displays the assistant answer and Python tool output
+(`python` and `python_user_visible`, including their namespaced variants).
+Other tool logs, file-search results/status cards, commentary preambles, and
+reasoning summaries are excluded from rendered output and public tool metadata.
+Attachments discovered only inside those hidden events are not appended or
+resolved; attachments in the normal answer and Python output still work.
+The original events remain in local storage with a display visibility flag.
+This rule applies to Chat Completions and Responses, streaming and JSON, and
+Mirror's native chat event feed. Follow-ups in existing upstream conversations
+and ordinary model chats retain their usual output. The proxied ChatGPT website
+continues to use ChatGPT's own rendering.

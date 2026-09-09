@@ -551,6 +551,16 @@ export class ChatGptBackendClient {
     return json.download_url;
   }
 
+  async resolveSandboxDownload(
+    sandboxPath: string, conversationId: string | null, messageId: string | null, signal?: AbortSignal,
+  ): Promise<string> {
+    if (!conversationId || !messageId || !sandboxPath.startsWith("/")) throw new BackendApiError("Sandbox download requires conversation, message and absolute path");
+    const params = new URLSearchParams({ message_id: messageId, sandbox_path: sandboxPath });
+    const json = await this.getJson(`/conversation/${encodeURIComponent(conversationId)}/interpreter/download?${params}`, signal);
+    if (typeof json.download_url !== "string") throw new BackendApiError("Sandbox metadata returned no download_url");
+    return json.download_url;
+  }
+
   private buildUserMessage(
     prompt: string,
     attachments: UploadedFile[],
@@ -674,7 +684,11 @@ export class ChatGptBackendClient {
       );
     }
 
-    const reducer = new ConversationStreamReducer();
+    // Scope display suppression to a new upstream Custom GPT/Project chat.
+    // Python output remains visible; existing upstream threads are unaffected.
+    const reducer = new ConversationStreamReducer({
+      suppressFirstTurnToolNarration: firstTurn && Boolean(opts.gizmoId),
+    });
     const allEvents: NormalizedConversationEvent[] = [];
     const reader = res.body.getReader();
     const decoder = new TextDecoder();

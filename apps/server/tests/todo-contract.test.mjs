@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync, rmSync, existsSync, readFileSync, openSync, readSync, closeSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -144,36 +144,24 @@ test("deadlines abort hung calls, preserve failed rows and release queued conver
   await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(timed.signal.reason.statusCode, 504); d.close();
 });
 
-function isRunnableOnThisPlatform(binary) {
-  // A cm binary can be present on disk (built by the user on their own
-  // machine, e.g. a macOS Mach-O executable) yet not runnable in whatever
-  // sandbox happens to run this suite (a Linux container). Rather than
-  // pattern-matching a spawn failure's stderr text (fragile across shells
-  // and OSes), read the file's own magic bytes: only a real ELF binary
-  // (0x7f 'E' 'L' 'F') can execute on Linux. Anything else - Mach-O, PE,
-  // a stale placeholder - means "skip", not "cm is broken".
-  if (process.platform !== "linux") return false;
-  const fd = openSync(binary, "r");
-  try {
-    const magic = Buffer.alloc(4);
-    readSync(fd, magic, 0, 4, 0);
-    return magic.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
-  } finally { closeSync(fd); }
-}
-
-test("actual cm subprocesses interoperate across streamed and JSON turns with isolated state", async t => {
-  const binary = path.resolve("../cm/target/debug/cm");
-  if (!existsSync(binary)) return t.skip("Build cm to enable the sibling-client contract test");
-  if (!isRunnableOnThisPlatform(binary)) return t.skip("cm binary on disk is not runnable on this platform (likely built for a different OS/arch)");
+test("actual cm subprocesses interoperate across streamed and JSON turns with isolated state", { timeout: 100_000 }, async t => {
+  // Optional real-client coverage. Mirror's own contracts run independently;
+  // never install/build cm or require its source/Rust toolchain here.
+  const binary = process.env.CM_TEST_BINARY
+    ? path.resolve(process.env.CM_TEST_BINARY)
+    : (process.env.PATH ?? "").split(path.delimiter)
+      .map(directory => path.join(directory, process.platform === "win32" ? "cm.exe" : "cm"))
+      .find(candidate => existsSync(candidate));
+  if (!binary || !existsSync(binary)) return t.skip("Optional cm binary is missing; set CM_TEST_BINARY to an existing executable to enable this integration test");
   session(); const sent = []; globalThis.fetch = stubBackend("fixture-account", { sent });
   const address = await app.listen({ port: 0, host: "127.0.0.1" });
   const env = { ...process.env, CM_STATE_DIR: path.join(dir, "cm"), CM_BASE_URL: address, CM_API_KEY: "fixture-key", CM_MODEL: "auto" };
-  const first = await run(binary, ["--new", "--system", "Keep fixture instructions", "hello"], { cwd: dir, env });
+  const first = await run(binary, ["--new", "--system", "Keep fixture instructions", "hello"], { cwd: dir, env, timeout: 30_000 });
   assert.match(first.stdout, /reply-1/);
   const state = () => JSON.parse(readFileSync(path.join(env.CM_STATE_DIR, "state.json"), "utf8")).threads.default.conversation_id;
   const id = state();
-  await run(binary, ["followup"], { cwd: dir, env }); assert.equal(state(), id);
-  await run(binary, ["--no-stream", "third"], { cwd: dir, env }); assert.equal(state(), id);
+  await run(binary, ["followup"], { cwd: dir, env, timeout: 30_000 }); assert.equal(state(), id);
+  await run(binary, ["--no-stream", "third"], { cwd: dir, env, timeout: 30_000 }); assert.equal(state(), id);
   assert.equal(store.listMessages(id).length, 6);
   assert.equal(store.getInstructions(id)[0].content, "Keep fixture instructions");
   assert.equal(sent.filter(item => item.pathname.endsWith("/f/conversation")).at(-1).body.parent_message_id, "assistant-2");

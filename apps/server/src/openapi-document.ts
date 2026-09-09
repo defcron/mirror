@@ -1,3 +1,4 @@
+import { ResponsesBody } from "./responses.js";
 import "./zod-openapi-init.js";
 import { createDocument, type oas31, type ZodOpenApiPathsObject } from "zod-openapi";
 import { z } from "zod";
@@ -723,6 +724,20 @@ export function buildOpenApiDocument(): oas31.OpenAPIObject {
               description: "Missing/invalid Mirror API key",
               content: { "application/json": { schema: ErrorResponse } },
             },
+          },
+        },
+      },
+      "/v1/responses": {
+        post: {
+          summary: "Create a text response",
+          description: "Text-only Responses subset using Mirror conversation semantics. Continue with metadata.conversation_id or full input history. No previous_response_id, retrieval, tools, or background mode. max_output_tokens is accepted but ignored. store=false is a non-resumable one-shot.",
+          tags: ["OpenAI-compatible"],
+          requestBody: { content: { "application/json": { schema: ResponsesBody } } },
+          responses: {
+            "200": { description: "Response object with assistant output_text parts, or named Responses SSE events ending in response.completed (response.failed on failure). usage is null.",
+              content: { "application/json": { schema: z.object({ id: z.string(), object: z.literal("response"), status: z.literal("completed"), output: z.array(z.object({ type: z.literal("message"), role: z.literal("assistant"), content: z.array(z.object({ type: z.literal("output_text"), text: z.string() }).passthrough()) }).passthrough()), metadata: z.record(z.string()), usage: z.null() }).passthrough() }, "text/event-stream": { schema: z.string() } } },
+            "400": { description: "Invalid or unsupported input", content: { "application/json": { schema: ErrorResponse } } },
+            "401": { description: "Missing/invalid Mirror API key", content: { "application/json": { schema: ErrorResponse } } },
           },
         },
       },

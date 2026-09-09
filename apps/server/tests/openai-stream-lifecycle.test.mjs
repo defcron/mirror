@@ -9,11 +9,11 @@ import { stubBackend } from "./helpers/backend.mjs";
 const dir = mkdtempSync(path.join(tmpdir(), "mirror-stream-lifecycle-"));
 process.env.MIRROR_DATA_DIR = dir;
 const store = await import("../dist/store.js");
-const { registerOpenAiRoutes } = await import("../dist/openai.js");
+const { registerOpenAiRoutes, remainingStreamText } = await import("../dist/openai.js");
 const nativeFetch = globalThis.fetch;
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
-test("a seventh full-history turn sends parseable keepalives while upstream is silent, then continues the same parent", { timeout: 5000 }, async t => {
+for (const responses of [false, true]) test(`a seventh full-history ${responses ? "Responses" : "Chat"} turn sends parseable keepalives while upstream is silent, then continues the same parent`, { timeout: 5000 }, async t => {
   store.saveVerifiedSession("fixture-session", "heartbeat-account");
   store.updateMintedToken("fixture-access", Date.now() + 3600000, null);
   const sent = [];
@@ -45,9 +45,9 @@ test("a seventh full-history turn sends parseable keepalives while upstream is s
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     pause = true;
     t.mock.timers.enable({ apis: ["setInterval"] });
-    const response = await nativeFetch(`${address}/v1/chat/completions`, {
+    const response = await nativeFetch(`${address}/v1/${responses ? "responses" : "chat/completions"}`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ messages: [...history, { role: "user", content: "seventh turn with apostrophes, (parentheses), and tool call intent" }], stream: true }),
+      body: JSON.stringify({ [responses ? "input" : "messages"]: [...history, { role: "user", content: "seventh turn with apostrophes, (parentheses), and tool call intent" }], stream: true }),
     });
     reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -62,9 +62,14 @@ test("a seventh full-history turn sends parseable keepalives while upstream is s
         new Promise((_, reject) => setTimeout(() => reject(new Error("No SSE data heartbeat during upstream preparation")), 100)),
       ]);
       const text = decoder.decode(heartbeat.value);
-      const event = JSON.parse(text.trim().slice("data: ".length));
-      assert.equal(event.object, "chat.completion.chunk");
-      assert.deepEqual(event.choices, [{ index: 0, delta: { content: "" }, finish_reason: null }]);
+      const event = JSON.parse(text.split("\n").find(line => line.startsWith("data: ")).slice(6));
+      if (responses) {
+        assert.equal(event.type, "response.output_text.delta");
+        assert.equal(event.delta, "");
+      } else {
+        assert.equal(event.object, "chat.completion.chunk");
+        assert.deepEqual(event.choices, [{ index: 0, delta: { content: "" }, finish_reason: null }]);
+      }
       output += text;
     }
     gate.resolve();
@@ -74,8 +79,8 @@ test("a seventh full-history turn sends parseable keepalives while upstream is s
       output += decoder.decode(chunk.value);
     }
     assert.match(output, /reply-7/);
-    assert.match(output, /\[DONE\]/);
-    assert.match(output, new RegExp(`mirror-conversation-id ${id}`));
+    assert.match(output, responses ? /response.completed/ : /\[DONE\]/);
+    assert.match(output, responses ? new RegExp(`"conversation_id":"${id}"`) : new RegExp(`mirror-conversation-id ${id}`));
     const lastTurn = sent.filter(item => item.pathname.endsWith("/f/conversation")).at(-1).body;
     assert.equal(lastTurn.parent_message_id, "assistant-6");
     assert.equal(lastTurn.conversation_id, "upstream-1");
@@ -154,3 +159,13 @@ for (const failure of ["idle deadline", "heartbeat write"]) {
     }
   });
 }
+
+
+test("stream output may append to delivered text but cannot replace or truncate it", () => {
+  assert.equal(remainingStreamText("hé🙂 complete", "hé🙂"), " complete");
+  assert.equal(remainingStreamText("same", "same"), "");
+  assert.equal(remainingStreamText("first answer", ""), "first answer");
+  for (const replacement of ["different answer", "already", ""]) {
+    assert.throws(() => remainingStreamText(replacement, "already delivered"), /changed text already delivered/);
+  }
+});

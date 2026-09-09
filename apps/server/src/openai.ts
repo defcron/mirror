@@ -1,3 +1,5 @@
+import { needsRichOutput, renderRichOutput, type RichOutput } from "./rich-output.js";
+import { ResponsesBody, responsesToCompletion, createResponseWriter } from "./responses.js";
 import { abortable, turnDeadline } from "./deadlines.js";
 import { apiError, recordFailure } from "./api-errors.js";
 import "./zod-openapi-init.js";
@@ -277,11 +279,11 @@ function buildResponseMetadata(
 ): Record<string, string> | undefined {
   const toolEvents = events.filter(
     (event): event is Extract<NormalizedConversationEvent, { kind: "tool" }> =>
-      event.kind === "tool",
+      event.kind === "tool" && !event.displayHidden,
   );
   const imageEvents = events.filter(
     (event): event is Extract<NormalizedConversationEvent, { kind: "image" }> =>
-      event.kind === "image",
+      event.kind === "image" && !event.displayHidden,
   );
   const metadata: Record<string, string> = {};
   if (toolEvents.length) {
@@ -514,6 +516,12 @@ function withConversationLock<T>(
  * against, instead of maintaining a second, hand-written copy that can
  * silently drift out of sync with what the server actually accepts.
  */
+/** SSE is append-only: reject a renderer that would rewrite delivered text. */
+export function remainingStreamText(responseText: string, emittedText: string): string {
+  if (!responseText.startsWith(emittedText)) throw new Error("Upstream changed text already delivered to the client");
+  return responseText.slice(emittedText.length);
+}
+
 export { CompletionBody, OpenAiMessage, ContentPart };
 
 export async function registerOpenAiRoutes(
@@ -565,8 +573,18 @@ export async function registerOpenAiRoutes(
     };
   });
 
-  app.post("/v1/chat/completions", async (req: FastifyRequest, reply) => {
-    const parsed = CompletionBody.safeParse(req.body);
+  const handleCompletion = async (req: FastifyRequest, reply: FastifyReply) => {
+    const isResponses = req.routeOptions.url === "/v1/responses";
+    const responsesParsed = isResponses ? ResponsesBody.safeParse(req.body) : undefined;
+    if (responsesParsed && !responsesParsed.success) {
+      return reply.code(400).send({ error: { type: "invalid_request_error",
+        message: responsesParsed.error.issues.map(issue => issue.message).join("; ") } });
+    }
+    const responses = responsesParsed?.success ? createResponseWriter(responsesParsed.data, event => {
+      reply.raw.write(`event: ${event.type}\n`);
+      sse(reply, event);
+    }) : undefined;
+    const parsed = CompletionBody.safeParse(responsesParsed?.success ? responsesToCompletion(responsesParsed.data) : req.body);
     if (!parsed.success) {
       return reply.code(400).send({
         error: {
@@ -579,6 +597,9 @@ export async function registerOpenAiRoutes(
     const body = parsed.data;
     if ((body.metadata?.mirror_model ?? body.model).endsWith("-wm")) return reply.code(400).send({ error: {message: "Work Mode is not supported by Mirror; select an interactive model", type: "unsupported_parameter"} });
     let streamedText = "";
+    let emittedText = "";
+    let rich = false;
+    let richOutput: RichOutput | undefined;
     const streamedMessages = new Map<string | null, string>();
     const capturedEvents: NormalizedConversationEvent[] = [];
     let messages = normalized(body.messages);
@@ -697,7 +718,8 @@ export async function registerOpenAiRoutes(
         // setup inside try/finally so a failure after hijack still cleans up.
         if (typeof reply.raw.socket?.setNoDelay === "function")
           reply.raw.socket.setNoDelay(true);
-        sse(reply, {
+        if (responses) responses.start();
+        else sse(reply, {
           id: completionId,
           object: "chat.completion.chunk",
           created,
@@ -717,7 +739,8 @@ export async function registerOpenAiRoutes(
         // modify the transcript, or signal that generation has finished.
         heartbeat = setInterval(() => {
           try {
-            sse(reply, {
+            if (responses) responses.delta("");
+            else sse(reply, {
               id: completionId,
               object: "chat.completion.chunk",
               created,
@@ -968,6 +991,7 @@ export async function registerOpenAiRoutes(
             onEvent: (event) => {
               deadline.touch();
               capturedEvents.push(event);
+              rich ||= needsRichOutput(event);
               if (!body.stream || event.kind !== "assistant_text") return;
               const previous = streamedMessages.get(event.messageId) ?? "";
               streamedMessages.set(event.messageId, event.text);
@@ -979,14 +1003,21 @@ export async function registerOpenAiRoutes(
               const append = previous && event.text.startsWith(previous)
                 ? event.text.slice(previous.length)
                 : (streamedText ? "\n\n" : "") + event.text;
-              sse(reply, {
-                id: completionId,
-                object: "chat.completion.chunk",
-                created,
-                model: body.model,
-                choices: [{ index: 0, delta: { content: append }, finish_reason: null }],
-              });
               streamedText += append;
+              // Keep the unfinished line and reference-bearing suffix until
+              // late file metadata has arrived. SSE heartbeats remain active.
+              if (!rich) {
+                const boundary = streamedText.lastIndexOf("\n") + 1;
+                const reference = streamedText.search(/\[|[\uE000-\uF8FF]|sandbox:|file-service:|sediment:/);
+                const safe = streamedText.slice(0, reference < 0 ? boundary : Math.min(boundary, reference));
+                const delta = safe.slice(emittedText.length);
+                if (delta) {
+                  if (responses) responses.delta(delta);
+                  else sse(reply, { id: completionId, object: "chat.completion.chunk", created, model: body.model,
+                    choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] });
+                  emittedText += delta;
+                }
+              }
             },
           });
         } catch (error) {
@@ -1004,7 +1035,26 @@ export async function registerOpenAiRoutes(
         // The API transcript must be exactly what the caller can send back.
         // The upstream retains its own full tree; captured events preserve
         // the underlying snapshots independently of this logical API answer.
-        const responseText = body.stream ? streamedText : result.text;
+        let responseText = body.stream ? streamedText : result.text;
+        if (rich) {
+          const downloadClient = new ChatGptBackendClient(await getValidCredentials());
+          richOutput = await renderRichOutput(capturedEvents, responseText, (pointer, messageId) =>
+            pointer.startsWith("sandbox:")
+              ? downloadClient.resolveSandboxDownload(pointer.slice("sandbox:".length), conversation.conversationId, messageId ?? result.messageId, controller.signal)
+              : downloadClient.resolveAssetDownload(pointer, conversation.conversationId, controller.signal));
+          controller.signal.throwIfAborted();
+          assertSessionRevision(requestRevision);
+          responseText = richOutput.text;
+          responses?.setSummaries(richOutput.summaries);
+        }
+        if (body.stream) {
+          const delta = remainingStreamText(responseText, emittedText);
+          if (delta) {
+            if (responses) responses.delta(delta);
+            else sse(reply, { id: completionId, object: "chat.completion.chunk", created, model: body.model,
+              choices: [{ index: 0, delta: { content: delta }, finish_reason: null }] });
+          }
+        }
         if (!oneShot) {
           if (!continuing) {
             // A first/rebased upstream turn is sent as one synthetic prompt
@@ -1068,9 +1118,24 @@ export async function registerOpenAiRoutes(
         }
 
 
-        const responseMetadata = buildResponseMetadata(capturedEvents, conversation.conversationId);
+        const responseMetadata = buildResponseMetadata(capturedEvents, conversation.conversationId) ?? (richOutput ? {} : undefined);
+        if (richOutput && responseMetadata) {
+          responseMetadata.mirror_assets = JSON.stringify(richOutput.assets);
+          responseMetadata.mirror_tool_outputs = JSON.stringify(richOutput.tools);
+          if (richOutput.summaries.length) responseMetadata.mirror_reasoning_summaries = JSON.stringify(richOutput.summaries);
+          const resolvedImages = richOutput.assets.filter(asset => asset.url && capturedEvents.some(event => event.kind === "image" && event.assetPointer === asset.pointer));
+          if (resolvedImages.length) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
+        }
 
+        const responseFields = { ...body.metadata, ...responseMetadata,
+          ...(!oneShot ? { conversation_id: conversation.id } : {}) };
+        if (oneShot) delete responseFields.conversation_id;
         if (body.stream) {
+          if (responses) {
+            responses.complete(responseText, conversation.model, responseFields);
+            reply.raw.end();
+            return;
+          }
           // Not part of the OpenAI chunk schema: an SSE comment line (ignored
           // by any spec-compliant SSE parser) carrying the Mirror conversation
           // id, since HTTP response headers can no longer be set once the
@@ -1091,6 +1156,7 @@ export async function registerOpenAiRoutes(
           return;
         }
         if (!oneShot) reply.header("x-mirror-conversation-id", conversation.id);
+        if (responses) return reply.send(responses.response(responseText, "completed", conversation.model, responseFields));
         return reply.send({
           id: completionId,
           object: "chat.completion",
@@ -1114,7 +1180,8 @@ export async function registerOpenAiRoutes(
       const envelope = apiError(status, message, req.id);
       if (body.stream) {
         recordFailure(envelope.error.code, req.id);
-        sse(reply, envelope);
+        if (responses) responses.fail(envelope.error.message, envelope.error.code);
+        else sse(reply, envelope);
         reply.raw.end();
         return;
       }
@@ -1123,5 +1190,7 @@ export async function registerOpenAiRoutes(
       clearInterval(heartbeat);
       deadline.close();
     }
-  });
+  };
+  app.post("/v1/chat/completions", handleCompletion);
+  app.post("/v1/responses", handleCompletion);
 }

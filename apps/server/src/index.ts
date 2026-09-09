@@ -83,7 +83,7 @@ import {
 
 function isPublicApiPath(url: string): boolean {
   const pathname = url.split("?", 1)[0];
-  return pathname === "/v1/models" || pathname === "/v1/chat/completions" || pathname === "/v1/capabilities";
+  return pathname === "/v1/responses" || pathname === "/v1/models" || pathname === "/v1/chat/completions" || pathname === "/v1/capabilities";
 }
 
 export async function buildApp() {
@@ -431,6 +431,7 @@ function publicEvent(
   event: NormalizedConversationEvent,
 ): Record<string, unknown> | null {
   if (
+    event.displayHidden ||
     event.kind === "raw" ||
     event.kind === "assistant_text" ||
     event.kind === "message"

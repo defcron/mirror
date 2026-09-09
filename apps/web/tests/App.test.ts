@@ -1238,3 +1238,30 @@ test("export links include the selected attachment/metadata flags and format", a
   assert.equal(jsonLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=true&metadata=true&format=json");
   assert.equal(markdownLink().getAttribute("href"), "/api/conversations/conv-remembered/export?attachments=true&metadata=true&format=markdown");
 });
+
+for (const transport of ["stream", "metadata", "header"]) test(`Responses mode ${transport} retains the transcript and switches back to Chat`, async () => {
+  let posted: any;
+  await renderApp([[/^\/v1\/responses$/, (_url, init) => {
+    posted = JSON.parse(String(init?.body));
+    const response = { status: "completed", ...(transport !== "header" ? { metadata: { conversation_id: "responses-id" } } : {}),
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Responses answer" }] }] };
+    if (transport === "stream") return new Response(`data: ${JSON.stringify({ type: "response.completed", response })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    return jsonResponse(response, { headers: { "x-mirror-conversation-id": "responses-id" } });
+  }]]);
+  const chat = screen.getByRole("button", { name: /Chat$/ });
+  fireEvent.click(chat); // selecting the current mode preserves its state
+  fireEvent.click(screen.getByRole("button", { name: /Responses$/ }));
+  assert.ok(screen.getByRole("heading", { name: "Responses" }));
+  fireEvent.click(screen.getByRole("button", { name: /Responses$/ }));
+  if (transport !== "stream") fireEvent.click(screen.getByRole("checkbox", { name: /Stream/ }));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  assert.ok(Array.isArray(posted.input));
+  assert.equal(posted.messages, undefined);
+  assert.ok(screen.getAllByDisplayValue("Responses answer").length);
+  assert.equal((screen.getByLabelText(/Conversation ID/i) as HTMLInputElement).value, "responses-id");
+  fireEvent.click(chat);
+  assert.ok(screen.getByRole("heading", { name: "Chat" }));
+  assert.ok(screen.getAllByDisplayValue("Responses answer").length);
+  assert.equal((screen.getByLabelText(/Conversation ID/i) as HTMLInputElement).value, "responses-id");
+});

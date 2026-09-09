@@ -119,7 +119,9 @@ function contentOf(message: Record<string, unknown>): Record<string, unknown> | 
 function messageText(message: Record<string, unknown>): string {
   const content = contentOf(message);
   const parts = Array.isArray(content?.parts) ? content?.parts : [];
-  return typeof parts[0] === "string" ? parts[0] : "";
+  return parts.map(part => typeof part === "string" ? part
+    : isPlainObject(part) && typeof part.asset_pointer === "string" ? part.asset_pointer
+    : "").filter(Boolean).join("\n\n");
 }
 
 function scanSpecials(
@@ -180,7 +182,35 @@ function scanSpecials(
   }
 }
 
+/** Assistant-authored status cards that are not the normal answer. */
+const FIRST_TURN_TOOL_NARRATION_CONTENT_TYPES = new Set([
+  "tether_browsing_display",
+  "tether_browsing_code",
+  "computer_output",
+  "computer_initialize_state",
+  "system_content",
+  "developer_content",
+  "system_message",
+  "system_error",
+  "sonic_webpage",
+  "citable_code_output",
+  "user_editable_context",
+  "model_editable_context",
+]);
+
+function isPythonTool(name: string): boolean {
+  return /^(?:python|python_user_visible)(?:\.|$)/.test(name);
+}
+
+export interface ConversationStreamReducerOptions {
+  /** First upstream turn of a Custom GPT/Project: show the answer and Python
+   * output only. Keep other events with displayHidden for diagnostics, without
+   * promoting them into text, tool metadata, summaries, or output attachments. */
+  suppressFirstTurnToolNarration?: boolean;
+}
+
 export class ConversationStreamReducer {
+  private displayHidden = false;
   private lastPath = "";
   private lastOp = "";
   private currentMessage: Record<string, unknown> | null = null;
@@ -193,6 +223,8 @@ export class ConversationStreamReducer {
   private errorCode: string | null = null;
   private finalAssistantId: string | null = null;
   private normalized: NormalizedConversationEvent[] = [];
+
+  constructor(private readonly opts: ConversationStreamReducerOptions = {}) {}
 
   feed(payload: string): StreamEvent {
     const event = parseSseEvent(payload, {
@@ -210,7 +242,7 @@ export class ConversationStreamReducer {
   }
 
   private push(event: NormalizedConversationEvent): void {
-    this.normalized.push(event);
+    this.normalized.push(structuredClone(this.displayHidden ? { ...event, displayHidden: true } : event));
   }
 
   private apply(event: StreamEvent): void {
@@ -226,8 +258,12 @@ export class ConversationStreamReducer {
     }
 
     if (event.kind === "typed") {
+      const previousVisibility = this.displayHidden;
+      const name = asString(event.raw.tool_name) ?? asString(event.raw.name) ?? "";
+      this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isPythonTool(name);
       this.applyTyped(event.type, event.raw);
       scanSpecials(event.raw, (normalized) => this.push(normalized));
+      this.displayHidden = previousVisibility;
       return;
     }
 
@@ -313,6 +349,14 @@ export class ConversationStreamReducer {
     const contentType = content ? asString(content.content_type) : null;
     const authorName = authorNameOf(message);
 
+    const channel = asString(message.channel);
+    const python = isPythonTool(authorName ?? "") || isPythonTool(asString(message.recipient) ?? "");
+    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !python &&
+      (role !== "assistant" || Boolean(authorName) || channel === "analysis" || channel === "commentary" ||
+        Boolean(message.recipient && message.recipient !== "all") ||
+        contentType === "reasoning_recap" || contentType === "summary" ||
+        (contentType !== null && FIRST_TURN_TOOL_NARRATION_CONTENT_TYPES.has(contentType)));
+
     this.push({
       kind: "message",
       messageId: this.currentMessageId,
@@ -322,10 +366,43 @@ export class ConversationStreamReducer {
       raw: message,
     });
 
-    if (role === "assistant" && this.currentMessageId) {
+    // Real captures of a gizmo/Project's first turn show the "thinking
+    // preamble"/pre-tool-call narration (e.g. "Let me check your files...")
+    // arriving as an ordinary author.role === "assistant", recipient === "all"
+    // message on channel === "commentary" - distinct from `channel ===
+    // "analysis"` (chain-of-thought, already excluded above) and from the
+    // tool call/result messages themselves, which carry a specific non-"all"
+    // recipient (e.g. "file_search.msearch", "python") and are therefore
+    // already excluded by the recipient check below regardless of this flag.
+    const isFirstTurnToolNarration =
+      Boolean(this.opts.suppressFirstTurnToolNarration) && !python &&
+      (channel === "commentary" ||
+        (contentType !== null && FIRST_TURN_TOOL_NARRATION_CONTENT_TYPES.has(contentType)));
+
+    if (role === "assistant" && this.currentMessageId &&
+      channel !== "analysis" && (!message.recipient || message.recipient === "all") &&
+      contentType !== "reasoning_recap" && contentType !== "summary" &&
+      !isFirstTurnToolNarration && !this.displayHidden) {
       this.currentAssistantId = this.currentMessageId;
-      this.assistantTexts.set(this.currentMessageId, messageText(message));
-      if (messageText(message)) this.push({kind: "assistant_text", messageId: this.currentMessageId, delta: messageText(message), text: messageText(message)});
+      const previous = this.assistantTexts.get(this.currentMessageId);
+      const next = messageText(message);
+      this.assistantTexts.set(this.currentMessageId, next);
+      if (next !== (previous ?? "")) this.push({kind: "assistant_text", messageId: this.currentMessageId,
+        delta: previous && next.startsWith(previous) ? next.slice(previous.length) : next, text: next});
+    }
+
+    if (isFirstTurnToolNarration) {
+      // Keep the original narration for diagnostics without treating it as
+      // a visible tool or forcing the rich-output buffering pass.
+      this.push({
+        kind: "narration",
+        messageId: this.currentMessageId,
+        // Narration requires either a listed content type or commentary.
+        name: contentType ?? channel!,
+        status: asString(message.status),
+        raw: message,
+      });
+      return;
     }
 
     const isTool =
@@ -366,51 +443,34 @@ export class ConversationStreamReducer {
       if (typeof value === "string") {
         this.currentMessage.id = value;
         this.currentMessageId = value;
-        if (roleOf(this.currentMessage) === "assistant") {
-          this.currentAssistantId = value;
-          this.assistantTexts.set(value, messageText(this.currentMessage));
-        }
+        this.setCurrentMessage(this.currentMessage);
       }
       return;
     }
 
-    if (
-      (path === "/message/content/parts/0" ||
-        path.startsWith("/message/content/parts/0/")) &&
-      this.currentMessage
-    ) {
-      const content = contentOf(this.currentMessage);
-      const parts = Array.isArray(content?.parts) ? content?.parts : null;
-      if (parts && path === "/message/content/parts/0") {
-        const before = typeof parts[0] === "string" ? parts[0] : "";
-        const next =
-          op === "append"
-            ? before + String(value)
-            : op === "remove"
-              ? ""
-              : String(value);
-        parts[0] = next;
-
-        if (
-          roleOf(this.currentMessage) === "assistant" &&
-          this.currentMessageId
-        ) {
-          this.currentAssistantId = this.currentMessageId;
-          this.assistantTexts.set(this.currentMessageId, next);
-          const delta =
-            op === "append"
-              ? String(value)
-              : next.startsWith(before)
-                ? next.slice(before.length)
-                : next;
-          this.push({
-            kind: "assistant_text",
-            messageId: this.currentMessageId,
-            delta,
-            text: next,
-          });
-        }
+    if (path.startsWith("/message/") && path !== "/message/status" && this.currentMessage) {
+      // Apply all content/metadata patches, including multipart images, tool
+      // stdout and late citation mappings. Never stringify objects as text.
+      if (op === "append" && path.startsWith("/message/content/parts/") && !Array.isArray(contentOf(this.currentMessage)?.parts)) return;
+      const keys = path.slice("/message/".length).split("/").map(key => key.replaceAll("~1", "/").replaceAll("~0", "~"));
+      if (keys.some(key => ["__proto__", "prototype", "constructor"].includes(key))) return;
+      let target: any = this.currentMessage;
+      for (let i = 0; i < keys.length - 1; i++) {
+        const key = keys[i];
+        if (target[key] === null || typeof target[key] !== "object") target[key] = /^\d+$/.test(keys[i + 1]) ? [] : {};
+        target = target[key];
       }
+      const key = keys.at(-1)!;
+      if (op === "remove") {
+        if (Array.isArray(target)) target.splice(Number(key), 1);
+        else delete target[key];
+      } else if (op === "append") {
+        if (typeof target[key] === "string" && typeof value === "string") target[key] += value;
+        else if (Array.isArray(target[key])) target[key].push(...(Array.isArray(value) ? value : [value]));
+        else target[key] = value;
+      } else if (key === "-" && Array.isArray(target)) target.push(value);
+      else target[key] = value;
+      this.setCurrentMessage(this.currentMessage);
       return;
     }
 

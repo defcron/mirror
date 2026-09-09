@@ -723,3 +723,15 @@ test("conversation initialization preserves explicit models and uses the intende
     });
   }
 });
+
+test("sandbox downloads require an absolute path, conversation and message before making requests", async () => {
+  await withFetch(async () => assert.fail("Invalid sandbox input must not make a request"), async () => {
+    const client = new ChatGptBackendClient(fakeCreds());
+    for (const args of [["/file", null, "message"], ["/file", "conversation", null], ["relative", "conversation", "message"]]) {
+      await assert.rejects(client.resolveSandboxDownload(...args), /requires conversation, message and absolute path/);
+    }
+  });
+  await withFetch(async () => Response.json({}), async () => {
+    await assert.rejects(new ChatGptBackendClient(fakeCreds()).resolveSandboxDownload("/file", "conversation", "message"), /no download_url/);
+  });
+});

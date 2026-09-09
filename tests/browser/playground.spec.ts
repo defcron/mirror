@@ -24,3 +24,23 @@ test("Stop cancels a pending response",async({page})=>{
  await page.route("**/v1/chat/completions",async route=>{await new Promise(resolve=>setTimeout(resolve,1000));await route.abort().catch(()=>{});});
  await page.goto("/mirror/playground");await page.getByRole("button",{name:/^Run\b/}).click();await page.getByRole("button",{name:"Stop",exact:true}).click();await expect(page.locator(".run-status")).toHaveText("Stopped");
 });
+test("Responses mode runs, retains history and switches back to Chat", async ({page}) => {
+ let request: any;
+ await page.route("**/v1/responses", route => {
+  request = route.request().postDataJSON();
+  const response = {status:"completed",metadata:{conversation_id:"responses-conversation"},output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"Hello from Responses"}]}]};
+  return route.fulfill({contentType:"text/event-stream",body:`event: response.output_text.delta\ndata: ${JSON.stringify({type:"response.output_text.delta",delta:"Hello from Responses"})}\n\nevent: response.completed\ndata: ${JSON.stringify({type:"response.completed",response})}\n\n`});
+ });
+ await page.goto("/mirror/playground");
+ await page.getByRole("button",{name:"◇ Responses"}).click();
+ await expect(page.getByRole("heading",{name:"Responses",exact:true})).toBeVisible();
+ await expect(page.getByLabel("Path",{exact:true})).toHaveValue("/v1/responses");
+ await page.getByRole("button",{name:/^Run\b/}).click();
+ await expect(page.locator(".run-status")).toHaveText("Completed");
+ expect(request.input.at(-1).role).toBe("user"); expect(request.messages).toBeUndefined();
+ await expect(page.getByPlaceholder("auto (filled in after the first response)")).toHaveValue("responses-conversation");
+ await expect(page.locator(".output")).toContainText("Hello from Responses");
+ await page.getByRole("button",{name:"☷ Chat"}).click();
+ await expect(page.getByLabel("Path",{exact:true})).toHaveValue("/v1/chat/completions");
+ await expect(page.getByPlaceholder("auto (filled in after the first response)")).toHaveValue("responses-conversation");
+});

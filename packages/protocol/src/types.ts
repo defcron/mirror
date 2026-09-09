@@ -96,7 +96,10 @@ export type StreamEvent =
  * stream. Raw upstream events are still available so new tool/content types do
  * not disappear merely because Mirror has not learned a pretty renderer yet.
  */
-export type NormalizedConversationEvent =
+export type NormalizedConversationEvent = {
+  /** Retained for diagnostics/continuity, excluded from user-facing rich output. */
+  displayHidden?: boolean;
+} & (
   | {
       kind: "assistant_text";
       messageId: string | null;
@@ -113,6 +116,15 @@ export type NormalizedConversationEvent =
     }
   | {
       kind: "tool";
+      messageId: string | null;
+      name: string;
+      status?: string | null;
+      raw: Record<string, unknown>;
+    }
+  | {
+      /** Assistant status narration excluded from the visible answer. Raw
+       * messages and related assets also carry displayHidden on this turn. */
+      kind: "narration";
       messageId: string | null;
       name: string;
       status?: string | null;
@@ -150,7 +162,7 @@ export type NormalizedConversationEvent =
   | {
       kind: "raw";
       raw: unknown;
-    };
+    });
 
 export interface SendMessageResult {
   text: string;

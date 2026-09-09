@@ -251,6 +251,44 @@ test("a tool-role message and a computer_output message are both recognized as t
   assert.equal(events.filter((e) => e.kind === "tool").length, 2);
 });
 
+// --- suppressFirstTurnToolNarration ----------------------------------------------------
+
+test("suppressFirstTurnToolNarration keeps browsing/file-search status cards out of assistant_text and retains them as hidden narration events", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({
+    p: "", o: "add",
+    v: { message: { id: "n1", author: { role: "assistant" }, content: { content_type: "tether_browsing_display", parts: ["Searching your files..."] } } },
+  }));
+  const events = reducer.drainEvents();
+  assert.equal(events.some((e) => e.kind === "assistant_text"), false);
+  assert.equal(events.filter((e) => e.kind === "narration" && e.displayHidden && e.name === "tether_browsing_display").length, 1);
+  assert.equal(reducer.text, "");
+});
+
+test("suppressFirstTurnToolNarration never hides Python's own code/execution_output content", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({
+    p: "", o: "add",
+    v: { message: { id: "n2", author: { role: "assistant" }, content: { content_type: "code", parts: ["print('hi')"] } } },
+  }));
+  reducer.feed(JSON.stringify({
+    p: "", o: "add",
+    v: { message: { id: "n3", author: { role: "assistant" }, content: { content_type: "execution_output", parts: ["hi"] } } },
+  }));
+  const events = reducer.drainEvents();
+  assert.equal(events.filter((e) => e.kind === "assistant_text").length, 2);
+});
+
+test("without suppressFirstTurnToolNarration, browsing status cards behave exactly as before (visible assistant_text)", () => {
+  const reducer = new ConversationStreamReducer();
+  reducer.feed(JSON.stringify({
+    p: "", o: "add",
+    v: { message: { id: "n4", author: { role: "assistant" }, content: { content_type: "tether_browsing_display", parts: ["Searching your files..."] } } },
+  }));
+  const events = reducer.drainEvents();
+  assert.equal(events.some((e) => e.kind === "assistant_text"), true);
+});
+
 // --- applyOp branches -----------------------------------------------------------------
 
 test("a single add carries conversation_id and error_code together", () => {
@@ -422,4 +460,55 @@ test("markers without an event retain their raw metadata without finalizing cont
   assert.equal(event.kind, "marker");
   assert.equal(event.event, undefined);
   assert.equal(reducer.currentAssistantMessageId, null);
+});
+
+test("first-turn visibility follows patched messages and typed events without hiding Python or the final answer", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  const feed = value => reducer.feed(JSON.stringify(value));
+  feed({ p: "", o: "add", v: { message: { id: "search", author: { role: "assistant", name: "file_search" }, recipient: "all", content: { content_type: "text", parts: ["hidden search"] } } } });
+  feed({ p: "/message/id", o: "replace", v: "search-patched" });
+  assert.equal(reducer.text, "");
+  assert.equal(reducer.currentAssistantMessageId, null);
+  feed({ p: "/message/metadata", o: "add", v: { asset_pointer: "file-service://hidden" } });
+  feed({ type: "tool_status", name: "python_user_visible.run_code", stdout: "typed python" });
+  feed({ p: "/message/content/parts/0", o: "append", v: " still hidden" });
+  feed({ p: "", o: "add", v: { message: { id: "python", author: { role: "tool", name: "python" }, channel: "commentary", content: { content_type: "execution_output", stdout: "python result" } } } });
+  feed({ p: "/message/metadata", o: "add", v: { asset_pointer: "file-service://python-plot" } });
+  feed({ p: "", o: "add", v: { message: { id: "final", author: { role: "assistant" }, content: { content_type: "text", parts: ["Normal answer"] } } } });
+  feed({ p: "/message/id", o: "replace", v: "final-patched" });
+  feed({ p: "/message/metadata", o: "add", v: { asset_pointer: "file-service://answer" } });
+  const events = reducer.drainEvents();
+  assert.ok(events.filter(e => e.messageId === "search" || e.messageId === "search-patched").every(e => e.displayHidden));
+  assert.ok(events.find(e => e.kind === "file" && e.assetPointer === "file-service://hidden").displayHidden);
+  assert.ok(events.filter(e => e.kind === "tool" && e.name.startsWith("python")).every(e => !e.displayHidden));
+  assert.ok(events.filter(e => e.kind === "file" && e.assetPointer !== "file-service://hidden").every(e => !e.displayHidden));
+  assert.ok(events.filter(e => e.kind === "assistant_text").every(e => e.text === "Normal answer" && !e.displayHidden));
+  assert.equal(reducer.text, "Normal answer");
+  assert.equal(reducer.currentAssistantMessageId, "final-patched");
+});
+
+test("first-turn recipient calls and commentary without a content type remain hidden", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  for (const extra of [{ recipient: "file_search.msearch" }, { channel: "commentary" }]) {
+    reducer.feed(JSON.stringify({ p: "", o: "add", v: { message: { id: "hidden", author: { role: "assistant" }, content: { parts: ["hidden"] }, ...extra } } }));
+    assert.equal(reducer.text, "");
+    assert.ok(reducer.drainEvents().every(e => e.displayHidden));
+  }
+});
+
+test("generic message patches handle arrays, deletion and missing values without prototype pollution", () => {
+  const reducer = new ConversationStreamReducer();
+  const feed = (p, o, v) => reducer.feed(JSON.stringify({ p, o, v }));
+  feed("", "add", { message: { id: "a", author: { role: "assistant" }, content: { parts: ["answer"] }, metadata: { remove: true, items: [] } } });
+  feed("/message/metadata/remove", "remove", null);
+  feed("/message/metadata/items", "append", ["one", "two"]);
+  feed("/message/metadata/items", "append", "three");
+  feed("/message/metadata/items/-", "add", "four");
+  feed("/message/metadata/new", "append", "created");
+  feed("/message/metadata/object/-", "add", "literal key");
+  for (const key of ["__proto__", "constructor", "prototype"]) feed(`/message/metadata/${key}/polluted`, "add", true);
+  const last = reducer.drainEvents().filter(e => e.kind === "message").at(-1).raw;
+  assert.deepEqual(last.metadata, { items: ["one", "two", "three", "four"], new: "created", object: { "-": "literal key" } });
+  assert.equal({}.polluted, undefined);
+  assert.equal(reducer.text, "answer");
 });

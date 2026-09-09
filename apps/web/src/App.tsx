@@ -1,3 +1,4 @@
+import { readResponsesStream, responseText } from "./responses-stream.js";
 import { ConnectionTools } from "./ConnectionTools.js";
 import { ConversationTools } from "./ConversationTools.js";
 import { readCompletionStream } from "./completion-stream.js";
@@ -98,6 +99,7 @@ function Header() {
 
 export default function App() {
   const [domain, setDomain] = useState(() => location.origin);
+  const [mode, setMode] = useState<"chat" | "responses">("chat");
   const [path, setPath] = useState("/v1/chat/completions");
   const [apiKey, setApiKey] = useState("");
   const [models, setModels] = useState<ApiModel[]>([]);
@@ -344,7 +346,7 @@ export default function App() {
         },
         body: JSON.stringify({
           model,
-          messages,
+          ...(mode === "responses" ? { input: messages } : { messages }),
           stream,
           store: !oneShot,
           ...(Object.keys(metadata).length ? { metadata } : {}),
@@ -360,11 +362,16 @@ export default function App() {
       if (!stream) {
         const body = await response.json();
         setRaw(JSON.stringify(body, null, 2));
-        if (typeof body.choices?.[0]?.message?.content !== "string") throw new Error("Unsupported completion response; no assistant content was returned.");
-        finalText = body.choices[0].message.content;
+        if (mode === "responses") {
+          finalText = responseText(body);
+          nextConversationId = body.metadata?.conversation_id ?? nextConversationId;
+        } else {
+          if (typeof body.choices?.[0]?.message?.content !== "string") throw new Error("Unsupported completion response; no assistant content was returned.");
+          finalText = body.choices[0].message.content;
+        }
         setOutput(finalText);
       } else if (response.body) {
-        finalText = await readCompletionStream(response.body, setOutput, setRaw, id => { nextConversationId = id; });
+        finalText = await (mode === "responses" ? readResponsesStream : readCompletionStream)(response.body, setOutput, setRaw, id => { nextConversationId = id; });
       } else {
         throw new Error("Response has no stream body");
       }
@@ -395,15 +402,22 @@ export default function App() {
     }
   }
 
+  function selectMode(next: "chat" | "responses") {
+    if (runningRef.current || next === mode) return;
+    setMode(next);
+    setPath(next === "responses" ? "/v1/responses" : "/v1/chat/completions");
+    setOutput(""); setRaw(""); setShowRaw(false); setStatus("Ready");
+  }
+
   return (
     <div className="playground-app">
       <Header />
       <aside className="playground-sidebar">
         <div className="side-title">Playground</div>
-        <button className="side-item active">
+        <button className={`side-item ${mode === "chat" ? "active" : ""}`} aria-pressed={mode === "chat"} disabled={running} onClick={() => selectMode("chat")}>
           <span>☷</span> Chat
         </button>
-        <button className="side-item" disabled>
+        <button className={`side-item ${mode === "responses" ? "active" : ""}`} aria-pressed={mode === "responses"} disabled={running} onClick={() => selectMode("responses")}>
           <span>◇</span> Responses
         </button>
         <div className="side-section">Mirror</div>
@@ -429,8 +443,9 @@ export default function App() {
       <main className="workbench">
         <div className="workbench-head">
           <div>
-            <h1>Chat</h1>
-            <p>Test an OpenAI-compatible Chat Completions endpoint.</p>
+            <h1>{mode === "responses" ? "Responses" : "Chat"}</h1>
+            <p>{mode === "responses" ? "Test text input and streaming output through the Responses API." : "Test an OpenAI-compatible Chat Completions endpoint."}</p>
+            {mode === "responses" && <p>Mirror supports text messages and conversation IDs. Tools, previous_response_id, and response retrieval are not supported.</p>}
           </div>
           <div className="run-actions">
             <span role="status" aria-live="polite" className={`run-status ${status.toLowerCase()}`}>
