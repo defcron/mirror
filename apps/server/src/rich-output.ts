@@ -1,9 +1,14 @@
 import type { NormalizedConversationEvent } from "@mirror/protocol";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import type { RootContent, Root } from "mdast";
+import { assetFileName, type AssetLinks } from "./asset-links.js";
+import { isLoopbackHostname } from "./security.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : undefined;
 const str = (value: unknown): string => typeof value === "string" ? value : "";
-const label = (value: string) => value.replace(/[\\\[\]<>\r\n]/g, " ").trim() || "Download file";
+const label = (value: string) => value.replace(/[\r\n]/g, " ").trim().replace(/[\\`*_[\]<>]/g, "\\$&");
+const toolLabel = (value: string) => value.replace(/[\\\[\]<>\r\n]/g, " ").trim() || "Download file";
 const fence = (value: string) => { const ticks = "`".repeat(Math.max(3, ...(value.match(/`+/g) ?? []).map(s => s.length + 1))); return `${ticks}text\n${value}\n${ticks}`; };
 const pointerPattern = /(?:file-service|sediment):\/\/[^\s\)\]"'<>\uE000-\uF8FF]+|sandbox:\/[^\s\)\]"'<>\uE000-\uF8FF]+/g;
 
@@ -47,7 +52,7 @@ export function needsRichOutput(event: NormalizedConversationEvent): boolean {
 
 export interface RichOutput {
   text: string;
-  assets: { pointer: string; url?: string; status: "resolved" | "unavailable" }[];
+  assets: { pointer: string; url?: string; previewUnavailable?: boolean; status: "resolved" | "unavailable" }[];
   tools: { name: string; messageId: string | null; text: string }[];
   summaries: { messageId: string | null; text: string }[];
 }
@@ -55,7 +60,7 @@ export interface RichOutput {
 /** Resolve only attachments named in this turn's upstream events. */
 export async function renderRichOutput(
   events: NormalizedConversationEvent[], fallback: string,
-  resolve: (pointer: string, messageId?: string | null) => Promise<string>,
+  resolve: (pointer: string, messageId?: string | null, image?: boolean) => Promise<string | AssetLinks>,
 ): Promise<RichOutput> {
   const segments: { key: string; text: string; tool?: boolean }[] = [];
   const messages = new Map<string | null, ObjectValue>();
@@ -72,7 +77,7 @@ export async function renderRichOutput(
     if (Array.isArray(value)) { value.forEach(v => visit(v, messageId)); return; }
     const item = object(value); if (!item) return;
     const pointer = str(item.asset_pointer) || (str(item.file_id) ? `file-service://${item.file_id}` : "");
-    const title = str(item.name) || str(item.title) || "Download file";
+    const title = str(item.file_name) || str(item.fileName) || str(item.filename) || str(item.name) || str(item.title) || "Download file";
     if (pointer) {
       const prior = pointers.get(pointer);
       pointers.set(pointer, { image: prior?.image || item.content_type === "image_asset_pointer" || pointer.startsWith("sediment:"), title, messageId: messageId ?? prior?.messageId });
@@ -107,43 +112,109 @@ export async function renderRichOutput(
       // User inputs and internal analysis are not output attachments.
       if (event.role !== "user" && event.raw.channel !== "analysis") messages.set(event.messageId, event.raw);
     } else if (event.kind === "image" || event.kind === "file") {
-      if (typeof event.raw !== "string" && !pointers.has(event.assetPointer)) pointers.set(event.assetPointer, { image: event.kind === "image", title: event.kind === "file" ? event.title ?? "Download file" : "Image" });
+      if (typeof event.raw !== "string") {
+        if (!pointers.has(event.assetPointer)) pointers.set(event.assetPointer, { image: event.kind === "image", title: event.kind === "file" ? event.title ?? "Download file" : "Image" });
+        visit(event.raw);
+      }
     } else if (event.kind === "citation") visit(event.raw);
   }
-  let text = segments.length ? segments.map(segment => segment.tool ? `\n\n**${label(tools.get(segment.key)!.name)}**\n\n${tools.get(segment.key)!.text}\n\n` : segment.text).join("") : fallback;
+  let text = segments.length ? segments.map(segment => segment.tool ? `\n\n**${toolLabel(tools.get(segment.key)!.name)}**\n\n${tools.get(segment.key)!.text}\n\n` : segment.text).join("") : fallback;
   for (const [messageId, raw] of messages) visit(raw, messageId);
   visit(text);
   for (const [token, ref] of references) if (token.startsWith("sandbox:") && token !== ref.pointer) pointers.delete(token);
+  // Parse destinations before resolving: parentheses, escaped labels, angle
+  // destinations and reference-style links cannot be handled by a URL regex.
+  const tree = fromMarkdown(text);
+  const definitions = new Map<string, string>();
+  const walk = (node: Root | RootContent, fn: (node: RootContent) => void) => {
+    if (node.type !== "root") fn(node);
+    if ("children" in node) for (const child of node.children) walk(child, fn);
+  };
+  const internal = (value: string) => /^(?:file-service:\/\/|sediment:\/\/|sandbox:\/)/.test(value);
+  const alias = (value: string) => references.get(value)?.pointer ?? value;
+  walk(tree, node => {
+    if (node.type === "definition") definitions.set(node.identifier, node.url);
+    if ((node.type === "link" || node.type === "image" || node.type === "definition") && internal(node.url)) {
+      const pointer = alias(node.url);
+      if (!pointers.has(pointer)) pointers.set(pointer, { image: node.type === "image", title: "Download file" });
+      else if (node.type === "image") pointers.get(pointer)!.image = true;
+    }
+  });
+  // Remove partial pointers discovered by the legacy bare-token scan when a
+  // complete parsed destination is available (e.g. report(final).csv).
+  walk(tree, node => {
+    if ((node.type === "link" || node.type === "image" || node.type === "definition") && internal(node.url)) {
+      for (const partial of node.url.matchAll(pointerPattern)) if (partial[0] !== node.url) pointers.delete(partial[0]);
+    }
+  });
+  // Retain bare references even when they share a prefix with a longer link.
+  walk(tree, node => { if (node.type === "text") visit(node.value); });
+  for (const [token, ref] of references) if (token.startsWith("sandbox:") && token !== ref.pointer) pointers.delete(token);
   const assets: RichOutput["assets"] = [];
-  const urls = new Map<string, string>();
+  const urls = new Map<string, { url: string; downloadUrl: string; fileName?: string; previewUnavailable?: boolean }>();
   for (const [pointer, info] of pointers) {
     try {
-      const url = await resolve(pointer, info.messageId);
-      const parsed = new URL(url);
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("Invalid download URL");
-      urls.set(pointer, url); assets.push({ pointer, url, status: "resolved" });
+      const resolved = await resolve(pointer, info.messageId, info.image);
+      const value = typeof resolved === "string" ? { url: resolved, downloadUrl: resolved, previewUnavailable: false } : resolved;
+      for (const url of [value.url, value.downloadUrl]) {
+        if (typeof resolved !== "string" && url === value.url && /^data:image\/(?:png|jpeg|gif|webp|avif|bmp|x-icon|vnd.microsoft.icon|svg\+xml);base64,[A-Za-z0-9+/]+=*$/.test(url)) continue;
+        const parsed = new URL(url);
+        const localAsset = typeof resolved !== "string" && parsed.protocol === "http:" && isLoopbackHostname(parsed.hostname) && parsed.pathname === "/api/asset-content";
+        if ((!localAsset && parsed.protocol !== "https:") || parsed.username || parsed.password) throw new Error("Invalid download URL");
+      }
+      urls.set(pointer, value); assets.push({ pointer, url: value.url, ...(value.previewUnavailable ? { previewUnavailable: true } : {}), status: "resolved" });
     } catch { assets.push({ pointer, status: "unavailable" }); }
   }
   const used = new Set<string>();
-  const link = (pointer: string, title: string, image = false) => {
-    used.add(pointer); const url = urls.get(pointer);
-    return url ? `${image ? "!" : ""}[${label(title)}](<${url.replaceAll(">", "%3E").replaceAll("<", "%3C")}>)` : `[${label(title)} — download unavailable]`;
+  const escapedUrl = (url: string) => url.replace(/[<>\s\\]/g, c => encodeURIComponent(c));
+  const filename = (pointer: string, title: string) => {
+    const resolvedName = urls.get(pointer)?.fileName;
+    const sandboxAlias = [...references].find(([token, ref]) => token.startsWith("sandbox:") && ref.pointer === pointer)?.[0];
+    const path = pointer.startsWith("sandbox:") ? pointer.slice("sandbox:".length) : sandboxAlias?.slice("sandbox:".length) ?? "";
+    const named = title && !/^(?:Download(?: file| now)?|Image|file)$/i.test(title) ? title : "";
+    if (resolvedName && resolvedName !== "file") return assetFileName(resolvedName);
+    let value = path || named || pointer.split("//").at(-1)!;
+    if (path) try { value = decodeURIComponent(value); } catch { /* Preserve literal percent signs. */ }
+    return assetFileName(value);
   };
-  for (const [token, ref] of references) if (text.includes(token)) {
-    // A sandbox target is already inside Markdown; replace its destination.
-    const url = urls.get(ref.pointer);
-    if (token.startsWith("sandbox:") && url) { text = text.replaceAll(token, url); used.add(ref.pointer); }
-    else text = text.replaceAll(token, link(ref.pointer, ref.title));
-  }
-  // Preserve surrounding Markdown link labels and image placement.
-  text = text.replace(/(!?\[[^\]\n]*\])\((<?)((?:file-service|sediment):\/\/[^\s)>]+|sandbox:\/[^\s)>]+)>?\)/g,
-    (_match, prefix: string, _angle: string, pointer: string) => {
-      used.add(pointer); const url = urls.get(pointer);
-      return url ? `${prefix}(<${url.replaceAll(">", "%3E")}>)` : `${prefix} (download unavailable)`;
-    });
-  text = text.replace(pointerPattern, pointer => link(pointer, pointers.get(pointer)?.title ?? "Download file", pointers.get(pointer)?.image));
-  // Unknown private-use tokens must not become garbage in a plain-text client.
-  text = text.replace(/\uE200[^\uE201]*\uE201/g, "[Reference unavailable]");
+  const link = (pointer: string, title: string, image = false, prefixed = false) => {
+    pointer = alias(pointer);
+    used.add(pointer);
+    const value = urls.get(pointer);
+    const name = label(filename(pointer, title));
+    if (!value) return `[${name} — download unavailable]`;
+    const download = `${prefixed ? "" : "Download file: "}[${name}](<${escapedUrl(value.downloadUrl)}>)`;
+    return image && !value.previewUnavailable ? `![${name}](<${escapedUrl(value.url)}>)\n\n${download}` : download;
+  };
+  const edits: { start: number; end: number; value: string }[] = [];
+  const edit = (node: RootContent, value: string) => edits.push({ start: node.position!.start.offset!, end: node.position!.end.offset!, value });
+  const transform = (node: Root | RootContent) => {
+    if (node.type === "definition" && internal(node.url)) { edit(node, ""); return; }
+    const destination = node.type === "link" || node.type === "image" ? node.url
+      : node.type === "linkReference" || node.type === "imageReference" ? definitions.get(node.identifier) : undefined;
+    if (destination && internal(destination)) {
+      const pointer = alias(destination);
+      const prefixed = /Download file:\s*$/i.test(text.slice(0, node.position!.start.offset));
+      edit(node as RootContent, link(pointer, pointers.get(pointer)!.title, node.type === "image" || node.type === "imageReference", prefixed));
+      return;
+    }
+    if (node.type === "text") {
+      let value = text.slice(node.position!.start.offset, node.position!.end.offset);
+      // Replace references and bare pointers once, without rescanning generated
+      // Markdown (a filename itself may contain punctuation or pointer text).
+      const tokens = [...references.keys()].filter(token => value.includes(token)).sort((a, b) => b.length - a.length);
+      const pattern = new RegExp(tokens.map(token => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).concat(pointerPattern.source).join("|"), "g");
+      value = value.replace(pattern, token => {
+        const pointer = alias(token), info = pointers.get(pointer);
+        return link(pointer, info!.title, info!.image);
+      }).replace(/\uE200[^\uE201]*\uE201/g, "[Reference unavailable]");
+      edit(node, value);
+      return;
+    }
+    if ("children" in node) for (const child of node.children) transform(child);
+  };
+  transform(tree);
+  for (const entry of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, entry.start) + entry.value + text.slice(entry.end);
   for (const [pointer, info] of pointers) if (!used.has(pointer)) text += `\n\n${link(pointer, info.title, info.image)}`;
   return { text, assets, tools: [...tools.values()], summaries: [...summaries].map(([messageId, text]) => ({ messageId, text })) };
 }

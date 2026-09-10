@@ -1,4 +1,5 @@
 import { registerInsightRoutes } from "./insights.js";
+import { registerAssetContentRoute } from "./asset-content.js";
 import { apiError, recordFailure } from "./api-errors.js";
 import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
 import { fileURLToPath } from "node:url";
@@ -139,6 +140,9 @@ app.addHook("onRequest", async (req, reply) => {
   if (!isAllowedRequestHost(req.headers.host)) {
     return reply.code(421).send({ error: "Untrusted Host header" });
   }
+  // Image tags and new-tab downloads cannot attach a Mirror bearer header.
+  // This exact read-only route validates its own sealed, file-scoped ticket.
+  if (["GET", "HEAD"].includes(req.method) && req.url.split("?", 1)[0] === "/api/asset-content") return;
   if (isPublicApiPath(req.url) && !isAllowedOrigin(req.headers.origin, req.headers.host)) {
     if (!tokenMatches(bearerToken(req.headers.authorization), configuredApiKeys())) {
       return reply.code(401).send({ error: {
@@ -503,6 +507,7 @@ app.post("/api/chat", async (req, reply) => {
 });
 
 await registerOpenAiRoutes(app);
+await registerAssetContentRoute(app);
 await registerInsightRoutes(app);
 
 // OpenAPI: generated from the same Zod schemas the routes validate against

@@ -1,4 +1,5 @@
 import { needsRichOutput, renderRichOutput, type RichOutput } from "./rich-output.js";
+import { createAssetLinks } from "./asset-content.js";
 import { ResponsesBody, responsesToCompletion, createResponseWriter } from "./responses.js";
 import { abortable, turnDeadline } from "./deadlines.js";
 import { apiError, recordFailure } from "./api-errors.js";
@@ -180,12 +181,10 @@ const CompletionBody = z
      *                                       which has no ChatGPT-web
      *                                       equivalent at all). A JSON array
      *                                       of {url} objects; each url is a
-     *                                       path (resolve it against the
-     *                                       same base_url used for /v1) to
-     *                                       Mirror's own GET /api/assets,
-     *                                       which streams the actual image
-     *                                       bytes back with your Mirror API
-     *                                       key.
+     *                                       self-contained image data URI when
+     *                                       preview bytes are available. Files
+     *                                       are linked in the response text via
+     *                                       scoped /api/asset-content tickets.
      * Every metadata value, request or response, is a JSON-stringified
      * string rather than a nested object, since the official metadata field
      * is documented as flat string:string pairs - Mirror never puts a raw
@@ -1038,10 +1037,9 @@ export async function registerOpenAiRoutes(
         let responseText = body.stream ? streamedText : result.text;
         if (rich) {
           const downloadClient = new ChatGptBackendClient(await getValidCredentials());
-          richOutput = await renderRichOutput(capturedEvents, responseText, (pointer, messageId) =>
-            pointer.startsWith("sandbox:")
-              ? downloadClient.resolveSandboxDownload(pointer.slice("sandbox:".length), conversation.conversationId, messageId ?? result.messageId, controller.signal)
-              : downloadClient.resolveAssetDownload(pointer, conversation.conversationId, controller.signal));
+          richOutput = await renderRichOutput(capturedEvents, responseText, (pointer, messageId, image) =>
+            createAssetLinks(downloadClient, `${req.protocol}://${req.headers.host}`, pointer,
+              conversation.conversationId, messageId ?? result.messageId, controller.signal, image));
           controller.signal.throwIfAborted();
           assertSessionRevision(requestRevision);
           responseText = richOutput.text;
@@ -1123,8 +1121,8 @@ export async function registerOpenAiRoutes(
           responseMetadata.mirror_assets = JSON.stringify(richOutput.assets);
           responseMetadata.mirror_tool_outputs = JSON.stringify(richOutput.tools);
           if (richOutput.summaries.length) responseMetadata.mirror_reasoning_summaries = JSON.stringify(richOutput.summaries);
-          const resolvedImages = richOutput.assets.filter(asset => asset.url && capturedEvents.some(event => event.kind === "image" && event.assetPointer === asset.pointer));
-          if (resolvedImages.length) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
+          const resolvedImages = richOutput.assets.filter(asset => asset.url && !asset.previewUnavailable && capturedEvents.some(event => event.kind === "image" && event.assetPointer === asset.pointer));
+          if (responseMetadata.mirror_images !== undefined) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
         }
 
         const responseFields = { ...body.metadata, ...responseMetadata,

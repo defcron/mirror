@@ -160,6 +160,7 @@ export interface StoredSession {
   sessionToken: string;
   deviceId: string;
   savedAt: string;
+  assetLinkGeneration?: string;
   accountId?: string;
   cachedAccessToken?: string;
   cachedAccessTokenExpiresAt?: number;
@@ -216,6 +217,7 @@ export function saveVerifiedSession(
     sessionToken,
     deviceId: deviceId ?? prior?.deviceId ?? randomUUID(),
     savedAt: new Date().toISOString(),
+    assetLinkGeneration: randomUUID(),
     ...(accountId ? { accountId } : {}),
   };
   writeSetting("session", encrypt(JSON.stringify(session)));
@@ -246,6 +248,38 @@ export function updateMintedToken(
 export function clearSession(): void {
   changedSession();
   db.prepare("DELETE FROM settings WHERE key = 'session'").run();
+}
+
+export interface AssetTicket {
+  pointer: string;
+  conversationId: string | null;
+  messageId: string | null;
+  fileName: string;
+}
+
+/** A sealed, file-scoped capability; contains no API key or upstream URL.
+ * No extra history or file bytes are persisted, including for store:false. */
+export function sealAssetTicket(asset: AssetTicket, now = Date.now()): string {
+  const session = getSession();
+  if (!session) throw new Error("No session configured");
+  return encrypt(JSON.stringify({ purpose: "mirror-asset-v1", ...asset,
+    accountId: session.accountId ?? "default", sessionGeneration: session.assetLinkGeneration ?? session.savedAt,
+    expiresAt: now + 7 * 24 * 60 * 60 * 1000 }));
+}
+
+export function openAssetTicket(ticket: string, now = Date.now()): AssetTicket | null {
+  try {
+    if (ticket.length > 12000) return null;
+    const asset = JSON.parse(decrypt(ticket));
+    const session = getSession();
+    if (!session || asset.purpose !== "mirror-asset-v1" || asset.accountId !== (session.accountId ?? "default") ||
+      asset.sessionGeneration !== (session.assetLinkGeneration ?? session.savedAt) || !Number.isFinite(asset.expiresAt) || asset.expiresAt <= now ||
+      typeof asset.pointer !== "string" || !/^(?:file-service:\/\/|sediment:\/\/|sandbox:\/)/.test(asset.pointer) ||
+      typeof asset.fileName !== "string" ||
+      !(asset.conversationId === null || typeof asset.conversationId === "string") ||
+      !(asset.messageId === null || typeof asset.messageId === "string")) return null;
+    return { pointer: asset.pointer, conversationId: asset.conversationId, messageId: asset.messageId, fileName: asset.fileName };
+  } catch { return null; }
 }
 
 /** Attach pre-account-key local data from earlier builds to the verified account. */

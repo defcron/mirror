@@ -825,7 +825,7 @@ function toolAddFrame(upstreamConversationId, messageId, toolName, extra = {}) {
   };
 }
 
-test("a non-streaming turn carrying a tool call and an image is packed into metadata.mirror_tool_events/mirror_images", async () => {
+test("a non-streaming turn preserves tool metadata but does not advertise unresolved image URLs", async () => {
   useSession("account-metadata-1");
   await withFetch(
     stubBackend("account-metadata-1", {
@@ -855,8 +855,7 @@ test("a non-streaming turn carrying a tool call and an image is packed into meta
       const toolEvents = JSON.parse(body.metadata.mirror_tool_events);
       assert.deepEqual(toolEvents, [{ name: "web_browser", status: "finished_successfully" }]);
       const images = JSON.parse(body.metadata.mirror_images);
-      assert.equal(images.length, 1);
-      assert.match(images[0].url, /^\/api\/assets\?pointer=sediment%3A%2F%2Ffile-xyz789/);
+      assert.deepEqual(images, []);
     },
   );
 });

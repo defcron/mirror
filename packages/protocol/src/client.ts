@@ -100,6 +100,19 @@ export interface UploadFileOptions {
   signal?: AbortSignal;
 }
 
+export interface AssetDownload {
+  url: string;
+  fileName?: string;
+  mimeType?: string;
+}
+
+function assetDownload(json: Record<string, unknown>): AssetDownload {
+  if (typeof json.download_url !== "string") throw new BackendApiError("Asset metadata returned no download_url");
+  return { url: json.download_url,
+    ...(typeof json.file_name === "string" ? { fileName: json.file_name } : {}),
+    ...(typeof json.mime_type === "string" ? { mimeType: json.mime_type } : {}) };
+}
+
 export class ChatGptBackendClient {
   public accountId: string | null = null;
 
@@ -525,6 +538,12 @@ export class ChatGptBackendClient {
     conversationId?: string | null,
     signal?: AbortSignal,
   ): Promise<string> {
+    return (await this.resolveAssetDownloadMetadata(assetPointer, conversationId, signal)).url;
+  }
+
+  async resolveAssetDownloadMetadata(
+    assetPointer: string, conversationId?: string | null, signal?: AbortSignal,
+  ): Promise<AssetDownload> {
     let path: string;
     if (assetPointer.startsWith("file-service://")) {
       const id = assetPointer.slice("file-service://".length);
@@ -545,20 +564,44 @@ export class ChatGptBackendClient {
     }
 
     const json = await this.getJson(path, signal);
-    if (typeof json.download_url !== "string") {
-      throw new BackendApiError("Asset metadata returned no download_url");
-    }
-    return json.download_url;
+    return assetDownload(json);
   }
 
   async resolveSandboxDownload(
     sandboxPath: string, conversationId: string | null, messageId: string | null, signal?: AbortSignal,
   ): Promise<string> {
+    return (await this.resolveSandboxDownloadMetadata(sandboxPath, conversationId, messageId, signal)).url;
+  }
+
+  async resolveSandboxDownloadMetadata(
+    sandboxPath: string, conversationId: string | null, messageId: string | null, signal?: AbortSignal,
+  ): Promise<AssetDownload> {
     if (!conversationId || !messageId || !sandboxPath.startsWith("/")) throw new BackendApiError("Sandbox download requires conversation, message and absolute path");
     const params = new URLSearchParams({ message_id: messageId, sandbox_path: sandboxPath });
     const json = await this.getJson(`/conversation/${encodeURIComponent(conversationId)}/interpreter/download?${params}`, signal);
-    if (typeof json.download_url !== "string") throw new BackendApiError("Sandbox metadata returned no download_url");
-    return json.download_url;
+    return assetDownload(json);
+  }
+
+  /** Estuary URLs need upstream authentication even when they contain a signature.
+   * Never forward that authentication to a CDN or an arbitrary redirect target. */
+  async fetchAssetContent(downloadUrl: string, signal?: AbortSignal): Promise<Response> {
+    let url = new URL(downloadUrl);
+    for (let redirects = 0; redirects <= 3; redirects++) {
+      const estuary = url.origin === ORIGIN && url.pathname === "/backend-api/estuary/content";
+      const cdn = url.hostname.endsWith(".oaiusercontent.com") || url.hostname === "oaiusercontent.com" || url.hostname.endsWith(".blob.core.windows.net");
+      if (url.protocol !== "https:" || url.username || url.password || url.port || (!estuary && !cdn))
+        throw new BackendApiError("Unsupported asset download destination");
+      const res = await fetch(url, {
+        headers: estuary ? this.commonHeaders(url.pathname.slice("/backend-api".length), { accept: "*/*" }) : { accept: "*/*" },
+        redirect: "manual", signal,
+      });
+      if (![301, 302, 303, 307, 308].includes(res.status)) return res;
+      const location = res.headers.get("location");
+      await res.body?.cancel();
+      if (!location) throw new BackendApiError("Asset redirect has no destination");
+      url = new URL(location, url);
+    }
+    throw new BackendApiError("Too many asset redirects");
   }
 
   private buildUserMessage(

@@ -67,7 +67,7 @@ for (const endpoint of ["chat/completions","responses"]) for (const stream of [f
     conversation??=metadata?.conversation_id;
     if(turn===1){
       assert.match(answer,/starting\nfinished/);assert.match(answer,/sample warning/);
-      assert.match(answer,/Here is \[report.csv\]\(<https:\/\/files.oaiusercontent.com/);
+      assert.match(answer,/Here is Download file: \[report.csv\]\(<http:\/\/127\.0\.0\.1/);
       assert.ok(!/[\uE000-\uF8FF]|sandbox:|file-service:/.test(answer));
       assert.equal(JSON.parse(metadata.mirror_assets).length,2);
       assert.equal(downloads.find(u=>u.pathname.includes("interpreter")).searchParams.get("sandbox_path"),"/mnt/data/plot.png");
@@ -158,13 +158,14 @@ for (const model of ["g-custom", "g-p-project", "model-a"]) for (const endpoint 
   });
 }
 
-for (const scenario of ["image", "sandbox", "plain-prefix", "empty-tool"]) test(`Responses rich stream: ${scenario}`, async () => {
+for (const scenario of ["image", "loaded-image", "sandbox", "plain-prefix", "empty-tool"]) test(`Responses rich stream: ${scenario}`, async () => {
   const account = `rich-stream-${scenario}`;
   store.saveVerifiedSession("synthetic-session", account, "synthetic-device");
   store.updateMintedToken("synthetic-access", Date.now() + 3600000, null);
   const downloads = [];
   const backend = stubBackend(account, { turnFrames: () => {
     const answer = assistantAddFrame("upstream", "answer", "First line\nSecond line\n");
+    if (scenario === "loaded-image") return [assistantAddFrame("upstream", "answer", "An image: sediment://image"), {p:"/message/metadata",o:"add",v:{asset_pointer:"sediment://image",content_type:"image_asset_pointer"}}, "[DONE]"];
     if (scenario === "image") return [assistantAddFrame("upstream", "answer", "An image: sediment://image"), "[DONE]"];
     if (scenario === "sandbox") return [{ type: "attachment", asset_pointer: "sandbox:/mnt/data/extra.csv" }, assistantAddFrame("upstream", "answer", "[Report](sandbox:/mnt/data/report.csv)"), "[DONE]"];
     if (scenario === "plain-prefix") return [answer, { p: "/message/content/parts/0", o: "append", v: "[ordinary label] is text\n" }, "[DONE]"];
@@ -173,6 +174,7 @@ for (const scenario of ["image", "sandbox", "plain-prefix", "empty-tool"]) test(
   } });
   globalThis.fetch = async (url, init) => {
     if (new URL(String(url)).pathname.endsWith("/download") || new URL(String(url)).pathname.includes("/files/download/")) { downloads.push(String(url)); return Response.json({ download_url: download }); }
+    if (scenario === "loaded-image" && new URL(String(url)).hostname === "files.oaiusercontent.com") return new Response(Buffer.from("synthetic-image"), {headers:{"content-type":"image/png"}});
     return backend(url, init);
   };
   const res = await localFetch(`${address}/v1/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: "Question", stream: true }) });
@@ -181,7 +183,8 @@ for (const scenario of ["image", "sandbox", "plain-prefix", "empty-tool"]) test(
   const completed = events.at(-1).response;
   const answer = events.filter(e => e.type === "response.output_text.delta").map(e => e.delta).join("");
   assert.equal(answer, completed.output[0].content[0].text);
-  if (scenario === "image") assert.match(completed.metadata.mirror_images, /files.oaiusercontent.com/);
+  if (scenario === "loaded-image") assert.match(completed.metadata.mirror_images, /data:image\/png;base64,/);
+  if (scenario === "image") assert.deepEqual(JSON.parse(completed.metadata.mirror_images), []);
   if (scenario === "sandbox") assert.equal(new URL(downloads[0]).searchParams.get("message_id"), "answer");
   if (scenario === "plain-prefix") assert.equal(answer, "First line\nSecond line\n[ordinary label] is text\n");
   if (scenario === "empty-tool") assert.equal(answer, "First line\nSecond line\n");

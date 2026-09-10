@@ -88,7 +88,7 @@ const CompletionResponseMetadata = z
         "JSON-stringified array of {url} objects for any in-chat DALL-E image(s) ChatGPT " +
         "generated during the turn (distinct from the official /v1/images/generations " +
         "endpoint, which Mirror doesn't implement - see COMPATIBILITY.md). Each url " +
-        "resolves against Mirror's GET /api/assets.",
+        "is a self-contained image data URI when preview bytes are available. Unavailable previews are omitted.",
     }),
   })
   .openapi({
@@ -576,6 +576,20 @@ const nativeApiPaths: ZodOpenApiPathsObject = {
       responses: {
         "200": { description: "OK", content: { "application/json": { schema: PublicUploadedFile } } },
         "400": { description: "No file uploaded", content: { "application/json": { schema: ErrorResponse } } },
+      },
+    },
+  },
+  "/api/asset-content": {
+    get: {
+      summary: "Read a generated file using its sealed file-scoped link",
+      description: "No browser cookie or API key is needed. The sealed ticket grants read access to one output asset for seven days while the originating saved session remains connected. Resolves fresh upstream metadata and streams file bytes. download=1 sends Content-Disposition: attachment with the actual filename; otherwise supported images are served inline. Invalid tickets return 404. No arbitrary URL or pointer is accepted from the caller.",
+      security: [],
+      tags: ["Mirror"],
+      requestParams: { query: z.object({ ticket: z.string(), download: z.literal("1").optional() }) },
+      responses: {
+        "200": { description: "File bytes with the original content type and a filename in Content-Disposition.", content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } },
+        "404": { description: "Expired, invalid, or disconnected-session file link." },
+        "502": { description: "The upstream file could not be retrieved." },
       },
     },
   },
