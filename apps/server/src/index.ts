@@ -215,7 +215,7 @@ app.get("/api/health", async () => ({
 app.post("/api/session", async (req) => {
   const body = SetSessionBody.parse(req.body);
   const revision = getSessionRevision();
-  const candidate = await verifyCandidateSessionToken(body.sessionToken);
+  const candidate = await verifyCandidateSessionToken(body.sessionToken, body.turnstileToken);
   const client = new ChatGptBackendClient(candidate.credentials);
   const me = await client.fetchMe();
   assertSessionRevision(revision);
@@ -223,6 +223,7 @@ app.post("/api/session", async (req) => {
     candidate.persistedSessionToken,
     client.accountId ?? undefined,
     candidate.credentials.deviceId,
+    body.turnstileToken ?? candidate.turnstileToken,
   );
   if (client.accountId) claimDefaultAccountData(client.accountId);
   updateMintedToken(
@@ -239,7 +240,11 @@ app.post("/api/session", async (req) => {
 
 app.get("/api/session", async () => {
   const session = getSession();
-  return { configured: Boolean(session), savedAt: session?.savedAt ?? null };
+  return {
+    configured: Boolean(session),
+    savedAt: session?.savedAt ?? null,
+    hasTurnstileToken: Boolean(session?.turnstileToken),
+  };
 });
 app.delete("/api/session", async () => {
   clearSession();
@@ -476,8 +481,17 @@ app.post("/api/chat", async (req, reply) => {
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
   try {
+    const turnstileToken =
+      body.turnstileToken ??
+      (typeof req.headers["openai-sentinel-turnstile-token"] === "string"
+        ? req.headers["openai-sentinel-turnstile-token"]
+        : undefined) ??
+      (typeof req.headers["x-turnstile-token"] === "string"
+        ? req.headers["x-turnstile-token"]
+        : undefined);
     const { conversation, result, storedAssistantMessageId } = await runChat({
       ...body,
+      turnstileToken,
       signal: controller.signal,
       onDelta: (delta) => send("delta", { delta }),
       onEvent: (event) => {

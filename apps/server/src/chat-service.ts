@@ -19,6 +19,7 @@ import {
   updateConversation,
   updateMessage,
   deleteConversation,
+  setSessionTurnstileToken,
   type StoredConversation,
 } from "./store.js";
 
@@ -38,6 +39,8 @@ export interface RunChatOptions {
   private?: boolean;
   /** Do not retain locally and force upstream temporary-chat semantics. */
   ephemeral?: boolean;
+  /** Optional Cloudflare Turnstile token override for sentinel requirements. */
+  turnstileToken?: string | null;
   signal?: AbortSignal;
   onDelta?: (delta: string, full: string) => void;
   onEvent?: (event: NormalizedConversationEvent) => void;
@@ -186,6 +189,7 @@ export async function runChat(
       timezoneOffsetMin: opts.timezoneOffsetMin,
       attachments: opts.attachments,
       historyAndTrainingDisabled: conversation.private,
+      turnstileToken: opts.turnstileToken,
       signal: controller.signal,
       onDelta: (delta, full) => {
         controller.signal.throwIfAborted();
@@ -214,6 +218,7 @@ export async function runChat(
       result.messageId,
       events,
     );
+    if (result.turnstileToken) setSessionTurnstileToken(result.turnstileToken);
     outcome = {
       conversation: transient ? conversation : getConversation(conversation.id)!,
       result,

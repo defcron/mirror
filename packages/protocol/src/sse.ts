@@ -202,10 +202,30 @@ function isPythonTool(name: string): boolean {
   return /^(?:python|python_user_visible)(?:\.|$)/.test(name);
 }
 
+/**
+ * Tools the model can invoke in direct response to something the user asked
+ * for in THIS turn (image generation, web browsing/search, canvas, code
+ * interpreter). These stay visible even on a gizmo/Project's first upstream
+ * turn, unlike quiet initialization-only tools such as file_search /
+ * myfiles_browser (retrieval over the gizmo/Project's attached knowledge
+ * files, fired automatically before the model even starts answering).
+ */
+function isAlwaysVisibleFirstTurnTool(name: string): boolean {
+  return /^(?:python|python_user_visible|dalle(?:\.text2im)?|browser|web|canmore|sora|video_gen)(?:\.|$)/i.test(name);
+}
+
 export interface ConversationStreamReducerOptions {
-  /** First upstream turn of a Custom GPT/Project: show the answer and Python
-   * output only. Keep other events with displayHidden for diagnostics, without
-   * promoting them into text, tool metadata, summaries, or output attachments. */
+  /** First upstream turn of a Custom GPT/Project: hide the quiet
+   * initialization-only tool activity (file_search / myfiles_browser
+   * retrieval over the gizmo/Project's knowledge files, raw
+   * reasoning/system-content framing, the "thinking..." commentary preamble)
+   * that fires automatically before the model starts answering. Tools the
+   * user directly asked for this turn - python/code interpreter, image
+   * generation (dalle), web browsing/search (browser/web), canvas
+   * (canmore), video/sora - stay visible, as does the final answer text.
+   * Other hidden events are kept with displayHidden for diagnostics, without
+   * being promoted into text, tool metadata, summaries, or output
+   * attachments. Subsequent turns are unaffected. */
   suppressFirstTurnToolNarration?: boolean;
 }
 
@@ -260,7 +280,7 @@ export class ConversationStreamReducer {
     if (event.kind === "typed") {
       const previousVisibility = this.displayHidden;
       const name = asString(event.raw.tool_name) ?? asString(event.raw.name) ?? "";
-      this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isPythonTool(name);
+      this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isAlwaysVisibleFirstTurnTool(name);
       this.applyTyped(event.type, event.raw);
       scanSpecials(event.raw, (normalized) => this.push(normalized));
       this.displayHidden = previousVisibility;
@@ -351,8 +371,17 @@ export class ConversationStreamReducer {
 
     const channel = asString(message.channel);
     const python = isPythonTool(authorName ?? "") || isPythonTool(asString(message.recipient) ?? "");
-    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !python &&
-      (role !== "assistant" || Boolean(authorName) || channel === "analysis" || channel === "commentary" ||
+    const isVisibleFirstTurnTool = python ||
+      isAlwaysVisibleFirstTurnTool(authorName ?? "") ||
+      isAlwaysVisibleFirstTurnTool(asString(message.recipient) ?? "");
+    // Chain-of-thought (channel "analysis") is deliberately NOT suppressed
+    // here, on any turn or chat type: the user wants raw reasoning surfaced
+    // end to end (see rich-output.ts's visibleReasoning / mirror_reasoning).
+    // Only the quiet init-only retrieval noise and pure system/UI framing
+    // stay hidden on a gizmo/Project's first upstream turn.
+    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isVisibleFirstTurnTool &&
+      channel !== "analysis" &&
+      (role !== "assistant" || Boolean(authorName) || channel === "commentary" ||
         Boolean(message.recipient && message.recipient !== "all") ||
         contentType === "reasoning_recap" || contentType === "summary" ||
         (contentType !== null && FIRST_TURN_TOOL_NARRATION_CONTENT_TYPES.has(contentType)));
@@ -375,7 +404,8 @@ export class ConversationStreamReducer {
     // recipient (e.g. "file_search.msearch", "python") and are therefore
     // already excluded by the recipient check below regardless of this flag.
     const isFirstTurnToolNarration =
-      Boolean(this.opts.suppressFirstTurnToolNarration) && !python &&
+      Boolean(this.opts.suppressFirstTurnToolNarration) && !isVisibleFirstTurnTool &&
+      channel !== "analysis" &&
       (channel === "commentary" ||
         (contentType !== null && FIRST_TURN_TOOL_NARRATION_CONTENT_TYPES.has(contentType)));
 

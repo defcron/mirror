@@ -32,6 +32,7 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
     return {
       accessToken: session.cachedAccessToken!,
       deviceId: session.deviceId,
+      ...(session.turnstileToken ? { turnstileToken: session.turnstileToken } : {}),
     };
   }
 
@@ -52,7 +53,11 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
           minted.expiresAt,
           minted.rotatedSessionToken,
         );
-        return { accessToken: minted.accessToken, deviceId: current.deviceId };
+        return {
+          accessToken: minted.accessToken,
+          deviceId: current.deviceId,
+          ...(current.turnstileToken ? { turnstileToken: current.turnstileToken } : {}),
+        };
       } catch (err) {
         if (err instanceof SessionTokenInvalidError)
           (err as any).statusCode = 401;
@@ -68,19 +73,26 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
 /** Verify a candidate without replacing the last known-good stored credential. */
 export async function verifyCandidateSessionToken(
   sessionToken: string,
+  turnstileToken?: string,
 ): Promise<{
   credentials: SessionCredentials;
   persistedSessionToken: string;
   expiresAt: number;
+  turnstileToken?: string;
 }> {
   const minted = await mintAccessToken(sessionToken);
   const prior = getSession();
+  const isSameSession = Boolean(prior && prior.sessionToken === sessionToken);
+  const effectiveTurnstile =
+    turnstileToken ?? (isSameSession ? prior?.turnstileToken : undefined);
   return {
     credentials: {
       accessToken: minted.accessToken,
-      deviceId: prior?.deviceId ?? randomUUID(),
+      deviceId: (isSameSession ? prior?.deviceId : undefined) ?? randomUUID(),
+      ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
     },
     persistedSessionToken: minted.rotatedSessionToken ?? sessionToken,
     expiresAt: minted.expiresAt,
+    ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
   };
 }

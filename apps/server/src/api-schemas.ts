@@ -21,6 +21,13 @@ export const SetSessionBody = z
         description:
           "The value of the __Secure-next-auth.session-token cookie from chatgpt.com/api/auth/session.",
       }),
+    turnstileToken: z
+      .string()
+      .optional()
+      .openapi({
+        description:
+          "Optional Cloudflare Turnstile token for sentinel requirements.",
+      }),
   })
   .openapi({ ref: "SetSessionBody" });
 
@@ -104,6 +111,9 @@ export const ChatBody = z
     timezone: z.string().optional(),
     timezoneOffsetMin: z.number().optional(),
     attachments: z.array(ChatAttachment).default([]),
+    turnstileToken: z.string().optional().openapi({
+      description: "Optional Cloudflare Turnstile token override for sentinel requirements.",
+    }),
   })
   .openapi({
     ref: "ChatBody",

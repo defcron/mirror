@@ -20,6 +20,20 @@ export function visibleSummary(raw: ObjectValue): string {
   return str(content.text) || (Array.isArray(content.parts) ? content.parts.filter(p => typeof p === "string").join("\n") : "");
 }
 
+/**
+ * Full raw chain-of-thought text: any assistant message on the "analysis"
+ * channel, regardless of content_type. Distinct from visibleSummary above,
+ * which only surfaces ChatGPT's own condensed post-hoc recap - this is the
+ * live reasoning text itself, exposed because the user wants it visible on
+ * every turn, in every chat type (gizmo/Project first turns included).
+ */
+export function visibleReasoning(raw: ObjectValue): string {
+  if (raw.channel !== "analysis") return "";
+  const content = object(raw.content);
+  if (!content) return "";
+  return str(content.text) || (Array.isArray(content.parts) ? content.parts.filter(p => typeof p === "string").join("\n") : "");
+}
+
 function toolText(raw: ObjectValue): string {
   const content = object(raw.content);
   const blocks: string[] = [];
@@ -46,7 +60,7 @@ function toolText(raw: ObjectValue): string {
 export function needsRichOutput(event: NormalizedConversationEvent): boolean {
   if (event.displayHidden) return false;
   if (["tool", "image", "file", "citation"].includes(event.kind)) return true;
-  if (event.kind === "message") return Boolean(visibleSummary(event.raw));
+  if (event.kind === "message") return Boolean(visibleSummary(event.raw)) || Boolean(visibleReasoning(event.raw));
   return event.kind === "assistant_text" && /[\uE000-\uF8FF]|sandbox:|file-service:|sediment:/.test(event.text);
 }
 
@@ -55,6 +69,9 @@ export interface RichOutput {
   assets: { pointer: string; url?: string; previewUnavailable?: boolean; status: "resolved" | "unavailable" }[];
   tools: { name: string; messageId: string | null; text: string }[];
   summaries: { messageId: string | null; text: string }[];
+  /** Full raw chain-of-thought text observed this turn, one entry per assistant
+   * message id that carried an "analysis"-channel content snapshot. */
+  reasoning: { messageId: string | null; text: string }[];
 }
 
 /** Resolve only attachments named in this turn's upstream events. */
@@ -67,6 +84,7 @@ export async function renderRichOutput(
   const snapshots = new Map<string | null, string>();
   const tools = new Map<string, RichOutput["tools"][number]>();
   const summaries = new Map<string | null, string>();
+  const reasoningTexts = new Map<string | null, string>();
   const references = new Map<string, { pointer: string; title: string }>();
   const pointers = new Map<string, { image: boolean; title: string; messageId?: string | null }>();
   const visit = (value: unknown, messageId?: string | null) => {
@@ -109,6 +127,8 @@ export async function renderRichOutput(
     } else if (event.kind === "message") {
       const summary = visibleSummary(event.raw);
       if (summary) summaries.set(event.messageId, summary);
+      const reasoning = visibleReasoning(event.raw);
+      if (reasoning) reasoningTexts.set(event.messageId, reasoning);
       // User inputs and internal analysis are not output attachments.
       if (event.role !== "user" && event.raw.channel !== "analysis") messages.set(event.messageId, event.raw);
     } else if (event.kind === "image" || event.kind === "file") {
@@ -216,5 +236,7 @@ export async function renderRichOutput(
   transform(tree);
   for (const entry of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, entry.start) + entry.value + text.slice(entry.end);
   for (const [pointer, info] of pointers) if (!used.has(pointer)) text += `\n\n${link(pointer, info.title, info.image)}`;
-  return { text, assets, tools: [...tools.values()], summaries: [...summaries].map(([messageId, text]) => ({ messageId, text })) };
+  return { text, assets, tools: [...tools.values()],
+    summaries: [...summaries].map(([messageId, text]) => ({ messageId, text })),
+    reasoning: [...reasoningTexts].map(([messageId, text]) => ({ messageId, text })) };
 }

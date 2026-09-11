@@ -1,5 +1,3 @@
-/** Shared types for the ChatGPT Web backend protocol client. */
-
 export interface SessionCredentials {
   /** Bearer token minted from the long-lived ChatGPT sessionToken. */
   accessToken: string;
@@ -7,6 +5,8 @@ export interface SessionCredentials {
   cookie?: string;
   /** Stable per-install/device UUID sent as oai-device-id. */
   deviceId: string;
+  /** Optional Cloudflare Turnstile token for sentinel requirements. */
+  turnstileToken?: string | null;
 }
 
 export interface ConversationInitResult {
@@ -172,6 +172,7 @@ export interface SendMessageResult {
   userMessageId: string;
   status: string | null;
   events: NormalizedConversationEvent[];
+  turnstileToken?: string | null;
 }
 
 export class BackendApiError extends Error {

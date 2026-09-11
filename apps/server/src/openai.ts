@@ -13,6 +13,18 @@ import {
   type NormalizedConversationEvent,
   type UploadedFile,
 } from "@mirror/protocol";
+import {
+  routeModel,
+  textContent,
+  buildResponseMetadata,
+  imagePartsOf,
+  resolveImageAttachment,
+  normalized,
+  promptFor,
+  instructionsHash,
+  conversationalMessages,
+  firstHistoryDifference,
+} from "./conversation-context.js";
 import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
 import {
@@ -206,6 +218,15 @@ const CompletionBody = z
         conversation_id: z.string().min(1).max(200).optional().openapi({
           description: "Continue an existing Mirror conversation by id.",
         }),
+        mirror_turnstile_token: z.string().min(1).optional().openapi({
+          description: "Alias of turnstile_token below.",
+        }),
+        turnstile_token: z.string().min(1).optional().openapi({
+          description:
+            "Caller-supplied Cloudflare Turnstile response token, used when Sentinel " +
+            "requires one and no other source (env var, saved session, cache) has one. " +
+            "See PROTOCOL.md's Turnstile resolution notes.",
+        }),
       })
       .strict()
       .optional()
@@ -226,215 +247,6 @@ const CompletionBody = z
       "Unsupported fields are rejected (400) rather than silently ignored.",
   });
 
-/**
- * Model routing: official model slugs pass through unchanged. Gizmo-backed
- * "models" (Custom GPTs and ChatGPT Projects, aka "snorlax") share one id
- * namespace upstream - Custom GPTs are "g-<hex>", Projects are "g-p-<hex>" -
- * so both route through the same gizmoId mechanism chat-service.ts already
- * supports end-to-end. A Project (or GPT) can pick its own model via
- * metadata.mirror_model - including, experimentally, another gizmo/project
- * id nested inside it; we don't validate that shape, we just forward it and
- * let upstream decide what to do with it.
- */
-function routeModel(
-  model: string,
-  metadata?: Record<string, string>,
-): { model?: string; gizmoId?: string | null; private?: boolean } {
-  const override = metadata?.mirror_model;
-  const privateMode =
-    metadata?.private === undefined ? undefined : metadata.private === "true";
-  if (/^g-/.test(model))
-    return {
-      model: override || "auto",
-      gizmoId: model,
-      ...(privateMode !== undefined ? { private: privateMode } : {}),
-    };
-  return {
-    model: override || model,
-    ...(privateMode !== undefined ? { private: privateMode } : {}),
-  };
-}
-
-function textContent(
-  content: z.infer<typeof OpenAiMessage>["content"],
-): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((part): part is z.infer<typeof TextPart> => part.type === "text" && Boolean(part.text))
-    .map((part) => part.text)
-    .join("\n");
-}
-
-/**
- * Packs ChatGPT-only behavior that has no slot in the official Chat
- * Completions response schema into documented metadata.mirror_* keys (see
- * CompletionBody's doc comment above) - undefined when there's nothing to
- * report, so ordinary turns don't grow a metadata object at all.
- */
-function buildResponseMetadata(
-  events: NormalizedConversationEvent[],
-  upstreamConversationId: string | null,
-): Record<string, string> | undefined {
-  const toolEvents = events.filter(
-    (event): event is Extract<NormalizedConversationEvent, { kind: "tool" }> =>
-      event.kind === "tool" && !event.displayHidden,
-  );
-  const imageEvents = events.filter(
-    (event): event is Extract<NormalizedConversationEvent, { kind: "image" }> =>
-      event.kind === "image" && !event.displayHidden,
-  );
-  const metadata: Record<string, string> = {};
-  if (toolEvents.length) {
-    metadata.mirror_tool_events = JSON.stringify(
-      toolEvents.map((event) => ({ name: event.name, status: event.status ?? null })),
-    );
-  }
-  if (imageEvents.length) {
-    const query = (pointer: string) => {
-      const params = new URLSearchParams({ pointer });
-      if (upstreamConversationId) params.set("upstreamConversationId", upstreamConversationId);
-      return `/api/assets?${params.toString()}`;
-    };
-    metadata.mirror_images = JSON.stringify(
-      imageEvents.map((event) => ({ url: query(event.assetPointer) })),
-    );
-  }
-  return Object.keys(metadata).length ? metadata : undefined;
-}
-
-const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // matches /api/files' multipart cap
-
-function imagePartsOf(
-  content: z.infer<typeof OpenAiMessage>["content"],
-): Extract<z.infer<typeof ContentPart>, { type: "image_url" }>[] {
-  if (!Array.isArray(content)) return [];
-  return content.filter(
-    (part): part is Extract<z.infer<typeof ContentPart>, { type: "image_url" }> =>
-      part.type === "image_url",
-  );
-}
-
-const DATA_URL_RE = /^data:([^;,]+)(;charset=[^;,]+)?(;base64)?,(.*)$/s;
-
-/**
- * Resolves one OpenAI-shape image_url part into an uploaded backend-api
- * file. backend-api has no notion of "reference this image by URL" the way
- * the official API's vision input does - every attachment has to already
- * exist as a file the account owns (see ChatGptBackendClient.uploadFile /
- * POST /api/files), so a data: URI is decoded and an https URL is fetched,
- * then both are uploaded the same way a browser attachment would be.
- */
-async function resolveImageAttachment(
-  client: ChatGptBackendClient,
-  part: Extract<z.infer<typeof ContentPart>, { type: "image_url" }>,
-  index: number,
-  signal?: AbortSignal,
-): Promise<UploadedFile> {
-  const url = part.image_url.url;
-  let data: Uint8Array;
-  let mimeType: string;
-  const dataUrlMatch = DATA_URL_RE.exec(url);
-  if (dataUrlMatch) {
-    const [, declaredType, , isBase64, payload] = dataUrlMatch;
-    mimeType = declaredType;
-    data = isBase64
-      ? Buffer.from(payload, "base64")
-      : Buffer.from(decodeURIComponent(payload), "utf-8");
-  } else if (/^https?:\/\//i.test(url)) {
-    const res = await fetch(url, { signal });
-    if (!res.ok)
-      throw new Error(`Could not fetch image_url[${index}]: upstream returned ${res.status}`);
-    mimeType = res.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
-    data = new Uint8Array(await res.arrayBuffer());
-  } else {
-    throw new Error(
-      `image_url[${index}] must be a data: URI or an http(s) URL`,
-    );
-  }
-  if (!mimeType.startsWith("image/"))
-    throw new Error(`image_url[${index}] does not look like an image (got ${mimeType})`);
-  if (data.byteLength === 0)
-    throw new Error(`image_url[${index}] resolved to an empty file`);
-  if (data.byteLength > MAX_IMAGE_BYTES)
-    throw new Error(
-      `image_url[${index}] is too large (${data.byteLength} bytes, max ${MAX_IMAGE_BYTES})`,
-    );
-  const extension = mimeType.split("/")[1]?.split("+")[0] || "png";
-  return client.uploadFile({
-    data,
-    fileName: `image-${index}.${extension}`,
-    mimeType,
-    signal,
-  });
-}
-
-function normalized(messages: z.infer<typeof OpenAiMessage>[]) {
-  return messages.map((message) => ({
-    role: message.role,
-    content: textContent(message.content),
-    ...(message.name ? { name: message.name } : {}),
-  }));
-}
-
-function promptFor(
-  messages: ReturnType<typeof normalized>,
-  continuation: boolean,
-): string {
-  if (continuation) return messages.at(-1)!.content;
-  const system = messages.filter(
-    (m) => m.role === "system" || m.role === "developer",
-  );
-  const conversational = messages.filter(
-    (m) => m.role !== "system" && m.role !== "developer",
-  );
-  if (messages.length === 1 && messages[0]?.role === "user")
-    return messages[0].content;
-  return [
-    system.length
-      ? `Instructions:\n${system.map((m) => m.content).join("\n")}`
-      : "",
-    "Conversation context:",
-    conversational
-      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-      .join("\n\n"),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-}
-
-function instructionsHash(messages: ReturnType<typeof normalized>): string {
-  return fingerprintValue(
-    messages.filter(
-      (message) => message.role === "system" || message.role === "developer",
-    ),
-  );
-}
-
-function conversationalMessages(messages: ReturnType<typeof normalized>) {
-  return messages
-    .filter((message) => message.role === "user" || message.role === "assistant")
-    .map((message) => ({
-      role: message.role as "user" | "assistant",
-      content: message.content,
-    }));
-}
-
-function firstHistoryDifference(
-  stored: Array<{ role: "user" | "assistant"; content: string }>,
-  incoming: Array<{ role: "user" | "assistant"; content: string }>,
-): number {
-  let index = 0;
-  while (
-    index < stored.length &&
-    index < incoming.length &&
-    stored[index]?.role === incoming[index]?.role &&
-    stored[index]?.content === incoming[index]?.content
-  ) {
-    index += 1;
-  }
-  return index;
-}
 
 // Slow-consumer guard. Real backpressure (a client reading slower than we
 // can write) is normal and must be tolerated, not treated as "the client is
@@ -522,6 +334,7 @@ export function remainingStreamText(responseText: string, emittedText: string): 
 }
 
 export { CompletionBody, OpenAiMessage, ContentPart };
+export type { TextPart };
 
 export async function registerOpenAiRoutes(
   app: FastifyInstance,
@@ -665,6 +478,15 @@ export async function registerOpenAiRoutes(
     // supplied - it always gets its own throwaway conversation and never
     // returns x-mirror-conversation-id. See CompletionBody above.
     const oneShot = body.store === false;
+    const turnstileToken =
+      body.metadata?.mirror_turnstile_token ??
+      body.metadata?.turnstile_token ??
+      (typeof req.headers["openai-sentinel-turnstile-token"] === "string"
+        ? req.headers["openai-sentinel-turnstile-token"]
+        : undefined) ??
+      (typeof req.headers["x-turnstile-token"] === "string"
+        ? req.headers["x-turnstile-token"]
+        : undefined);
 
     // metadata.conversation_id is optional (see CompletionBody above): if
     // present but doesn't exist yet, that's not an error - the caller is
@@ -985,6 +807,7 @@ export async function registerOpenAiRoutes(
             gizmoId: route.gizmoId,
             private: route.private || oneShot,
             ephemeral: oneShot,
+            turnstileToken,
             attachments: resolvedAttachments,
             signal: controller.signal,
             onEvent: (event) => {
@@ -1121,11 +944,15 @@ export async function registerOpenAiRoutes(
           responseMetadata.mirror_assets = JSON.stringify(richOutput.assets);
           responseMetadata.mirror_tool_outputs = JSON.stringify(richOutput.tools);
           if (richOutput.summaries.length) responseMetadata.mirror_reasoning_summaries = JSON.stringify(richOutput.summaries);
+          if (richOutput.reasoning.length) responseMetadata.mirror_reasoning = JSON.stringify(richOutput.reasoning);
           const resolvedImages = richOutput.assets.filter(asset => asset.url && !asset.previewUnavailable && capturedEvents.some(event => event.kind === "image" && event.assetPointer === asset.pointer));
           if (responseMetadata.mirror_images !== undefined) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
         }
 
-        const responseFields = { ...body.metadata, ...responseMetadata,
+        const sanitizedRequestMetadata = body.metadata ? { ...body.metadata } : {};
+        delete (sanitizedRequestMetadata as any).turnstile_token;
+        delete (sanitizedRequestMetadata as any).mirror_turnstile_token;
+        const responseFields = { ...sanitizedRequestMetadata, ...responseMetadata,
           ...(!oneShot ? { conversation_id: conversation.id } : {}) };
         if (oneShot) delete responseFields.conversation_id;
         if (body.stream) {

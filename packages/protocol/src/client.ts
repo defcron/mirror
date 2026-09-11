@@ -22,6 +22,7 @@ import {
   type UploadedFile,
   type RemoteConversationSummary,
 } from "./types.js";
+import { resolveTurnstileToken, type TurnstileChallenge } from "./turnstile.js";
 
 const ORIGIN = "https://chatgpt.com";
 const BASE_URL = `${ORIGIN}/backend-api`;
@@ -86,6 +87,8 @@ export interface SendMessageOptions {
   attachments?: UploadedFile[];
   /** Temporary/incognito chat: excluded from chatgpt.com history and model training. */
   historyAndTrainingDisabled?: boolean;
+  /** Optional Cloudflare Turnstile token override for sentinel requirements. */
+  turnstileToken?: string | null;
   onDelta?: (text: string, full: string) => void;
   onEvent?: (event: NormalizedConversationEvent) => void;
   signal?: AbortSignal;
@@ -115,6 +118,7 @@ function assetDownload(json: Record<string, unknown>): AssetDownload {
 
 export class ChatGptBackendClient {
   public accountId: string | null = null;
+  public turnstileSolver?: ((challenge: TurnstileChallenge) => Promise<string | null> | string | null) | null;
 
   constructor(private readonly creds: SessionCredentials) {}
 
@@ -348,6 +352,15 @@ export class ChatGptBackendClient {
   /**
    * Current follow-up flow observed in September 2026:
    * context-change prepare -> conduit A -> composer-state prepare -> conduit B.
+   *
+   * conduit_token is not documented as strictly required by f/conversation,
+   * but the real chatgpt.com web client fires this debounced prepare on
+   * every keystroke/context-change for EVERY turn - including a brand-new
+   * conversation's first message, where conversation_id is still null. So
+   * this is called unconditionally by sendMessage() below, on every turn,
+   * and its result is threaded into f/conversation whenever present rather
+   * than only on turns where the upstream response happens to demand it -
+   * better to send a token it doesn't strictly need than to omit one it does.
    */
   private async prepareFollowup(opts: {
     model: string;
@@ -415,7 +428,10 @@ export class ChatGptBackendClient {
     }
   }
 
-  private async sentinelHandshake(signal?: AbortSignal): Promise<{
+  private async sentinelHandshake(
+    signal?: AbortSignal,
+    turnstileOverride?: string | null,
+  ): Promise<{
     chatRequirementsToken: string;
     proofToken: string | null;
     turnstileToken: string;
@@ -443,14 +459,31 @@ export class ChatGptBackendClient {
         : null,
     }, signal);
 
+    const turnstileChallenge = isObject(prepareRes.turnstile)
+      ? prepareRes.turnstile
+      : {};
+    const turnstileRequired = Boolean(turnstileChallenge.required);
+    const turnstileDx = typeof turnstileChallenge.dx === "string" ? turnstileChallenge.dx : null;
+
+    const turnstileToken = await resolveTurnstileToken({
+      required: turnstileRequired,
+      dx: turnstileDx,
+      overrideToken: turnstileOverride,
+      credentialsToken: this.creds.turnstileToken,
+      sessionToken: this.creds.accessToken,
+      deviceId: this.creds.deviceId,
+      signal,
+      solver: this.turnstileSolver,
+    });
+
     const finalizeRes = await this.postJson(
       "/sentinel/chat-requirements/finalize",
       {
         prepare_token: prepareRes.prepare_token,
         proofofwork: proofToken,
-        // The working PoC succeeds with no separately supplied Turnstile token.
-        // Keep that behavior until live traffic proves otherwise.
-        turnstile: null,
+        // Send the resolved Turnstile token if available; otherwise fall back to
+        // null so unconstrained sessions succeed without a browser widget.
+        turnstile: turnstileToken || null,
       },
       {},
       signal,
@@ -466,7 +499,7 @@ export class ChatGptBackendClient {
     return {
       chatRequirementsToken: token,
       proofToken,
-      turnstileToken: "",
+      turnstileToken: turnstileToken || "",
     };
   }
 
@@ -672,7 +705,7 @@ export class ChatGptBackendClient {
       });
     }
 
-    const sentinel = await this.sentinelHandshake(opts.signal);
+    const sentinel = await this.sentinelHandshake(opts.signal, opts.turnstileToken);
     const userMessageId = randomUUID();
     const turnTraceId = randomUUID();
     const attachments = opts.attachments ?? [];
@@ -796,6 +829,7 @@ export class ChatGptBackendClient {
       userMessageId,
       status: reducer.status,
       events: allEvents,
+      turnstileToken: sentinel.turnstileToken || null,
     };
   }
 

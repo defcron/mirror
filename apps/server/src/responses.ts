@@ -27,11 +27,16 @@ export const ResponsesBody = z.object({
 export type ResponsesRequest = z.infer<typeof ResponsesBody>;
 
 export function responsesToCompletion(body: ResponsesRequest) {
+  const sanitizedMetadata = body.metadata ? { ...body.metadata } : undefined;
+  if (sanitizedMetadata) {
+    delete (sanitizedMetadata as any).turnstile_token;
+    delete (sanitizedMetadata as any).mirror_turnstile_token;
+  }
   const messages = typeof body.input === "string"
     ? [{ role: "user" as const, content: body.input }]
     : body.input.map(item => ({ role: item.role, content: typeof item.content === "string"
       ? item.content : item.content.map(part => part.text).join("") }));
-  return { model: body.model, stream: body.stream, store: body.store, metadata: body.metadata,
+  return { model: body.model, stream: body.stream, store: body.store, metadata: sanitizedMetadata,
     messages: [...(body.instructions === undefined ? [] : [{ role: "system" as const, content: body.instructions }]), ...messages] };
 }
 
@@ -43,7 +48,10 @@ export function createResponseWriter(body: ResponsesRequest, emit: (event: Recor
   let summaries: { id: string; type: string; summary: { type: string; text: string }[] }[] = [];
   const part = (text: string) => ({ type: "output_text", text, annotations: [], logprobs: [] });
   const item = (text: string, status: string) => ({ id: itemId, type: "message", role: "assistant", status, content: [part(text)] });
-  const response = (text: string, status: string, model = body.model, metadata = body.metadata ?? {}) => ({
+  const sanitizedBodyMetadata = body.metadata ? { ...body.metadata } : {};
+  delete (sanitizedBodyMetadata as any).turnstile_token;
+  delete (sanitizedBodyMetadata as any).mirror_turnstile_token;
+  const response = (text: string, status: string, model = body.model, metadata = sanitizedBodyMetadata) => ({
     id, object: "response", created_at: created, status, error: null, incomplete_details: null,
     model, output: status === "in_progress" ? [] : [item(text, "completed"), ...summaries],
     instructions: body.instructions ?? null, metadata, usage: null, store: body.store,

@@ -164,6 +164,7 @@ export interface StoredSession {
   accountId?: string;
   cachedAccessToken?: string;
   cachedAccessTokenExpiresAt?: number;
+  turnstileToken?: string;
 }
 
 function readSetting(key: string): string | null {
@@ -210,18 +211,35 @@ export function saveVerifiedSession(
   sessionToken: string,
   accountId?: string,
   deviceId?: string,
+  turnstileToken?: string,
 ): StoredSession {
   changedSession();
   const prior = getSession();
+  const isSameSession = Boolean(
+    prior &&
+    prior.sessionToken === sessionToken &&
+    (!accountId || !prior.accountId || prior.accountId === accountId),
+  );
+  const effectiveTurnstile =
+    turnstileToken ?? (isSameSession ? prior?.turnstileToken : undefined);
   const session: StoredSession = {
     sessionToken,
-    deviceId: deviceId ?? prior?.deviceId ?? randomUUID(),
+    deviceId: deviceId ?? (isSameSession ? prior?.deviceId : undefined) ?? randomUUID(),
     savedAt: new Date().toISOString(),
     assetLinkGeneration: randomUUID(),
     ...(accountId ? { accountId } : {}),
+    ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
   };
   writeSetting("session", encrypt(JSON.stringify(session)));
   return session;
+}
+
+export function setSessionTurnstileToken(turnstileToken: string | null): void {
+  const session = getSession();
+  if (!session) return;
+  if (turnstileToken) session.turnstileToken = turnstileToken;
+  else delete session.turnstileToken;
+  writeSetting("session", encrypt(JSON.stringify(session)));
 }
 
 export function setSessionAccountId(accountId: string): void {

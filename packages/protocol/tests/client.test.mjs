@@ -735,3 +735,106 @@ test("sandbox downloads require an absolute path, conversation and message befor
     await assert.rejects(new ChatGptBackendClient(fakeCreds()).resolveSandboxDownload("/file", "conversation", "message"), /no download_url/);
   });
 });
+
+test("sentinelHandshake passes null turnstile when no token is configured", () =>
+  withFetch(
+    async (url, init = {}) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/prepare")
+        return Response.json({ prepare_token: "p", proofofwork: { required: false }, turnstile: { required: true } });
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/finalize") {
+        const body = JSON.parse(String(init.body));
+        assert.equal(body.turnstile, null);
+        return Response.json({ token: "final" });
+      }
+      if (u.pathname === "/backend-api/f/conversation") {
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], "");
+        return HAPPY_STREAM();
+      }
+      throw new Error(`unexpected ${u.href}`);
+    },
+    async () => {
+      const client = new ChatGptBackendClient(fakeCreds());
+      const result = await client.sendMessage({ prompt: "hi", model: "auto" });
+      assert.equal(result.text, "hi");
+    },
+  ));
+
+test("sentinelHandshake passes turnstile override token to finalize and f/conversation", () =>
+  withFetch(
+    async (url, init = {}) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/prepare")
+        return Response.json({ prepare_token: "p", proofofwork: { required: false }, turnstile: { required: true } });
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/finalize") {
+        const body = JSON.parse(String(init.body));
+        assert.equal(body.turnstile, "my-turnstile-token");
+        return Response.json({ token: "final" });
+      }
+      if (u.pathname === "/backend-api/f/conversation") {
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], "my-turnstile-token");
+        return HAPPY_STREAM();
+      }
+      throw new Error(`unexpected ${u.href}`);
+    },
+    async () => {
+      const client = new ChatGptBackendClient(fakeCreds());
+      const result = await client.sendMessage({ prompt: "hi", model: "auto", turnstileToken: "my-turnstile-token" });
+      assert.equal(result.text, "hi");
+    },
+  ));
+
+test("sentinelHandshake uses credentials turnstileToken", () =>
+  withFetch(
+    async (url, init = {}) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/prepare")
+        return Response.json({ prepare_token: "p", proofofwork: { required: false }, turnstile: { required: true } });
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/finalize") {
+        const body = JSON.parse(String(init.body));
+        assert.equal(body.turnstile, "cred-turnstile");
+        return Response.json({ token: "final" });
+      }
+      if (u.pathname === "/backend-api/f/conversation") {
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], "cred-turnstile");
+        return HAPPY_STREAM();
+      }
+      throw new Error(`unexpected ${u.href}`);
+    },
+    async () => {
+      const creds = { ...fakeCreds(), turnstileToken: "cred-turnstile" };
+      const client = new ChatGptBackendClient(creds);
+      const result = await client.sendMessage({ prompt: "hi", model: "auto" });
+      assert.equal(result.text, "hi");
+    },
+  ));
+
+test("sentinelHandshake uses client.turnstileSolver callback", () =>
+  withFetch(
+    async (url, init = {}) => {
+      const u = new URL(String(url));
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/prepare")
+        return Response.json({ prepare_token: "p", proofofwork: { required: false }, turnstile: { required: true, dx: "challenge-dx" } });
+      if (u.pathname === "/backend-api/sentinel/chat-requirements/finalize") {
+        const body = JSON.parse(String(init.body));
+        assert.equal(body.turnstile, "solved-by-cb");
+        return Response.json({ token: "final" });
+      }
+      if (u.pathname === "/backend-api/f/conversation") {
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], "solved-by-cb");
+        return HAPPY_STREAM();
+      }
+      throw new Error(`unexpected ${u.href}`);
+    },
+    async () => {
+      const client = new ChatGptBackendClient(fakeCreds());
+      client.turnstileSolver = async (challenge) => {
+        assert.equal(challenge.required, true);
+        assert.equal(challenge.dx, "challenge-dx");
+        return "solved-by-cb";
+      };
+      const result = await client.sendMessage({ prompt: "hi", model: "auto" });
+      assert.equal(result.text, "hi");
+    },
+  ));
+

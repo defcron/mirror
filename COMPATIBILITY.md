@@ -105,14 +105,42 @@ The Playground's **Responses** sidebar item exercises this endpoint directly. It
 ### First response in a Custom GPT or Project
 
 On the first upstream turn of a new Custom GPT (`g-…`) or Project (`g-p-…`)
-conversation, Mirror displays the assistant answer and Python tool output
-(`python` and `python_user_visible`, including their namespaced variants).
-Other tool logs, file-search results/status cards, commentary preambles, and
-reasoning summaries are excluded from rendered output and public tool metadata.
-Attachments discovered only inside those hidden events are not appended or
-resolved; attachments in the normal answer and Python output still work.
-The original events remain in local storage with a display visibility flag.
-This rule applies to Chat Completions and Responses, streaming and JSON, and
-Mirror's native chat event feed. Follow-ups in existing upstream conversations
-and ordinary model chats retain their usual output. The proxied ChatGPT website
-continues to use ChatGPT's own rendering.
+conversation, Mirror displays the assistant answer, Python tool output
+(`python` and `python_user_visible`, including their namespaced variants),
+and every other tool the model can invoke in direct response to the user's
+own turn - image generation (`dalle`/`dalle.text2im`), web browsing/search
+(`browser`/`web`), canvas (`canmore`), and video/sora (`sora`/`video_gen`) -
+exactly as it would on any later turn. Chain-of-thought (the raw "analysis"
+channel) is likewise never hidden, on this or any turn, in any chat type; see
+"Chain-of-thought / reasoning" below for how it's surfaced.
+
+What *is* still excluded on this first turn only: `file_search`/`myfiles_browser`
+results and status cards (the quiet retrieval pass over a gizmo/Project's
+attached knowledge files that fires automatically before the model starts
+answering) and generic system/UI framing content (developer/system content,
+`computer_initialize_state`/`computer_output`, the "commentary" thinking
+preamble, etc). Attachments discovered only inside those still-hidden events
+are not appended or resolved; attachments in the answer, Python output, and
+the other user-invoked tools above still work. The original events remain in
+local storage with a display visibility flag. This rule applies to Chat
+Completions and Responses, streaming and JSON, and Mirror's native chat event
+feed. Follow-ups in existing upstream conversations and ordinary model chats
+were never affected by any of this (nothing here is first-turn-gated for
+them). The proxied ChatGPT website continues to use ChatGPT's own rendering.
+
+### Chain-of-thought / reasoning
+
+Two distinct things are surfaced, both via `metadata` on `/v1/chat/completions`
+and `/v1/responses` (no non-standard top-level response fields - see this
+document's convention above): `metadata.mirror_reasoning_summaries` is
+ChatGPT's own condensed post-hoc recap (`reasoning_recap`/`summary` content
+types) - the "Thought for Xs" dropdown text. `metadata.mirror_reasoning` is
+the full raw chain-of-thought text itself (`channel: "analysis"` message
+snapshots), present on every turn and every chat type, including a gizmo/
+Project's first turn. Both are JSON-stringified arrays of `{messageId, text}`
+(reasoning summaries omit `messageId` grouping and use `{messageId, text}`
+too - parse either with `JSON.parse`) and are only present when the turn
+actually produced that kind of content. Neither is delivered as a live,
+token-by-token stream - both are finalized once per turn, consistent with
+how Mirror already finalizes other rich content (tool outputs, images) at
+turn completion rather than incrementally.
