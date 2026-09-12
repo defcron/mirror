@@ -315,8 +315,16 @@ export async function renderRichOutput(
       }).replace(/\uE200([^\uE201]*)\uE201/g, (unresolved, inner) => {
         const widgetText = inlineWidgetMarkerText(inner);
         if (widgetText !== null) return widgetText;
+        // JSON.stringify does not escape private-use-area characters, so an
+        // internal separator character ChatGPT embeds inside the marker
+        // (the same family as the \uE202 seen inside plain citation
+        // markers) can sit there completely invisibly in a copy-pasted log
+        // line and still break a regex that expects the type name to touch
+        // "[" or "{" directly. Log actual code points so that is visible.
         console.error(
-          `[mirror] Unresolved citation marker ${JSON.stringify(unresolved)}; raw content_references for this turn: ${JSON.stringify(rawContentReferenceEntries)}`,
+          `[mirror] Unresolved citation marker ${JSON.stringify(unresolved)}` +
+            ` codePoints=${JSON.stringify([...unresolved].map((ch) => "U+" + ch.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")))}` +
+            `; raw content_references for this turn: ${JSON.stringify(rawContentReferenceEntries)}`,
         );
         return "[Reference unavailable]";
       });
