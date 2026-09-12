@@ -157,6 +157,17 @@ export type NormalizedConversationEvent = {
       raw: Record<string, unknown>;
     }
   | {
+      /** Citation data ChatGPT resolves and delivers after the initial
+       * answer text (e.g. sidebar/popup reference descriptions), via a
+       * dedicated content_references_patch typed event rather than being
+       * embedded in the message object itself. Consumers merge this into
+       * that message's metadata.content_references. */
+      kind: "citation_patch";
+      messageId: string | null;
+      contentReferences: unknown[];
+      raw: Record<string, unknown>;
+    }
+  | {
       kind: "status";
       messageId: string | null;
       status: string;

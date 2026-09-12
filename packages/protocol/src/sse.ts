@@ -265,7 +265,13 @@ export class ConversationStreamReducer {
     const isImage =
       event.kind === "image" ||
       (event.kind === "file" && typeof (event as any).assetPointer === "string" && (event as any).assetPointer.startsWith("sediment://"));
-    const shouldHide = this.displayHidden && !isImage;
+    // Citation data carries no visible text of its own to suppress, and it
+    // must reach the message it patches regardless of ambient
+    // displayHidden state (e.g. left over from the message that was
+    // current when this patch event arrived) or every citation on a
+    // suppressed turn silently disappears.
+    const isCitationPatch = event.kind === "citation_patch";
+    const shouldHide = this.displayHidden && !isImage && !isCitationPatch;
     this.normalized.push(structuredClone(shouldHide ? { ...event, displayHidden: true } : event));
   }
 
@@ -282,6 +288,19 @@ export class ConversationStreamReducer {
     }
 
     if (event.kind === "typed") {
+      // Citation data ChatGPT resolves after the initial text (sidebar/popup
+      // reference descriptions, grouped results, ...) arrives via its own
+      // content_references_patch typed event, not embedded in the message
+      // object. It carries no visible text of its own to suppress, and
+      // dropping it on a suppressed first turn would silently break every
+      // citation on that turn - normalize it unconditionally, bypassing the
+      // narration-visibility gate below entirely.
+      if (event.type === "content_references_patch") {
+        const messageId = asString(event.raw.message_id);
+        const contentReferences = Array.isArray(event.raw.content_references) ? event.raw.content_references : [];
+        this.push({ kind: "citation_patch", messageId, contentReferences, raw: event.raw });
+        return;
+      }
       const previousVisibility = this.displayHidden;
       const name = asString(event.raw.tool_name) ?? asString(event.raw.name) ?? "";
       this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isAlwaysVisibleFirstTurnTool(name) && !isAlwaysVisibleFirstTurnTool(event.type);

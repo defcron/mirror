@@ -42,6 +42,16 @@ test("non-webpage citation shapes (mcp_source, grouped_webpages, description-onl
   assert.equal(result.text, "See [Internal Wiki](<https://wiki.internal/page>), also [Example Source](<https://example.com/a>), and note A short internal description with no link.");
   assert.ok(!result.text.includes("Reference unavailable"));
 });
+test("citation data delivered after the message via a citation_patch event still resolves (sidebar/popup references)", async () => {
+  const marker = "\uE200cite\uE202turn0async0\uE201";
+  const citationPatch = (messageId, contentReferences) => ({ kind: "citation_patch", messageId, contentReferences, raw: {} });
+  const result = await renderRichOutput([
+    text(`See the ${marker} for details.`),
+    citationPatch("a", [{ matched_text: marker, type: "hidden", description: "Async sidebar description" }]),
+  ], "", async () => url);
+  assert.equal(result.text, "See the Async sidebar description for details.");
+  assert.ok(!result.text.includes("Reference unavailable"));
+});
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
   const value = "First [report](sandbox:/mnt/data/report.csv) then ![plot](sediment://file-plot) done.";
   const result = await renderRichOutput([text(value), text(value)], "", async () => url);

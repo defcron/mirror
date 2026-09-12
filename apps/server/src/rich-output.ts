@@ -45,7 +45,7 @@ function toolText(raw: ObjectValue): string {
 
 export function needsRichOutput(event: NormalizedConversationEvent): boolean {
   if (event.displayHidden) return false;
-  if (["tool", "image", "file", "citation"].includes(event.kind)) return true;
+  if (["tool", "image", "file", "citation", "citation_patch"].includes(event.kind)) return true;
   if (event.kind === "message") return Boolean(visibleSummary(event.raw));
   return event.kind === "assistant_text" && /[\uE000-\uF8FF]|sandbox:|file-service:|sediment:/.test(event.text);
 }
@@ -76,6 +76,12 @@ export async function renderRichOutput(
   // Without this, every marker looks unresolvable to the pointer-based logic
   // below and falls through to the "[Reference unavailable]" placeholder.
   const citationRefs = new Map<string, { title: string; url?: string }>();
+  // Temporary diagnostic: log the raw content_references payload whenever a
+  // citation marker can't be resolved by any known shape, so the exact
+  // field layout of a not-yet-covered reference type can be captured from
+  // real traffic instead of guessed at again. Safe to remove once the
+  // remaining shape(s) are identified and handled.
+  const rawContentReferenceEntries: unknown[] = [];
   // ChatGPT ships close to a dozen content_reference shapes (webpage,
   // webpage_extended, grouped_webpages, file, file_navlist, image_inline,
   // mcp_source, dil, client_defined_widget, ...), each spelling its display
@@ -101,6 +107,7 @@ export async function renderRichOutput(
       ...(Array.isArray(metadata?.citations) ? metadata.citations : []),
       ...grouped,
     ];
+    rawContentReferenceEntries.push(...refs);
     for (const entry of refs) {
       const ref = object(entry);
       if (!ref) continue;
@@ -169,6 +176,19 @@ export async function renderRichOutput(
       }
       if (event.raw) visit(event.raw);
     } else if (event.kind === "citation") visit(event.raw);
+    else if (event.kind === "citation_patch") {
+      // Merge citation data that arrived after the message itself into that
+      // message's own metadata.content_references, creating a placeholder
+      // entry if the message hasn't been seen yet (or was filtered out),
+      // so registerContentReferences() below picks it up either way.
+      const existing = messages.get(event.messageId) ?? {};
+      const metadata = object(existing.metadata) ?? {};
+      const priorRefs = Array.isArray(metadata.content_references) ? metadata.content_references : [];
+      messages.set(event.messageId, {
+        ...existing,
+        metadata: { ...metadata, content_references: [...priorRefs, ...event.contentReferences] },
+      });
+    }
   }
   let text = segments.length ? segments.map(segment => segment.tool ? `\n\n**${toolLabel(tools.get(segment.key)!.name)}**\n\n${tools.get(segment.key)!.text}\n\n` : segment.text).join("") : fallback;
   for (const [messageId, raw] of messages) { registerContentReferences(raw); visit(raw, messageId); }
@@ -261,7 +281,12 @@ export async function renderRichOutput(
         if (citation) return citation.url ? `[${label(citation.title)}](<${escapedUrl(citation.url)}>)` : label(citation.title);
         const pointer = alias(token), info = pointers.get(pointer);
         return link(pointer, info!.title, info!.image);
-      }).replace(/\uE200[^\uE201]*\uE201/g, "[Reference unavailable]");
+      }).replace(/\uE200[^\uE201]*\uE201/g, (unresolved) => {
+        console.error(
+          `[mirror] Unresolved citation marker ${JSON.stringify(unresolved)}; raw content_references for this turn: ${JSON.stringify(rawContentReferenceEntries)}`,
+        );
+        return "[Reference unavailable]";
+      });
       edit(node, value);
       return;
     }
