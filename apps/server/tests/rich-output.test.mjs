@@ -14,6 +14,15 @@ test("late citation mapping replaces private marker inline and preserves the sur
   assert.equal(result.text, `Before Download file: [report.csv](<${url}>) after.`);
   assert.deepEqual(calls, ["file-service://file-1"]);
 });
+test("web-search citation markers resolve to the real title/url from content_references", async () => {
+  const marker = "\uE200cite\uE202turn0search0\uE201";
+  const result = await renderRichOutput([
+    text(`Ground Control to Major Tom is from ${marker} 1969 song.`),
+    message({ metadata: { content_references: [{ matched_text: marker, type: "webpage", title: "David Bowie", url: "https://en.wikipedia.org/wiki/David_Bowie" }] } }),
+  ], "", async () => url);
+  assert.equal(result.text, `Ground Control to Major Tom is from [David Bowie](<https://en.wikipedia.org/wiki/David_Bowie>) 1969 song.`);
+  assert.ok(!result.text.includes("Reference unavailable"));
+});
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
   const value = "First [report](sandbox:/mnt/data/report.csv) then ![plot](sediment://file-plot) done.";
   const result = await renderRichOutput([text(value), text(value)], "", async () => url);

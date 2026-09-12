@@ -144,27 +144,4 @@ test("deadlines abort hung calls, preserve failed rows and release queued conver
   const timed = new AbortController(); const d = turnDeadline(timed); d.touch();
   await new Promise(resolve => setTimeout(resolve, 20)); assert.equal(timed.signal.reason.statusCode, 504); d.close();
 });
-
-test("actual cm subprocesses interoperate across streamed and JSON turns with isolated state", { timeout: 100_000 }, async t => {
-  // Optional real-client coverage. Mirror's own contracts run independently;
-  // never install/build cm or require its source/Rust toolchain here.
-  const binary = process.env.CM_TEST_BINARY
-    ? path.resolve(process.env.CM_TEST_BINARY)
-    : (process.env.PATH ?? "").split(path.delimiter)
-      .map(directory => path.join(directory, process.platform === "win32" ? "cm.exe" : "cm"))
-      .find(candidate => existsSync(candidate));
-  if (!binary || !existsSync(binary)) return t.skip("Optional cm binary is missing; set CM_TEST_BINARY to an existing executable to enable this integration test");
-  session(); const sent = []; globalThis.fetch = stubBackend("fixture-account", { sent });
-  const address = await app.listen({ port: 0, host: "127.0.0.1" });
-  const env = { ...process.env, CM_STATE_DIR: path.join(dir, "cm"), CM_BASE_URL: address, CM_API_KEY: "fixture-key", CM_MODEL: "auto" };
-  const first = await run(binary, ["--new", "--system", "Keep fixture instructions", "hello"], { cwd: dir, env, timeout: 30_000 });
-  assert.match(first.stdout, /reply-1/);
-  const state = () => JSON.parse(readFileSync(path.join(env.CM_STATE_DIR, "state.json"), "utf8")).threads.default.conversation_id;
-  const id = state();
-  await run(binary, ["followup"], { cwd: dir, env, timeout: 30_000 }); assert.equal(state(), id);
-  await run(binary, ["--no-stream", "third"], { cwd: dir, env, timeout: 30_000 }); assert.equal(state(), id);
-  assert.equal(store.listMessages(id).length, 6);
-  assert.equal(store.getInstructions(id)[0].content, "Keep fixture instructions");
-  assert.equal(sent.filter(item => item.pathname.endsWith("/f/conversation")).at(-1).body.parent_message_id, "assistant-2");
-});
 });

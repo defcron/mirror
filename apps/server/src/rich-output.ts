@@ -69,6 +69,29 @@ export async function renderRichOutput(
   const summaries = new Map<string | null, string>();
   const references = new Map<string, { pointer: string; title: string }>();
   const pointers = new Map<string, { image: boolean; title: string; messageId?: string | null }>();
+  // Inline citation markers (e.g. web-search results). ChatGPT wraps each
+  // citation in the message text with \uE200...\uE201 private-use markers
+  // and separately reports the literal marker text -> title/url mapping in
+  // message.metadata.content_references (or the older .citations key).
+  // Without this, every marker looks unresolvable to the pointer-based logic
+  // below and falls through to the "[Reference unavailable]" placeholder.
+  const citationRefs = new Map<string, { title: string; url?: string }>();
+  const registerContentReferences = (raw: ObjectValue | undefined) => {
+    const metadata = object(raw?.metadata);
+    const refs = metadata?.content_references ?? metadata?.citations;
+    if (!Array.isArray(refs)) return;
+    for (const entry of refs) {
+      const ref = object(entry);
+      if (!ref) continue;
+      const matched = str(ref.matched_text);
+      if (!matched) continue;
+      const items = Array.isArray(ref.items) ? (ref.items.map(object).filter(Boolean) as ObjectValue[]) : [];
+      const primary = items[0] ?? ref;
+      const title = str(primary.title) || str(primary.attribution) || str(ref.title) || str(ref.attribution) || "";
+      const url = str(primary.url) || str(ref.url) || "";
+      if (title || url) citationRefs.set(matched, { title: title || url, url: url || undefined });
+    }
+  };
   const visit = (value: unknown, messageId?: string | null) => {
     if (typeof value === "string") {
       for (const match of value.matchAll(pointerPattern)) if (!pointers.has(match[0])) pointers.set(match[0], { image: match[0].startsWith("sediment:"), title: "Download file", messageId });
@@ -123,7 +146,7 @@ export async function renderRichOutput(
     } else if (event.kind === "citation") visit(event.raw);
   }
   let text = segments.length ? segments.map(segment => segment.tool ? `\n\n**${toolLabel(tools.get(segment.key)!.name)}**\n\n${tools.get(segment.key)!.text}\n\n` : segment.text).join("") : fallback;
-  for (const [messageId, raw] of messages) visit(raw, messageId);
+  for (const [messageId, raw] of messages) { registerContentReferences(raw); visit(raw, messageId); }
   visit(text);
   for (const [token, ref] of references) if (token.startsWith("sandbox:") && token !== ref.pointer) pointers.delete(token);
   // Parse destinations before resolving: parentheses, escaped labels, angle
@@ -206,9 +229,11 @@ export async function renderRichOutput(
       let value = text.slice(node.position!.start.offset, node.position!.end.offset);
       // Replace references and bare pointers once, without rescanning generated
       // Markdown (a filename itself may contain punctuation or pointer text).
-      const tokens = [...references.keys()].filter(token => value.includes(token)).sort((a, b) => b.length - a.length);
+      const tokens = [...references.keys(), ...citationRefs.keys()].filter(token => value.includes(token)).sort((a, b) => b.length - a.length);
       const pattern = new RegExp(tokens.map(token => token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).concat(pointerPattern.source).join("|"), "g");
       value = value.replace(pattern, token => {
+        const citation = citationRefs.get(token);
+        if (citation) return citation.url ? `[${label(citation.title)}](<${escapedUrl(citation.url)}>)` : label(citation.title);
         const pointer = alias(token), info = pointers.get(pointer);
         return link(pointer, info!.title, info!.image);
       }).replace(/\uE200[^\uE201]*\uE201/g, "[Reference unavailable]");
