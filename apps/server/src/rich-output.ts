@@ -76,19 +76,44 @@ export async function renderRichOutput(
   // Without this, every marker looks unresolvable to the pointer-based logic
   // below and falls through to the "[Reference unavailable]" placeholder.
   const citationRefs = new Map<string, { title: string; url?: string }>();
+  // ChatGPT ships close to a dozen content_reference shapes (webpage,
+  // webpage_extended, grouped_webpages, file, file_navlist, image_inline,
+  // mcp_source, dil, client_defined_widget, ...), each spelling its display
+  // text and destination with different field names. Try the realistic
+  // superset rather than one fixed pair of keys, so citation types beyond
+  // plain web search - file references, connector/MCP sources, grouped
+  // results, sidebar/popup descriptions - resolve instead of falling
+  // through to the placeholder.
+  const referenceText = (o: ObjectValue | undefined): string =>
+    !o ? "" : str(o.title) || str(o.name) || str(o.attribution) || str(o.snippet) || str(o.description) || str(o.alt) || str(o.pill_text) || str(o.tool_name) || "";
+  const referenceUrl = (o: ObjectValue | undefined): string => {
+    if (!o) return "";
+    const extra = object(o.extra);
+    const links = Array.isArray(o.asset_pointer_links) ? o.asset_pointer_links : [];
+    return str(o.url) || str(o.cloud_doc_url) || str(extra?.cloud_doc_url) || str(o.clicked_from_url) || (typeof links[0] === "string" ? links[0] : "");
+  };
   const registerContentReferences = (raw: ObjectValue | undefined) => {
     const metadata = object(raw?.metadata);
-    const refs = metadata?.content_references ?? metadata?.citations;
-    if (!Array.isArray(refs)) return;
+    const byFile = object(metadata?.content_references_by_file);
+    const grouped = byFile ? Object.values(byFile).flat() : [];
+    const refs = [
+      ...(Array.isArray(metadata?.content_references) ? metadata.content_references : []),
+      ...(Array.isArray(metadata?.citations) ? metadata.citations : []),
+      ...grouped,
+    ];
     for (const entry of refs) {
       const ref = object(entry);
       if (!ref) continue;
       const matched = str(ref.matched_text);
-      if (!matched) continue;
+      // Entries carrying a file_id are already handled by the internal
+      // file-pointer resolver above (visit()/references/pointers), which
+      // produces a real resolved download link - never shadow that with a
+      // plain, unresolved display string here.
+      if (!matched || citationRefs.has(matched) || str(ref.file_id)) continue;
       const items = Array.isArray(ref.items) ? (ref.items.map(object).filter(Boolean) as ObjectValue[]) : [];
-      const primary = items[0] ?? ref;
-      const title = str(primary.title) || str(primary.attribution) || str(ref.title) || str(ref.attribution) || "";
-      const url = str(primary.url) || str(ref.url) || "";
+      const primary = items[0];
+      const title = referenceText(primary) || referenceText(ref);
+      const url = referenceUrl(primary) || referenceUrl(ref);
       if (title || url) citationRefs.set(matched, { title: title || url, url: url || undefined });
     }
   };

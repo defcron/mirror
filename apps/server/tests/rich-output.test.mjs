@@ -23,6 +23,25 @@ test("web-search citation markers resolve to the real title/url from content_ref
   assert.equal(result.text, `Ground Control to Major Tom is from [David Bowie](<https://en.wikipedia.org/wiki/David_Bowie>) 1969 song.`);
   assert.ok(!result.text.includes("Reference unavailable"));
 });
+test("non-webpage citation shapes (mcp_source, grouped_webpages, description-only) resolve their display text", async () => {
+  const m1 = "\uE200cite\uE202turn0mcp0\uE201";
+  const m2 = "\uE200cite\uE202turn0group0\uE201";
+  const m3 = "\uE200cite\uE202turn0hidden0\uE201";
+  const result = await renderRichOutput([
+    text(`See ${m1}, also ${m2}, and note ${m3}.`),
+    message({
+      metadata: {
+        content_references: [
+          { matched_text: m1, type: "mcp_source", title: "Internal Wiki", url: "https://wiki.internal/page", tool_name: "search" },
+          { matched_text: m2, type: "grouped_webpages", items: [{ title: "Example Source", url: "https://example.com/a" }, { title: "Other", url: "https://example.com/b" }] },
+          { matched_text: m3, type: "hidden", description: "A short internal description with no link" },
+        ],
+      },
+    }),
+  ], "", async () => url);
+  assert.equal(result.text, "See [Internal Wiki](<https://wiki.internal/page>), also [Example Source](<https://example.com/a>), and note A short internal description with no link.");
+  assert.ok(!result.text.includes("Reference unavailable"));
+});
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
   const value = "First [report](sandbox:/mnt/data/report.csv) then ![plot](sediment://file-plot) done.";
   const result = await renderRichOutput([text(value), text(value)], "", async () => url);
