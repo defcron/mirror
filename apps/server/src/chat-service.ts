@@ -19,7 +19,6 @@ import {
   updateConversation,
   updateMessage,
   deleteConversation,
-  setSessionTurnstileToken,
   type StoredConversation,
 } from "./store.js";
 
@@ -218,7 +217,6 @@ export async function runChat(
       result.messageId,
       events,
     );
-    if (result.turnstileToken) setSessionTurnstileToken(result.turnstileToken);
     outcome = {
       conversation: transient ? conversation : getConversation(conversation.id)!,
       result,

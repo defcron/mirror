@@ -92,3 +92,36 @@ test("credentials are encrypted and conversation continuity persists", async () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("syncRemoteConversations preserves assistant parent when upstream entry lacks current_node", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mirror-store-sync-test-"));
+  process.env.MIRROR_DATA_DIR = dir;
+  try {
+    const store = await import(`../dist/store.js?case=${Date.now()}`);
+    const conversation = store.createConversation({ model: "auto", title: "Test" });
+    conversation.conversationId = "upstream-123";
+    conversation.currentNodeId = "assistant-parent-1";
+    store.updateConversation(conversation);
+
+    // Sidebar refresh arrives with currentNodeId: null
+    store.syncRemoteConversations(
+      [
+        {
+          id: "upstream-123",
+          title: "Test Updated",
+          createTime: conversation.createdAt,
+          updateTime: new Date().toISOString(),
+          currentNodeId: null,
+          gizmoId: null,
+          isArchived: false,
+        },
+      ],
+      "default",
+    );
+
+    const updated = store.getConversation(conversation.id);
+    assert.equal(updated.currentNodeId, "assistant-parent-1");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

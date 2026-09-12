@@ -27,16 +27,11 @@ export const ResponsesBody = z.object({
 export type ResponsesRequest = z.infer<typeof ResponsesBody>;
 
 export function responsesToCompletion(body: ResponsesRequest) {
-  const sanitizedMetadata = body.metadata ? { ...body.metadata } : undefined;
-  if (sanitizedMetadata) {
-    delete (sanitizedMetadata as any).turnstile_token;
-    delete (sanitizedMetadata as any).mirror_turnstile_token;
-  }
   const messages = typeof body.input === "string"
     ? [{ role: "user" as const, content: body.input }]
     : body.input.map(item => ({ role: item.role, content: typeof item.content === "string"
       ? item.content : item.content.map(part => part.text).join("") }));
-  return { model: body.model, stream: body.stream, store: body.store, metadata: sanitizedMetadata,
+  return { model: body.model, stream: body.stream, store: body.store, metadata: body.metadata,
     messages: [...(body.instructions === undefined ? [] : [{ role: "system" as const, content: body.instructions }]), ...messages] };
 }
 

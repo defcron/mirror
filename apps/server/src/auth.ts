@@ -32,6 +32,7 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
     return {
       accessToken: session.cachedAccessToken!,
       deviceId: session.deviceId,
+      sessionToken: session.sessionToken,
       ...(session.turnstileToken ? { turnstileToken: session.turnstileToken } : {}),
     };
   }
@@ -56,6 +57,7 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
         return {
           accessToken: minted.accessToken,
           deviceId: current.deviceId,
+          sessionToken: minted.rotatedSessionToken ?? current.sessionToken,
           ...(current.turnstileToken ? { turnstileToken: current.turnstileToken } : {}),
         };
       } catch (err) {
@@ -89,6 +91,7 @@ export async function verifyCandidateSessionToken(
     credentials: {
       accessToken: minted.accessToken,
       deviceId: (isSameSession ? prior?.deviceId : undefined) ?? randomUUID(),
+      sessionToken: minted.rotatedSessionToken ?? sessionToken,
       ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
     },
     persistedSessionToken: minted.rotatedSessionToken ?? sessionToken,

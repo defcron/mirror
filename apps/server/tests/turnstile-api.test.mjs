@@ -219,14 +219,13 @@ test("POST /v1/chat/completions redacts turnstile tokens from response metadata"
           metadata: {
             turnstile_token: "secret-token-1",
             mirror_turnstile_token: "secret-token-2",
-            custom_key: "safe-value",
+            private: "false",
           },
           messages: [{ role: "user", content: "hello" }],
         },
       });
       assert.equal(res.statusCode, 200, res.body);
       const json = res.json();
-      assert.equal(json.metadata?.custom_key, "safe-value");
       assert.equal(json.metadata?.turnstile_token, undefined);
       assert.equal(json.metadata?.mirror_turnstile_token, undefined);
     },

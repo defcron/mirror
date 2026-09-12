@@ -211,7 +211,7 @@ function isPythonTool(name: string): boolean {
  * files, fired automatically before the model even starts answering).
  */
 function isAlwaysVisibleFirstTurnTool(name: string): boolean {
-  return /^(?:python|python_user_visible|dalle(?:\.text2im)?|browser|web|canmore|sora|video_gen)(?:\.|$)/i.test(name);
+  return /^(?:python|python_user_visible|dalle|image_gen|image_generation|image|text2im|gen_image|drawing_tool|browser|web|canmore|sora|video_gen)(?:[._-]|$)/i.test(name);
 }
 
 export interface ConversationStreamReducerOptions {
@@ -262,7 +262,11 @@ export class ConversationStreamReducer {
   }
 
   private push(event: NormalizedConversationEvent): void {
-    this.normalized.push(structuredClone(this.displayHidden ? { ...event, displayHidden: true } : event));
+    const isImage =
+      event.kind === "image" ||
+      (event.kind === "file" && typeof (event as any).assetPointer === "string" && (event as any).assetPointer.startsWith("sediment://"));
+    const shouldHide = this.displayHidden && !isImage;
+    this.normalized.push(structuredClone(shouldHide ? { ...event, displayHidden: true } : event));
   }
 
   private apply(event: StreamEvent): void {
@@ -280,7 +284,7 @@ export class ConversationStreamReducer {
     if (event.kind === "typed") {
       const previousVisibility = this.displayHidden;
       const name = asString(event.raw.tool_name) ?? asString(event.raw.name) ?? "";
-      this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isAlwaysVisibleFirstTurnTool(name);
+      this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isAlwaysVisibleFirstTurnTool(name) && !isAlwaysVisibleFirstTurnTool(event.type);
       this.applyTyped(event.type, event.raw);
       scanSpecials(event.raw, (normalized) => this.push(normalized));
       this.displayHidden = previousVisibility;
@@ -374,12 +378,20 @@ export class ConversationStreamReducer {
     const isVisibleFirstTurnTool = python ||
       isAlwaysVisibleFirstTurnTool(authorName ?? "") ||
       isAlwaysVisibleFirstTurnTool(asString(message.recipient) ?? "");
-    // Chain-of-thought (channel "analysis") is deliberately NOT suppressed
-    // here, on any turn or chat type: the user wants raw reasoning surfaced
-    // end to end (see rich-output.ts's visibleReasoning / mirror_reasoning).
-    // Only the quiet init-only retrieval noise and pure system/UI framing
-    // stay hidden on a gizmo/Project's first upstream turn.
-    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isVisibleFirstTurnTool &&
+    const hasImageContent =
+      contentType === "image_asset_pointer" ||
+      contentType === "image" ||
+      Boolean(contentType?.startsWith("image/")) ||
+      (Array.isArray(content?.parts) &&
+        content.parts.some(
+          (part) =>
+            isPlainObject(part) &&
+            (part.content_type === "image_asset_pointer" ||
+              (typeof part.asset_pointer === "string" && (part.asset_pointer.startsWith("sediment://") || part.asset_pointer.startsWith("file-service://")))),
+        ));
+    const isProtectedOutput = isVisibleFirstTurnTool || hasImageContent;
+
+    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isProtectedOutput &&
       channel !== "analysis" &&
       (role !== "assistant" || Boolean(authorName) || channel === "commentary" ||
         Boolean(message.recipient && message.recipient !== "all") ||

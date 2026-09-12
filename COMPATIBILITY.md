@@ -108,7 +108,7 @@ On the first upstream turn of a new Custom GPT (`g-…`) or Project (`g-p-…`)
 conversation, Mirror displays the assistant answer, Python tool output
 (`python` and `python_user_visible`, including their namespaced variants),
 and every other tool the model can invoke in direct response to the user's
-own turn - image generation (`dalle`/`dalle.text2im`), web browsing/search
+own turn - image generation (`image_gen`/`dalle`/`dalle.text2im`), web browsing/search
 (`browser`/`web`), canvas (`canmore`), and video/sora (`sora`/`video_gen`) -
 exactly as it would on any later turn. Chain-of-thought (the raw "analysis"
 channel) is likewise never hidden, on this or any turn, in any chat type; see

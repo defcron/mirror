@@ -69,8 +69,6 @@ export interface RichOutput {
   assets: { pointer: string; url?: string; previewUnavailable?: boolean; status: "resolved" | "unavailable" }[];
   tools: { name: string; messageId: string | null; text: string }[];
   summaries: { messageId: string | null; text: string }[];
-  /** Full raw chain-of-thought text observed this turn, one entry per assistant
-   * message id that carried an "analysis"-channel content snapshot. */
   reasoning: { messageId: string | null; text: string }[];
 }
 
@@ -132,10 +130,14 @@ export async function renderRichOutput(
       // User inputs and internal analysis are not output attachments.
       if (event.role !== "user" && event.raw.channel !== "analysis") messages.set(event.messageId, event.raw);
     } else if (event.kind === "image" || event.kind === "file") {
-      if (typeof event.raw !== "string") {
-        if (!pointers.has(event.assetPointer)) pointers.set(event.assetPointer, { image: event.kind === "image", title: event.kind === "file" ? event.title ?? "Download file" : "Image" });
-        visit(event.raw);
+      const isImage = event.kind === "image" || event.assetPointer.startsWith("sediment://");
+      if (!pointers.has(event.assetPointer)) {
+        pointers.set(event.assetPointer, {
+          image: isImage,
+          title: !isImage && event.kind === "file" ? event.title ?? "Download file" : "Image",
+        });
       }
+      if (event.raw) visit(event.raw);
     } else if (event.kind === "citation") visit(event.raw);
   }
   let text = segments.length ? segments.map(segment => segment.tool ? `\n\n**${toolLabel(tools.get(segment.key)!.name)}**\n\n${tools.get(segment.key)!.text}\n\n` : segment.text).join("") : fallback;

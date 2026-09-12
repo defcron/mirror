@@ -5,6 +5,7 @@ const categories: Record<number, [string, string, string]> = {
   403: ["permission_error", "request_forbidden", "Request rejected. Check the browser origin and account permissions."],
   404: ["invalid_request_error", "not_found", "The requested resource was not found."],
   409: ["invalid_request_error", "conversation_conflict", "Conversation or session changed. Reload before continuing."],
+  428: ["challenge_required_error", "challenge_required", "ChatGPT requires an interactive challenge. Complete it in ChatGPT before retrying, or supply a fresh request-scoped challenge token."],
   429: ["rate_limit_error", "rate_limit_exceeded", "Rate limit reached. Wait before sending another request."],
   504: ["timeout_error", "deadline_exceeded", "Generation deadline exceeded. Reload history before retrying; upstream completion is uncertain."],
 };

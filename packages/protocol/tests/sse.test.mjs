@@ -512,3 +512,37 @@ test("generic message patches handle arrays, deletion and missing values without
   assert.equal({}.polluted, undefined);
   assert.equal(reducer.text, "answer");
 });
+
+test("suppressFirstTurnToolNarration never hides image_gen tools or generated images", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({
+    p: "", o: "add",
+    v: {
+      message: {
+        id: "img-tool-1",
+        author: { role: "tool", name: "image_gen" },
+        recipient: "all",
+        content: {
+          content_type: "multimodal_text",
+          parts: [{ content_type: "image_asset_pointer", asset_pointer: "sediment://cat-image#file-123" }],
+        },
+      },
+    },
+  }));
+  reducer.feed(JSON.stringify({
+    type: "tool_event",
+    tool_name: "image_gen",
+    status: "success",
+    message_id: "img-tool-1",
+  }));
+  reducer.feed(JSON.stringify({
+    p: "/message/metadata",
+    o: "add",
+    v: { asset_pointer: "sediment://direct-image" },
+  }));
+
+  const events = reducer.drainEvents();
+  assert.ok(events.some(e => e.kind === "tool" && e.name === "image_gen" && !e.displayHidden));
+  assert.ok(events.some(e => e.kind === "image" && e.assetPointer === "sediment://cat-image#file-123" && !e.displayHidden));
+  assert.ok(events.some(e => e.kind === "image" && e.assetPointer === "sediment://direct-image" && !e.displayHidden));
+});

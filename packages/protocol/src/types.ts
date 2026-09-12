@@ -7,6 +7,8 @@ export interface SessionCredentials {
   deviceId: string;
   /** Optional Cloudflare Turnstile token for sentinel requirements. */
   turnstileToken?: string | null;
+  /** Long-lived session token (cookie value) when available. */
+  sessionToken?: string | null;
 }
 
 export interface ConversationInitResult {

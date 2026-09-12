@@ -470,7 +470,7 @@ export class ChatGptBackendClient {
       dx: turnstileDx,
       overrideToken: turnstileOverride,
       credentialsToken: this.creds.turnstileToken,
-      sessionToken: this.creds.accessToken,
+      sessionToken: this.creds.sessionToken ?? null,
       deviceId: this.creds.deviceId,
       signal,
       solver: this.turnstileSolver,

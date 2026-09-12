@@ -224,7 +224,7 @@ const CompletionBody = z
         turnstile_token: z.string().min(1).optional().openapi({
           description:
             "Caller-supplied Cloudflare Turnstile response token, used when Sentinel " +
-            "requires one and no other source (env var, saved session, cache) has one. " +
+            "requires one. Tokens are used only for this request and never persisted. " +
             "See PROTOCOL.md's Turnstile resolution notes.",
         }),
       })
@@ -235,7 +235,7 @@ const CompletionBody = z
           "Officially a flat request-only string map in the real OpenAI API; Mirror " +
           "repurposes it (bidirectionally - the response carries its own mirror_tool_events/" +
           "mirror_images keys here too, see the response schema) for anything with no " +
-          "dedicated schema slot. Any key not listed here is passed through unused. See " +
+          "dedicated schema slot. Unknown metadata keys are rejected. See " +
           "COMPATIBILITY.md.",
       }),
   })
@@ -459,7 +459,7 @@ export async function registerOpenAiRoutes(
       try {
         const uploadClient = new ChatGptBackendClient(await getValidCredentials());
         resolvedAttachments = await Promise.all(
-          imageParts.map((part, i) => resolveImageAttachment(uploadClient, part, i)),
+          imageParts.map((part, i) => resolveImageAttachment(uploadClient, part, i, (req as any).raw?.signal ?? req.signal)),
         );
         const accountId = getSession()?.accountId ?? "default";
         for (const file of resolvedAttachments) saveFile(file, accountId);
@@ -945,8 +945,8 @@ export async function registerOpenAiRoutes(
           responseMetadata.mirror_tool_outputs = JSON.stringify(richOutput.tools);
           if (richOutput.summaries.length) responseMetadata.mirror_reasoning_summaries = JSON.stringify(richOutput.summaries);
           if (richOutput.reasoning.length) responseMetadata.mirror_reasoning = JSON.stringify(richOutput.reasoning);
-          const resolvedImages = richOutput.assets.filter(asset => asset.url && !asset.previewUnavailable && capturedEvents.some(event => event.kind === "image" && event.assetPointer === asset.pointer));
-          if (responseMetadata.mirror_images !== undefined) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
+          const resolvedImages = richOutput.assets.filter(asset => asset.url && !asset.previewUnavailable && capturedEvents.some(event => (event.kind === "image" || (event.kind === "file" && typeof (event as any).assetPointer === "string" && (event as any).assetPointer.startsWith("sediment://"))) && event.assetPointer === asset.pointer));
+          if (resolvedImages.length) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
         }
 
         const sanitizedRequestMetadata = body.metadata ? { ...body.metadata } : {};

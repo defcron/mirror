@@ -6,21 +6,12 @@
  * and `/f/conversation`.
  *
  * This module provides:
- * 1. An in-memory TTL cache for Turnstile tokens.
- * 2. Token resolution pipeline across overrides, session credentials, env vars, cache, and solvers.
+ * 1. An in-memory short-lived TTL cache for Turnstile tokens (~4 min max, single use).
+ * 2. Token resolution pipeline across overrides, credentials, env vars, cache, solvers, and headless browser.
  * 3. Headless browser solver driving Playwright/Chromium to render Sentinel's `frame.html` or
  *    intercept the Turnstile response from ChatGPT's Cloudflare flow.
  */
 
-/**
- * The two declarations below exist purely so the closure passed to
- * Playwright's `page.evaluate()` further down typechecks: that callback is
- * serialized and executed inside the headless page's own real browser
- * context at runtime (real `document`/`window` there), not by this
- * package's own Node/TS build - and this package's tsconfig intentionally
- * has no DOM lib (it's a Node package). Purely a type-level shim; no
- * runtime behavior changes.
- */
 declare const document: any;
 declare const window: any;
 
@@ -100,6 +91,8 @@ export function decodeTurnstileConfig(dx: string | null | undefined): unknown[] 
 export async function solveTurnstileWithBrowser(
   opts: BrowserTurnstileOptions = {},
 ): Promise<string | null> {
+  if (opts.signal?.aborted) return null;
+
   const origin = opts.origin ?? "https://chatgpt.com";
   const frameUrl = opts.frameUrl ?? `${origin}/backend-api/sentinel/frame.html`;
   const timeoutMs = opts.timeoutMs ?? 15_000;
@@ -114,7 +107,7 @@ export async function solveTurnstileWithBrowser(
         return null;
       }
     }
-    const chromium = pw.chromium;
+    const chromium = pw?.chromium;
     if (!chromium || typeof chromium.launch !== "function") return null;
 
     const launchArgs = opts.args ? [...opts.args] : ["--disable-dev-shm-usage"];
@@ -127,6 +120,11 @@ export async function solveTurnstileWithBrowser(
     });
 
     try {
+      if (opts.signal?.aborted) {
+        await browser.close().catch(() => {});
+        return null;
+      }
+
       const context = await browser.newContext({
         userAgent:
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
@@ -176,6 +174,10 @@ export async function solveTurnstileWithBrowser(
 
       const navPromise = page.goto(frameUrl, { timeout: timeoutMs, waitUntil: "domcontentloaded" });
       const abortPromise = new Promise<null>((resolve) => {
+        if (opts.signal?.aborted) {
+          resolve(null);
+          return;
+        }
         opts.signal?.addEventListener("abort", () => resolve(null), { once: true });
       });
 
@@ -221,6 +223,7 @@ export async function solveTurnstileWithBrowser(
 export async function resolveTurnstileToken(
   opts: ResolveTurnstileOptions,
 ): Promise<string | null> {
+  if (opts.signal?.aborted) return null;
   if (opts.overrideToken) return opts.overrideToken;
   if (opts.credentialsToken) return opts.credentialsToken;
 
@@ -234,17 +237,33 @@ export async function resolveTurnstileToken(
   if (cached) return cached;
 
   if (opts.solver) {
+    let abort: (() => void) | undefined;
     try {
-      const solved = await opts.solver({
-        required: opts.required,
-        dx: opts.dx,
-        frameUrl: opts.frameUrl,
+      const cancelled = new Promise<never>((_, reject) => {
+        if (opts.signal?.aborted) {
+          reject(opts.signal.reason);
+          return;
+        }
+        abort = () => reject(opts.signal!.reason);
+        opts.signal?.addEventListener("abort", abort, { once: true });
       });
+      const solved = await Promise.race([
+        Promise.resolve().then(() => opts.solver!({
+          required: opts.required,
+          dx: opts.dx,
+          frameUrl: opts.frameUrl,
+        })),
+        cancelled,
+      ]);
       if (solved) {
         setCachedTurnstileToken(solved);
         return solved;
       }
-    } catch {}
+    } catch (err) {
+      if (opts.signal?.aborted) throw err;
+    } finally {
+      if (abort) opts.signal?.removeEventListener("abort", abort);
+    }
   }
 
   if (opts.required) {

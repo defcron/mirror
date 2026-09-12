@@ -485,7 +485,10 @@ export function syncRemoteConversations(
     VALUES (?, ?, ?, ?, 'auto', ?, ?, 1, ?, ?)`);
   const update =
     db.prepare(`UPDATE conversations SET title=?, gizmo_id=COALESCE(?, gizmo_id),
-    current_node_id=?, updated_at=? WHERE id=?`);
+    current_node_id=CASE WHEN NOT EXISTS
+      (SELECT 1 FROM messages WHERE conversation_id=conversations.id)
+      THEN COALESCE(?, current_node_id) ELSE current_node_id END,
+    updated_at=? WHERE id=?`);
   db.exec("BEGIN");
   try {
     for (const item of items) {
@@ -494,7 +497,7 @@ export function syncRemoteConversations(
         update.run(
           item.title,
           item.gizmoId,
-          item.currentNodeId ?? "client-created-root",
+          item.currentNodeId,
           item.updateTime,
           row.id,
         );

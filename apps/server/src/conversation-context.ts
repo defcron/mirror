@@ -71,7 +71,7 @@ export function buildResponseMetadata(
   );
   const imageEvents = events.filter(
     (event): event is Extract<NormalizedConversationEvent, { kind: "image" }> =>
-      event.kind === "image" && !event.displayHidden,
+      (event.kind === "image" || (event.kind === "file" && typeof (event as any).assetPointer === "string" && (event as any).assetPointer.startsWith("sediment://"))) && !event.displayHidden,
   );
   const metadata: Record<string, string> = {};
   if (toolEvents.length) {
@@ -131,11 +131,50 @@ export async function resolveImageAttachment(
       ? Buffer.from(payload, "base64")
       : Buffer.from(decodeURIComponent(payload), "utf-8");
   } else if (/^https?:\/\//i.test(url)) {
-    const res = await fetch(url, { signal });
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "::1" ||
+      host.startsWith("169.254.") ||
+      host.startsWith("10.") ||
+      host.startsWith("192.168.")
+    ) {
+      throw new Error(`image_url[${index}] host is not permitted: ${host}`);
+    }
+    const res = await fetch(url, { signal, redirect: "follow" });
     if (!res.ok)
       throw new Error(`Could not fetch image_url[${index}]: upstream returned ${res.status}`);
+    const cl = res.headers.get("content-length");
+    if (cl && Number(cl) > MAX_IMAGE_BYTES) {
+      throw new Error(`image_url[${index}] is too large (${cl} bytes, max ${MAX_IMAGE_BYTES})`);
+    }
     mimeType = res.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
-    data = new Uint8Array(await res.arrayBuffer());
+    const reader = res.body?.getReader();
+    if (!reader) {
+      data = new Uint8Array(await res.arrayBuffer());
+    } else {
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_IMAGE_BYTES) {
+          await reader.cancel().catch(() => {});
+          throw new Error(`image_url[${index}] is too large (${total} bytes, max ${MAX_IMAGE_BYTES})`);
+        }
+        chunks.push(value);
+      }
+      data = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        data.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+    }
   } else {
     throw new Error(
       `image_url[${index}] must be a data: URI or an http(s) URL`,
