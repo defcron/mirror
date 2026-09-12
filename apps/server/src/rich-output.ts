@@ -23,7 +23,13 @@ const pointerPattern = /(?:file-service|sediment):\/\/[^\s\)\]"'<>\uE000-\uF8FF]
  * them - they have to be parsed and rendered directly.
  */
 function inlineWidgetMarkerText(inner: string): string | null {
-  const match = /^([a-zA-Z_]\w*)([[{][\s\S]*[\]}])$/.exec(inner);
+  // ChatGPT separates the widget's type name from its JSON payload with its
+  // own private-use separator character (\uE202 - confirmed from a real
+  // server log: entity\uE202["musical_artist",...] /
+  // image_group\uE202{"layout":...}), not by placing them directly
+  // adjacent. Consume it optionally so both this and any bracket-adjacent
+  // variant match.
+  const match = /^([a-zA-Z_]\w*)\uE202?([[{][\s\S]*[\]}])$/.exec(inner);
   if (!match) return null;
   let payload: unknown;
   try {

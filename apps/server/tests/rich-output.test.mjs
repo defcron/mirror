@@ -53,12 +53,16 @@ test("citation data delivered after the message via a citation_patch event still
   assert.ok(!result.text.includes("Reference unavailable"));
 });
 test("inline self-contained widget markers (entity, image_group) render without content_references", async () => {
-  const entityMarker = "\uE200entity[\"musical_artist\",\"David Bowie\",\"English singer-songwriter and musician\"]\uE201";
-  const imageGroupMarker = "\uE200image_group{\"layout\":\"carousel\",\"aspect_ratio\":\"16:9\",\"query\":[\"David Bowie Space Oddity 1969 performance\"],\"num_per_query\":2}\uE201";
+  // Real markers observed from a live ChatGPTBox session: the type name and
+  // its JSON payload are separated by ChatGPT's own \uE202 marker, not
+  // placed directly adjacent - confirmed via code-point-level server logs.
+  const entityMarker = "\uE200entity\uE202[\"musical_artist\",\"David Bowie\",\"English singer-songwriter\"]\uE201";
+  const songMarker = "\uE200entity\uE202[\"song\",\"Space Oddity\",\"David Bowie 1969 song\"]\uE201";
+  const imageGroupMarker = "\uE200image_group\uE202{\"layout\":\"bento\",\"aspect_ratio\":\"16:9\",\"query\":[\"David Bowie Space Oddity Major Tom astronaut\",\"David Bowie 1969 Space Oddity performance\"]}\uE201";
   const result = await renderRichOutput([
-    text(`The song is by ${entityMarker}.${imageGroupMarker}`),
+    text(`${entityMarker}'s ${songMarker}.${imageGroupMarker}`),
   ], "", async () => url);
-  assert.equal(result.text, "The song is by David Bowie.");
+  assert.equal(result.text, "David Bowie's Space Oddity.");
   assert.ok(!result.text.includes("Reference unavailable"));
 });
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
