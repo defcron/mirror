@@ -52,6 +52,15 @@ test("citation data delivered after the message via a citation_patch event still
   assert.equal(result.text, "See the Async sidebar description for details.");
   assert.ok(!result.text.includes("Reference unavailable"));
 });
+test("inline self-contained widget markers (entity, image_group) render without content_references", async () => {
+  const entityMarker = "\uE200entity[\"musical_artist\",\"David Bowie\",\"English singer-songwriter and musician\"]\uE201";
+  const imageGroupMarker = "\uE200image_group{\"layout\":\"carousel\",\"aspect_ratio\":\"16:9\",\"query\":[\"David Bowie Space Oddity 1969 performance\"],\"num_per_query\":2}\uE201";
+  const result = await renderRichOutput([
+    text(`The song is by ${entityMarker}.${imageGroupMarker}`),
+  ], "", async () => url);
+  assert.equal(result.text, "The song is by David Bowie.");
+  assert.ok(!result.text.includes("Reference unavailable"));
+});
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
   const value = "First [report](sandbox:/mnt/data/report.csv) then ![plot](sediment://file-plot) done.";
   const result = await renderRichOutput([text(value), text(value)], "", async () => url);

@@ -12,6 +12,37 @@ const toolLabel = (value: string) => value.replace(/[\\\[\]<>\r\n]/g, " ").trim(
 const fence = (value: string) => { const ticks = "`".repeat(Math.max(3, ...(value.match(/`+/g) ?? []).map(s => s.length + 1))); return `${ticks}text\n${value}\n${ticks}`; };
 const pointerPattern = /(?:file-service|sediment):\/\/[^\s\)\]"'<>\uE000-\uF8FF]+|sandbox:\/[^\s\)\]"'<>\uE000-\uF8FF]+/g;
 
+/**
+ * Some private-use markers are not a lookup key into content_references at
+ * all - ChatGPT embeds a self-contained payload directly inside the marker
+ * for certain inline widgets, e.g. entity["musical_artist","David
+ * Bowie","English singer-songwriter and musician"] (a plain-text entity
+ * annotation) or image_group{"layout":"carousel","query":[...]} (a live
+ * image-search carousel with no static content). These never appear in
+ * content_references, so no amount of metadata lookup will ever resolve
+ * them - they have to be parsed and rendered directly.
+ */
+function inlineWidgetMarkerText(inner: string): string | null {
+  const match = /^([a-zA-Z_]\w*)([[{][\s\S]*[\]}])$/.exec(inner);
+  if (!match) return null;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(match[2]);
+  } catch {
+    return null;
+  }
+  if (match[1] === "entity" && Array.isArray(payload)) {
+    // entity[category, name, description] - the name (index 1) is the
+    // actual proper noun to display; fall back to any string element.
+    const name = typeof payload[1] === "string" && payload[1] ? payload[1] : payload.find((v) => typeof v === "string" && v);
+    return typeof name === "string" ? name : null;
+  }
+  // Other widget types (image_group and anything not recognized yet) carry
+  // no static display text of their own - drop them rather than show
+  // something fabricated or confusing in a plain-text/Markdown client.
+  return "";
+}
+
 export function visibleSummary(raw: ObjectValue): string {
   const content = object(raw.content);
   // Only explicitly identified display summaries; never infer a summary from
@@ -281,7 +312,9 @@ export async function renderRichOutput(
         if (citation) return citation.url ? `[${label(citation.title)}](<${escapedUrl(citation.url)}>)` : label(citation.title);
         const pointer = alias(token), info = pointers.get(pointer);
         return link(pointer, info!.title, info!.image);
-      }).replace(/\uE200[^\uE201]*\uE201/g, (unresolved) => {
+      }).replace(/\uE200([^\uE201]*)\uE201/g, (unresolved, inner) => {
+        const widgetText = inlineWidgetMarkerText(inner);
+        if (widgetText !== null) return widgetText;
         console.error(
           `[mirror] Unresolved citation marker ${JSON.stringify(unresolved)}; raw content_references for this turn: ${JSON.stringify(rawContentReferenceEntries)}`,
         );
