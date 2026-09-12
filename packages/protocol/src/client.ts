@@ -465,12 +465,13 @@ export class ChatGptBackendClient {
     const turnstileRequired = Boolean(turnstileChallenge.required);
     const turnstileDx = typeof turnstileChallenge.dx === "string" ? turnstileChallenge.dx : null;
 
+    const credentialTurnstile = turnstileRequired ? this.creds.turnstileToken : null;
+    if (turnstileRequired) this.creds.turnstileToken = null;
     const turnstileToken = await resolveTurnstileToken({
       required: turnstileRequired,
       dx: turnstileDx,
-      overrideToken: turnstileOverride,
-      credentialsToken: this.creds.turnstileToken,
-      sessionToken: this.creds.sessionToken ?? null,
+      overrideToken: turnstileOverride ?? credentialTurnstile,
+      sessionToken: this.creds.sessionToken,
       deviceId: this.creds.deviceId,
       signal,
       solver: this.turnstileSolver,
@@ -744,7 +745,6 @@ export class ChatGptBackendClient {
         ...(sentinel.proofToken
           ? { "openai-sentinel-proof-token": sentinel.proofToken }
           : {}),
-        "openai-sentinel-turnstile-token": sentinel.turnstileToken,
         "x-oai-turn-trace-id": turnTraceId,
         ...(conduitToken ? { "x-conduit-token": conduitToken } : {}),
         accept: "text/event-stream",
@@ -829,7 +829,6 @@ export class ChatGptBackendClient {
       userMessageId,
       status: reducer.status,
       events: allEvents,
-      turnstileToken: sentinel.turnstileToken || null,
     };
   }
 

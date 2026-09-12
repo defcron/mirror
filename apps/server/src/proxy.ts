@@ -5,7 +5,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { getValidCredentials } from "./auth.js";
-import { getSession, setSessionAccountId, setSessionTurnstileToken } from "./store.js";
+import { getSession, setSessionAccountId } from "./store.js";
 import { isRewritableContentType, requestOrigin, rewriteChatGptUrls } from "./url-rewrite.js";
 import { authorizedLocalRequest, isAllowedOrigin, isAllowedRequestHost } from "./security.js";
 
@@ -237,7 +237,6 @@ export async function proxyWebSocketUpgrade(req: IncomingMessage, socket: Duplex
     const credentials = await getValidCredentials();
     upstreamHeaders.authorization = `Bearer ${credentials.accessToken}`;
     upstreamHeaders["oai-device-id"] = credentials.deviceId;
-    if (credentials.turnstileToken) upstreamHeaders["openai-sentinel-turnstile-token"] = credentials.turnstileToken;
     const accountId = await resolveAccountId(credentials);
     if (accountId) upstreamHeaders["chatgpt-account-id"] = accountId;
   } catch (error) {
@@ -301,18 +300,11 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
     if (wantsHtml) htmlAccessToken = (await getValidCredentials()).accessToken;
   }
   if (req.url.startsWith("/backend-api/")) {
-    const incomingTurnstile = req.headers["openai-sentinel-turnstile-token"];
-    if (typeof incomingTurnstile === "string" && incomingTurnstile.trim()) {
-      setSessionTurnstileToken(incomingTurnstile.trim());
-    }
     const credentials = await getValidCredentials();
     headers.set("authorization", `Bearer ${credentials.accessToken}`);
     headers.set("oai-device-id", credentials.deviceId);
     headers.set("x-openai-target-path", req.url.split("?")[0]!);
     headers.set("x-openai-target-route", req.url.split("?")[0]!);
-    if (credentials.turnstileToken && !headers.has("openai-sentinel-turnstile-token")) {
-      headers.set("openai-sentinel-turnstile-token", credentials.turnstileToken);
-    }
     // The real frontend already sends its own chatgpt-account-id header
     // (safeRequestHeaders forwards it via the "chatgpt-" prefix allowlist)
     // reflecting whatever workspace/org it currently has selected in its own

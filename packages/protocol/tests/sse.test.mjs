@@ -9,6 +9,7 @@ import {
   normalizeModels,
 } from "../dist/index.js";
 
+test.describe("protocol / sse", () => {
 test("SSE framing preserves CRLF and arbitrary network boundaries", () => {
   const decoder = new SseFrameDecoder();
   assert.deepEqual(decoder.push('data: "v'), []);
@@ -423,6 +424,7 @@ test("asset and citation variants preserve labels and identifiers without invent
     "file-service://plain sediment://image",
     { asset_pointer: "file-service://a", name: "Named" },
     { asset_pointer: "file-service://b", content_type: "image/png" },
+    { content_type: "image_asset_pointer", asset_pointer: "file-service://image-part" },
     { asset_pointer: "sediment://c" },
     { asset_pointer: "file-service://d", content_type: "application/pdf" },
     { citation: true, metadata: { file_id: "nested", title: "Nested" } },
@@ -545,4 +547,25 @@ test("suppressFirstTurnToolNarration never hides image_gen tools or generated im
   assert.ok(events.some(e => e.kind === "tool" && e.name === "image_gen" && !e.displayHidden));
   assert.ok(events.some(e => e.kind === "image" && e.assetPointer === "sediment://cat-image#file-123" && !e.displayHidden));
   assert.ok(events.some(e => e.kind === "image" && e.assetPointer === "sediment://direct-image" && !e.displayHidden));
+});
+
+test("first-turn image content parts remain visible", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({ p: "", o: "add", v: { message: {
+    id: "image-part", author: { role: "assistant", name: "image_gen" },
+    content: { content_type: "multimodal_text", parts: [{ content_type: "image_asset_pointer" }] },
+  } } }));
+  const message = reducer.drainEvents().find(event => event.kind === "message");
+  assert.equal(message.displayHidden, undefined);
+});
+
+test("first-turn asset-pointer image parts remain visible", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({ p: "", o: "add", v: { message: {
+    id: "image-pointer", author: { role: "assistant", name: "other_tool" },
+    content: { content_type: "multimodal_text", parts: [{ asset_pointer: "file-service://image" }] },
+  } } }));
+  const message = reducer.drainEvents().find(event => event.kind === "message");
+  assert.equal(message.displayHidden, undefined);
+});
 });

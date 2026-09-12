@@ -21,6 +21,7 @@ function withFetch(handler, fn) {
 
 // --- fetchMe ------------------------------------------------------------------------
 
+test.describe("protocol / client", () => {
 test("fetchMe captures accountId from account.account_user_id", () =>
   withFetch(
     async () => Response.json({ account: { account_user_id: "acc-1" } }),
@@ -748,7 +749,7 @@ test("sentinelHandshake passes null turnstile when no token is configured", () =
         return Response.json({ token: "final" });
       }
       if (u.pathname === "/backend-api/f/conversation") {
-        assert.equal(init.headers["openai-sentinel-turnstile-token"], "");
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], undefined);
         return HAPPY_STREAM();
       }
       throw new Error(`unexpected ${u.href}`);
@@ -760,7 +761,7 @@ test("sentinelHandshake passes null turnstile when no token is configured", () =
     },
   ));
 
-test("sentinelHandshake passes turnstile override token to finalize and f/conversation", () =>
+test("sentinelHandshake consumes a turnstile override only during finalize", () =>
   withFetch(
     async (url, init = {}) => {
       const u = new URL(String(url));
@@ -772,7 +773,7 @@ test("sentinelHandshake passes turnstile override token to finalize and f/conver
         return Response.json({ token: "final" });
       }
       if (u.pathname === "/backend-api/f/conversation") {
-        assert.equal(init.headers["openai-sentinel-turnstile-token"], "my-turnstile-token");
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], undefined);
         return HAPPY_STREAM();
       }
       throw new Error(`unexpected ${u.href}`);
@@ -784,7 +785,7 @@ test("sentinelHandshake passes turnstile override token to finalize and f/conver
     },
   ));
 
-test("sentinelHandshake uses credentials turnstileToken", () =>
+test("sentinelHandshake consumes a credentials turnstileToken during finalize", () =>
   withFetch(
     async (url, init = {}) => {
       const u = new URL(String(url));
@@ -796,7 +797,7 @@ test("sentinelHandshake uses credentials turnstileToken", () =>
         return Response.json({ token: "final" });
       }
       if (u.pathname === "/backend-api/f/conversation") {
-        assert.equal(init.headers["openai-sentinel-turnstile-token"], "cred-turnstile");
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], undefined);
         return HAPPY_STREAM();
       }
       throw new Error(`unexpected ${u.href}`);
@@ -821,7 +822,7 @@ test("sentinelHandshake uses client.turnstileSolver callback", () =>
         return Response.json({ token: "final" });
       }
       if (u.pathname === "/backend-api/f/conversation") {
-        assert.equal(init.headers["openai-sentinel-turnstile-token"], "solved-by-cb");
+        assert.equal(init.headers["openai-sentinel-turnstile-token"], undefined);
         return HAPPY_STREAM();
       }
       throw new Error(`unexpected ${u.href}`);
@@ -837,4 +838,4 @@ test("sentinelHandshake uses client.turnstileSolver callback", () =>
       assert.equal(result.text, "hi");
     },
   ));
-
+});

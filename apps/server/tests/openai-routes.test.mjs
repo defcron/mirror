@@ -12,16 +12,18 @@ import test from "node:test";
 // database, session, and conversation-lock map.
 const dir = mkdtempSync(path.join(tmpdir(), "mirror-openai-routes-"));
 process.env.MIRROR_DATA_DIR = dir;
-const [{ default: Fastify }, store, openai] = await Promise.all([
+const [{ default: Fastify }, store, openai, context] = await Promise.all([
   import("fastify"),
   import("../dist/store.js"),
   import("../dist/openai.js"),
+  import("../dist/conversation-context.js"),
 ]);
 // Match index.ts's buildApp() bodyLimit so a large-but-under-the-app-limit
 // payload reaches openai.ts's own MAX_IMAGE_BYTES check rather than being
 // rejected by Fastify's (much smaller) default first.
 const app = Fastify({ bodyLimit: 30 * 1024 * 1024 });
 await openai.registerOpenAiRoutes(app);
+test.describe("server / openai-routes", () => {
 test.after(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });
@@ -428,6 +430,96 @@ test("an oversized image_url attachment is rejected", async () => {
   });
   assert.equal(res.statusCode, 400, res.body);
   assert.match(res.json().error.message, /too large/);
+});
+
+test("remote image resolution rejects local hosts and advertised oversized bodies", async () => {
+  const client = { uploadFile: async () => assert.fail("must not upload") };
+  await assert.rejects(
+    context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "http://127.0.0.1/a.png" } }, 0),
+    /host is not permitted/,
+  );
+  await withFetch(async () => new Response(null, { headers: { "content-type": "image/png", "content-length": String(21 * 1024 * 1024) } }),
+    () => assert.rejects(context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/a.png" } }, 1), /too large/));
+});
+
+test("remote image resolution handles a body without a stream", async () => {
+  const prior = globalThis.fetch;
+  let uploaded;
+  try {
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: new Headers({ "content-type": "image/png" }),
+      body: null,
+      arrayBuffer: async () => new Uint8Array([1, 2]).buffer,
+    });
+    await context.resolveImageAttachment({ uploadFile: async value => (uploaded = value) },
+      { type: "image_url", image_url: { url: "https://example.com/a.png" } }, 2);
+    assert.equal(uploaded.data.byteLength, 2);
+  } finally {
+    globalThis.fetch = prior;
+  }
+});
+
+test("remote image resolution cancels a stream that exceeds the byte limit", async () => {
+  const body = new ReadableStream({
+    pull(controller) { controller.enqueue(new Uint8Array(21 * 1024 * 1024)); controller.close(); },
+  });
+  await withFetch(async () => new Response(body, { headers: { "content-type": "image/png" } }), async () => {
+    await assert.rejects(context.resolveImageAttachment({ uploadFile: async () => assert.fail("must not upload") },
+      { type: "image_url", image_url: { url: "https://example.com/large.png" } }, 3), /too large/);
+  });
+});
+
+test("remote image host policy covers local names and reserved IPv4/IPv6 ranges", () => {
+  for (const host of ["localhost", "api.localhost", "printer.local", "127.1.2.3", "172.16.0.1", "192.0.2.1", "[::1]", "2001:db8::1"])
+    assert.equal(context.isPublicImageHost(host), false, host);
+  for (const host of ["example.com", "8.8.8.8", "2606:4700:4700::1111"])
+    assert.equal(context.isPublicImageHost(host), true, host);
+});
+
+test("remote image redirects are bounded and each destination is revalidated", async () => {
+  const client = { uploadFile: async value => value };
+  await withFetch(async url => {
+    const path = new URL(String(url)).pathname;
+    if (path === "/start") return new Response(null, { status: 302, headers: { location: "/final" } });
+    return new Response(new Uint8Array([1]), { headers: { "content-type": "image/png" } });
+  }, async () => {
+    const uploaded = await context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/start" } }, 4);
+    assert.equal(uploaded.data.byteLength, 1);
+  });
+  await withFetch(async () => new Response(null, { status: 302, headers: { location: "http://127.1.2.3/private" } }),
+    () => assert.rejects(context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/start" } }, 5), /host is not permitted/));
+  await withFetch(async () => new Response(null, { status: 302 }),
+    () => assert.rejects(context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/start" } }, 6), /redirect has no location/));
+  await withFetch(async () => new Response(null, { status: 302, headers: { location: "file:///private" } }),
+    () => assert.rejects(context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/start" } }, 7), /redirect protocol is not permitted/));
+  await withFetch(async () => new Response(null, { status: 302, headers: { location: "/again" } }),
+    () => assert.rejects(context.resolveImageAttachment(client, { type: "image_url", image_url: { url: "https://example.com/start" } }, 8), /too many redirects/));
+});
+
+test("image DNS lookup returns public addresses and denies private-only results", async () => {
+  const records = {
+    "private.test": [{ address: "10.0.0.1", family: 4 }],
+    "public.test": [{ address: "10.0.0.1", family: 4 }, { address: "8.8.8.8", family: 4 }],
+  };
+  const lookup = context.makePublicLookup((host, _options, callback) => {
+    if (host === "missing.test") callback(Object.assign(new Error("missing"), { code: "ENOTFOUND" }), []);
+    else callback(null, records[host]);
+  });
+  const runLookup = (host, all) => new Promise(resolve => {
+    lookup(host, { all }, (error, address, family) => resolve({ error, address, family }));
+  });
+  const denied = await runLookup("private.test", false);
+  assert.equal(denied.error?.code, "EACCES");
+  const publicOne = await runLookup("public.test", false);
+  assert.equal(publicOne.error, null);
+  assert.equal(publicOne.address, "8.8.8.8");
+  assert.equal(publicOne.family, 4);
+  const publicAll = await runLookup("public.test", true);
+  assert.equal(publicAll.error, null);
+  assert.ok(Array.isArray(publicAll.address));
+  const missing = await runLookup("missing.test", false);
+  assert.ok(missing.error);
 });
 
 // ---------------------------------------------------------------------------
@@ -1639,4 +1731,5 @@ test("canonical history reconstructs an assistant row removed during upstream st
       { role: "user", content: "hello" }, { role: "assistant", content: "Recovered" },
     ]);
   } finally { globalThis.fetch = originalFetch; db.close(); }
+});
 });

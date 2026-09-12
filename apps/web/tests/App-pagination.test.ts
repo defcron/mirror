@@ -16,6 +16,7 @@ import App from "../src/App.js";
 // so isolating this one scenario into its own file sidesteps whatever
 // cross-test resource accumulation was responsible, without weakening the
 // assertions at all.
+test.describe("web / App-pagination", () => {
 test.afterEach(() => {
   cleanup();
   localStorage.clear();
@@ -77,4 +78,5 @@ test("shows a 'Loading more…' indicator while the next page is in flight", asy
   // meaningful to double-check beyond the state transition already proven
   // by "a failed load-more request..." above.
   await screen.findByText("Loading more…");
+});
 });

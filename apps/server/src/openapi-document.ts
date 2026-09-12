@@ -90,14 +90,6 @@ const CompletionResponseMetadata = z
         "endpoint, which Mirror doesn't implement - see COMPATIBILITY.md). Each url " +
         "is a self-contained image data URI when preview bytes are available. Unavailable previews are omitted.",
     }),
-    mirror_reasoning: z.string().optional().openapi({
-      description:
-        "JSON-stringified array of {messageId, text} objects: the full raw chain-of-thought " +
-        "text ChatGPT streamed on the \"analysis\" channel during the turn, one entry per " +
-        "reasoning message snapshot. Present on every chat type and turn, including a " +
-        "gizmo/Project's first upstream turn - unlike mirror_reasoning_summaries below, this " +
-        "is the live reasoning itself, not a condensed recap. Parse with JSON.parse.",
-    }),
   })
   .openapi({
     ref: "CompletionResponseMetadata",
@@ -396,7 +388,8 @@ const nativeApiPaths: ZodOpenApiPathsObject = {
             "application/json": {
               schema: z.object({
                 configured: z.boolean(),
-                savedAt: z.number().nullable().openapi({ description: "Unix ms timestamp the session was last saved, or null if none is configured." }),
+                savedAt: z.string().datetime().nullable().openapi({ description: "ISO timestamp the session was last saved, or null if none is configured." }),
+                hasTurnstileToken: z.boolean().openapi({ description: "Whether one pending single-use challenge token is staged." }),
               }),
             },
           },

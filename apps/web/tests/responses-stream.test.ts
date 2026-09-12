@@ -5,6 +5,7 @@ function stream(events: unknown[]) {
   const bytes = new TextEncoder().encode(events.map(e => `event: ignored\r\ndata: ${JSON.stringify(e)}\r\n\r\n`).join(""));
   return new ReadableStream<Uint8Array>({ start(controller) { for (const byte of bytes) controller.enqueue(new Uint8Array([byte])); controller.close(); } });
 }
+test.describe("web / responses-stream", () => {
 test("Responses handles UTF-8 byte splits, terminal text and continuation metadata", async () => {
   let id = "";
   const text = await readResponsesStream(stream([
@@ -52,4 +53,5 @@ test("Responses reports invalid deltas and every supported error envelope", asyn
   ] as const) {
     await assert.rejects(readResponsesStream(stream([event]), () => {}, () => {}, () => {}), expected);
   }
+});
 });

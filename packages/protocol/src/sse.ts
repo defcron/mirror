@@ -391,8 +391,8 @@ export class ConversationStreamReducer {
         ));
     const isProtectedOutput = isVisibleFirstTurnTool || hasImageContent;
 
-    this.displayHidden = Boolean(this.opts.suppressFirstTurnToolNarration) && !isProtectedOutput &&
-      channel !== "analysis" &&
+    this.displayHidden = channel === "analysis" ||
+      Boolean(this.opts.suppressFirstTurnToolNarration) && !isProtectedOutput &&
       (role !== "assistant" || Boolean(authorName) || channel === "commentary" ||
         Boolean(message.recipient && message.recipient !== "all") ||
         contentType === "reasoning_recap" || contentType === "summary" ||
@@ -411,7 +411,7 @@ export class ConversationStreamReducer {
     // preamble"/pre-tool-call narration (e.g. "Let me check your files...")
     // arriving as an ordinary author.role === "assistant", recipient === "all"
     // message on channel === "commentary" - distinct from `channel ===
-    // "analysis"` (chain-of-thought, already excluded above) and from the
+    // "analysis"` (internal reasoning, always hidden above) and from the
     // tool call/result messages themselves, which carry a specific non-"all"
     // recipient (e.g. "file_search.msearch", "python") and are therefore
     // already excluded by the recipient check below regardless of this flag.

@@ -14,6 +14,7 @@ const app = Fastify();
 await registerOpenAiRoutes(app);
 const address = await app.listen({ host: "127.0.0.1", port: 0 });
 const localFetch = globalThis.fetch;
+test.describe("server / responses", () => {
 test.after(async () => { globalThis.fetch = localFetch; await app.close(); rmSync(dir, { recursive: true, force: true }); });
 function setup(account, options = {}) {
   store.saveVerifiedSession("synthetic-session-fixture", account, "synthetic-device");
@@ -89,4 +90,5 @@ test("Chat and Responses share history and reject assistant edits", async () => 
   const third = await (await post({input:"Third question",metadata:{conversation_id:id}})).json();
   assert.equal(third.output[0].content[0].text,"reply-3"); assert.equal(third.metadata.conversation_id,id);
   assert.equal(store.countConversations("cross-mode"),1);
+});
 });

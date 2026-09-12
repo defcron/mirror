@@ -13,6 +13,7 @@ const [store, auth, { SetSessionBody, ChatBody }] = await Promise.all([
   import("../dist/api-schemas.js"),
 ]);
 
+test.describe("server / turnstile", () => {
 test.after(() => {
   rmSync(dir, { recursive: true, force: true });
 });
@@ -68,6 +69,8 @@ test("saveVerifiedSession preserves turnstileToken when updating the same sessio
 
 test("setSessionTurnstileToken updates and clears turnstileToken in session", () => {
   store.clearSession();
+  store.setSessionTurnstileToken("ignored-without-session");
+  assert.equal(store.getSession(), null);
   store.saveVerifiedSession("synthetic-session-token-for-testing-only-12345");
   assert.equal(store.getSession()?.turnstileToken, undefined);
 
@@ -79,7 +82,7 @@ test("setSessionTurnstileToken updates and clears turnstileToken in session", ()
   store.clearSession();
 });
 
-test("getValidCredentials attaches turnstileToken when available in session", async () => {
+test("pending session turnstile token is consumed exactly once", async () => {
   store.clearSession();
   const session = store.saveVerifiedSession(
     "synthetic-session-token-for-testing-only-12345",
@@ -93,8 +96,26 @@ test("getValidCredentials attaches turnstileToken when available in session", as
   store.updateMintedToken("mock-access-token", Date.now() + 3_600_000, null);
 
   const creds = await auth.getValidCredentials();
-  assert.equal(creds.turnstileToken, "valid-cred-turnstile");
+  assert.equal(creds.turnstileToken, undefined);
+  assert.equal(store.consumeSessionTurnstileToken(), "valid-cred-turnstile");
+  assert.equal(store.consumeSessionTurnstileToken(), null);
   store.clearSession();
+});
+
+test("a pending session turnstile token expires after five minutes", () => {
+  store.clearSession();
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  try {
+    store.saveVerifiedSession("synthetic-session-token-for-testing-only-12345", "acc-test", "dev-test", "expiring-token");
+    now += 5 * 60_000 + 1;
+    assert.equal(store.consumeSessionTurnstileToken(), null);
+    assert.equal(store.getSession()?.turnstileToken, undefined);
+  } finally {
+    Date.now = originalNow;
+    store.clearSession();
+  }
 });
 
 test("SetSessionBody validates optional turnstileToken", () => {
@@ -123,4 +144,5 @@ test("ChatBody validates optional turnstileToken", () => {
     turnstileToken: "turnstile-override-123",
   });
   assert.equal(valid.turnstileToken, "turnstile-override-123");
+});
 });

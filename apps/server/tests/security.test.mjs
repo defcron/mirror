@@ -9,6 +9,7 @@ import {
   tokenMatches,
 } from "../dist/security.js";
 
+test.describe("server / security", () => {
 test("combines singular and plural API-key settings without empty-value precedence", () => {
   assert.deepEqual(
     configuredApiKeys({ MIRROR_API_KEY: "one", MIRROR_API_KEYS: "two, three" }),
@@ -76,4 +77,5 @@ test("OPENAI_API_KEY works alone and alongside Mirror keys while ignoring blanks
   assert.deepEqual(configuredApiKeys({ MIRROR_API_KEY: "", MIRROR_API_KEYS: " , ", OPENAI_API_KEY: "compat" }), ["compat"]);
   assert.deepEqual(configuredApiKeys({ MIRROR_API_KEY: "mirror", MIRROR_API_KEYS: "second", OPENAI_API_KEY: "compat" }), ["mirror", "second", "compat"]);
   assert.deepEqual(configuredApiKeys({ OPENAI_API_KEY: "   " }), []);
+});
 });

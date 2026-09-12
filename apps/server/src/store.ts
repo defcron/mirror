@@ -165,6 +165,7 @@ export interface StoredSession {
   cachedAccessToken?: string;
   cachedAccessTokenExpiresAt?: number;
   turnstileToken?: string;
+  turnstileTokenSavedAt?: number;
 }
 
 function readSetting(key: string): string | null {
@@ -222,6 +223,9 @@ export function saveVerifiedSession(
   );
   const effectiveTurnstile =
     turnstileToken ?? (isSameSession ? prior?.turnstileToken : undefined);
+  const effectiveTurnstileSavedAt = turnstileToken
+    ? Date.now()
+    : (isSameSession ? prior?.turnstileTokenSavedAt : undefined);
   const session: StoredSession = {
     sessionToken,
     deviceId: deviceId ?? (isSameSession ? prior?.deviceId : undefined) ?? randomUUID(),
@@ -229,6 +233,7 @@ export function saveVerifiedSession(
     assetLinkGeneration: randomUUID(),
     ...(accountId ? { accountId } : {}),
     ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
+    ...(effectiveTurnstileSavedAt ? { turnstileTokenSavedAt: effectiveTurnstileSavedAt } : {}),
   };
   writeSetting("session", encrypt(JSON.stringify(session)));
   return session;
@@ -237,9 +242,26 @@ export function saveVerifiedSession(
 export function setSessionTurnstileToken(turnstileToken: string | null): void {
   const session = getSession();
   if (!session) return;
-  if (turnstileToken) session.turnstileToken = turnstileToken;
-  else delete session.turnstileToken;
+  if (turnstileToken) {
+    session.turnstileToken = turnstileToken;
+    session.turnstileTokenSavedAt = Date.now();
+  } else {
+    delete session.turnstileToken;
+    delete session.turnstileTokenSavedAt;
+  }
   writeSetting("session", encrypt(JSON.stringify(session)));
+}
+
+/** Atomically remove and return the one pending, single-use challenge token. */
+export function consumeSessionTurnstileToken(): string | null {
+  const session = getSession();
+  if (!session?.turnstileToken) return null;
+  const token = session.turnstileToken;
+  delete session.turnstileToken;
+  const savedAt = session.turnstileTokenSavedAt;
+  delete session.turnstileTokenSavedAt;
+  writeSetting("session", encrypt(JSON.stringify(session)));
+  return savedAt && Date.now() - savedAt <= 5 * 60_000 ? token : null;
 }
 
 export function setSessionAccountId(accountId: string): void {

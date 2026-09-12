@@ -11,6 +11,7 @@ import {
   normalizeGizmos,
 } from "../dist/index.js";
 
+test.describe("protocol / proof-session-types", () => {
 test("explicit proof configurations are copied, including their attempt counter", async () => {
   const config = [1, "date", null, 99, null, "url", "deploy", "en", "en-US", null, "plugins", "react", "event"];
   for (const generate of [generateProofToken, generateProofTokenAsync]) {
@@ -242,4 +243,5 @@ test("normalizeGizmos recognizes a flat gizmo-shaped record without a nested giz
     gizmos.map((g) => ({ id: g.id, name: g.name, shortUrl: g.shortUrl })),
     [{ id: "flat-1", name: "Flat GPT", shortUrl: "flat-gpt" }],
   );
+});
 });

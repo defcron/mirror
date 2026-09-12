@@ -1,4 +1,5 @@
 import {test,expect} from "@playwright/test";
+test.describe("browser / playground", () => {
 test.beforeEach(async({page})=>{
  await page.route("**/v1/models",route=>route.fulfill({json:{data:[]}}));
  await page.route("**/api/conversations?*",route=>route.fulfill({json:{items:[],hasMore:false}}));
@@ -43,4 +44,5 @@ test("Responses mode runs, retains history and switches back to Chat", async ({p
  await page.getByRole("button",{name:"☷ Chat"}).click();
  await expect(page.getByLabel("Path",{exact:true})).toHaveValue("/v1/chat/completions");
  await expect(page.getByPlaceholder("auto (filled in after the first response)")).toHaveValue("responses-conversation");
+});
 });

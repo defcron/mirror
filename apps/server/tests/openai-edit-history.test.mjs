@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+test.describe("server / openai-edit-history", () => {
 test("assistant history is immutable while user edits rebase and continue", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "mirror-openai-edit-"));
   const priorDataDir = process.env.MIRROR_DATA_DIR;
@@ -323,4 +324,5 @@ test("assistant history is immutable while user edits rebase and continue", asyn
     else process.env.MIRROR_DATA_DIR = priorDataDir;
     rmSync(dir, { recursive: true, force: true });
   }
+});
 });

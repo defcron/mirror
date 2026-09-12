@@ -13,6 +13,7 @@ const {controlCookie, authorizedLocalRequest, isAllowedOrigin} = await import(".
 const {isRewritableContentType} = await import("../dist/url-rewrite.js");
 const {injectionJs} = await import("../dist/mirror-controls.js");
 const {EARLY_PATCH} = await import("../dist/browser-patch.js");
+test.describe("server / reliability", () => {
 test.after(() => rmSync(dir, {recursive:true, force:true}));
 const item = (id) => ({id, title:id, createTime:"2026-01-01", updateTime:"2026-01-01", currentNodeId:null, gizmoId:null, isArchived:false});
 test("pagination progresses through local boundary and explicit refresh fetches even with cached rows", async () => {
@@ -61,4 +62,5 @@ test("instruction snapshots round-trip and session revisions invalidate stale wo
  const revision=store.getSessionRevision();
  store.clearSession();
  assert.throws(()=>store.assertSessionRevision(revision),/Session changed/);
+});
 });

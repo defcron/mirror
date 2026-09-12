@@ -6,6 +6,7 @@ import { act } from "react";
 import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import App from "../src/App.js";
 
+test.describe("web / App", () => {
 test.afterEach(() => {
   cleanup();
   localStorage.clear();
@@ -1264,4 +1265,5 @@ for (const transport of ["stream", "metadata", "header"]) test(`Responses mode $
   assert.ok(screen.getByRole("heading", { name: "Chat" }));
   assert.ok(screen.getAllByDisplayValue("Responses answer").length);
   assert.equal((screen.getByLabelText(/Conversation ID/i) as HTMLInputElement).value, "responses-id");
+});
 });

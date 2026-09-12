@@ -24,10 +24,12 @@ FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
-    MIRROR_DATA_DIR=/home/node/.mirror
+    MIRROR_DATA_DIR=/home/node/.mirror \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
+RUN npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
 COPY --from=build /app/apps/server/package.json ./apps/server/package.json
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist

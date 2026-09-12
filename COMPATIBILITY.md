@@ -130,17 +130,14 @@ them). The proxied ChatGPT website continues to use ChatGPT's own rendering.
 
 ### Chain-of-thought / reasoning
 
-Two distinct things are surfaced, both via `metadata` on `/v1/chat/completions`
-and `/v1/responses` (no non-standard top-level response fields - see this
-document's convention above): `metadata.mirror_reasoning_summaries` is
+Documented reasoning summaries are surfaced via `metadata` on
+`/v1/chat/completions` and `/v1/responses` (no non-standard top-level response
+fields - see this document's convention above):
+`metadata.mirror_reasoning_summaries` is
 ChatGPT's own condensed post-hoc recap (`reasoning_recap`/`summary` content
-types) - the "Thought for Xs" dropdown text. `metadata.mirror_reasoning` is
-the full raw chain-of-thought text itself (`channel: "analysis"` message
-snapshots), present on every turn and every chat type, including a gizmo/
-Project's first turn. Both are JSON-stringified arrays of `{messageId, text}`
-(reasoning summaries omit `messageId` grouping and use `{messageId, text}`
-too - parse either with `JSON.parse`) and are only present when the turn
-actually produced that kind of content. Neither is delivered as a live,
-token-by-token stream - both are finalized once per turn, consistent with
-how Mirror already finalizes other rich content (tool outputs, images) at
+types) - the "Thought for Xs" dropdown text. It is a JSON-stringified array
+of `{messageId, text}` objects and is only present when the turn produced an
+explicit display summary. Internal `analysis` channel content is never
+published. Summaries are finalized once per turn, consistent with how Mirror
+already finalizes other rich content (tool outputs, images) at
 turn completion rather than incrementally.

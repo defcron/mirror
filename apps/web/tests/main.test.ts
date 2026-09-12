@@ -10,6 +10,7 @@ const css = registerHooks({ load(url, context, next) {
   if (url === new URL("../src/styles.css", import.meta.url).href) return { format: "module", source: "", shortCircuit: true };
   return next(url, context);
 } });
+test.describe("web / main", () => {
 test.after(() => css.deregister());
 
 test("the browser entry point mounts the Playground in StrictMode", async (t) => {
@@ -22,4 +23,5 @@ test("the browser entry point mounts the Playground in StrictMode", async (t) =>
     assert.ok([...document.querySelectorAll("h1,h2")].some(element => element.textContent === "Chat"));
     assert.ok(document.querySelector(".message-editor"));
   } finally { await act(async () => root?.unmount()); }
+});
 });

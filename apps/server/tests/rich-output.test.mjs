@@ -6,6 +6,7 @@ const text = (value) => ({ kind: "assistant_text", messageId: "a", text: value, 
 const message = (raw) => ({ kind: "message", messageId: "a", role: "assistant", raw });
 const url = "https://files.oaiusercontent.com/example?sig=synthetic&expires=123";
 
+test.describe("server / rich-output", () => {
 test("late citation mapping replaces private marker inline and preserves the surrounding answer", async () => {
   const marker = "\uE200filecite\uE202turn0file0\uE201";
   const calls = [];
@@ -137,4 +138,5 @@ test("embedded previews and literal percent filenames preserve safe Markdown", a
   assert.match(fallback.text, /Download file: \[20%\.csv\]/);
   const partial = await renderRichOutput([text("sandbox:/mnt/data/report\n[full](sandbox:/mnt/data/report(1).csv)")], "", async () => url);
   assert.match(partial.text, /Download file: \[report\]/);
+});
 });

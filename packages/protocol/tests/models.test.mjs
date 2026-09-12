@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeModels, normalizeGizmos } from "../dist/index.js";
 
+test.describe("protocol / models", () => {
 test("model normalization tolerates malformed entries and preserves optional metadata", () => {
   assert.deepEqual(normalizeModels({}), []);
   const model = { slug: "model", title: "Display", description: "Details", max_tokens: 123,
@@ -21,4 +22,5 @@ test("gizmo recognition accepts each supported flat discriminator without requir
     assert.equal(result.iconUrl, field === "profile_picture_url" ? item[field] : undefined);
   }
   assert.deepEqual(normalizeGizmos({ items: [{ id: "not-a-gizmo", display_name: "Not enough" }] }), []);
+});
 });

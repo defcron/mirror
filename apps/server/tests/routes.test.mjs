@@ -30,6 +30,7 @@ const store = await import("../dist/store.js");
 const egress = await import("../dist/egress.js");
 const { buildApp } = await import("../dist/index.js");
 const app = await buildApp();
+test.describe("server / routes", () => {
 test.after(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });
@@ -222,7 +223,7 @@ test("GET/DELETE /api/session reflect and clear the stored session", async () =>
   assert.deepEqual(JSON.parse(del.body), { ok: true });
 
   const after = await app.inject({ method: "GET", url: "/api/session", headers: AUTH });
-  assert.deepEqual(JSON.parse(after.body), { configured: false, savedAt: null });
+  assert.deepEqual(JSON.parse(after.body), { configured: false, savedAt: null, hasTurnstileToken: false });
 });
 
 // --- /api/models, /api/gpts ---------------------------------------------------
@@ -595,7 +596,7 @@ test("POST /api/chat streams SSE delta/event/done frames on success", () =>
       const res = await app.inject({
         method: "POST",
         url: "/api/chat",
-        headers: AUTH,
+        headers: { ...AUTH, "x-turnstile-token": "native-one-shot" },
         payload: { prompt: "hello there", model: "auto" },
       });
       assert.equal(res.statusCode, 200, res.body);
@@ -638,7 +639,7 @@ test("POST /api/chat forwards non-filtered upstream events (e.g. tool/marker fra
       const res = await app.inject({
         method: "POST",
         url: "/api/chat",
-        headers: AUTH,
+        headers: { ...AUTH, "openai-sentinel-turnstile-token": "native-one-shot" },
         payload: { prompt: "hello there", model: "auto" },
       });
       assert.equal(res.statusCode, 200, res.body);
@@ -903,3 +904,4 @@ test("new Custom GPT native chat hides file-search events but forwards Python ev
     assert.match(res.body, /"name":"python"/);
     assert.match(res.body, /"text":"Normal answer"/);
   }));
+});

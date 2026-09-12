@@ -6,6 +6,7 @@ import {
   rewriteChatGptUrls,
 } from "../dist/url-rewrite.js";
 
+test.describe("server / url-rewrite", () => {
 test("rewrites absolute ChatGPT URLs to the Mirror origin", () => {
   const input = [
     'fetch("https://chatgpt.com/backend-api/f/conversation")',
@@ -69,4 +70,5 @@ test("builds a same-origin proxy URL from the incoming request", () => {
     "https://mirror.example",
   );
   assert.equal(requestOrigin("http", undefined), null);
+});
 });

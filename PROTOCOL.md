@@ -24,9 +24,9 @@ The implementation uses `conversation/init`, the two-stage `f/conversation/prepa
 3. **Sentinel proof-of-work / turnstile gate**:
    - `POST sentinel/chat-requirements/prepare` → `{persona, prepare_token, turnstile:{required,dx}, proofofwork:{required,seed,difficulty}, so:{...}}`
    - Solve proof-of-work (SHA3-512 hashcash — see `packages/protocol/src/proof.ts`, ported from a tested reference implementation).
-   - **Turnstile resolution**: When required, Mirror resolves Turnstile tokens automatically via an in-memory TTL cache, stored session credentials, environment variables (`CHATGPT_TURNSTILE_TOKEN` / `MIRROR_TURNSTILE_TOKEN`), live proxy request capture, or the automated headless browser solver (`solveTurnstileWithBrowser` in `@mirror/protocol`). When no token is needed or available, Mirror falls back to `turnstile: null` so unconstrained sessions continue to function seamlessly.
+   - **Turnstile resolution**: A caller can provide a fresh response token for one generation. A pending token saved with the local session is atomically claimed for that Sentinel finalize call and is never replayed. An injected resolver may supply a token for the same handshake; when it does not, Mirror falls back to a Playwright/Chromium browser solver using the active session context. When no token is needed or available, Mirror sends `turnstile: null` so unconstrained sessions continue to function.
    - `POST sentinel/chat-requirements/finalize` → `{persona, token, expire_after, expire_at}`. `token` becomes `openai-sentinel-chat-requirements-token`.
-4. **POST /backend-api/f/conversation** — the actual send. Extra headers: `chatgpt-account-id`, `oai-echo-logs`, `oai-genui-client-actions`, `oai-telemetry`, `openai-sentinel-chat-requirements-token`, `openai-sentinel-proof-token`, `openai-sentinel-turnstile-token`, `x-oai-turn-trace-id`.
+4. **POST /backend-api/f/conversation** — the actual send. Extra headers: `chatgpt-account-id`, `oai-echo-logs`, `oai-genui-client-actions`, `oai-telemetry`, `openai-sentinel-chat-requirements-token`, `openai-sentinel-proof-token`, `x-oai-turn-trace-id`.
 
    The final conduit token is sent as `x-conduit-token`. Compatibility failures from the prepare endpoint fall back one stage (or to no conduit); authentication and rate-limit failures remain fatal.
 
@@ -41,6 +41,6 @@ The implementation uses `conversation/init`, the two-stage `f/conversation/prepa
 ## Compatibility boundaries
 
 - Bearer-only vs. bearer+cookie requirement (affects the paste-your-token-only auth UX).
-- Turnstile solving strategy (automated via cache, session, env, proxy capture, and headless browser challenge).
+- The browser solver fallback is implemented and synthetically covered; acceptance by a live challenge-required ChatGPT session remains a separate verification boundary.
 - Exact typed event envelopes continue to evolve. Mirror preserves raw normalized events internally and derives stable text/tool/citation/image views.
 - Unknown OpenAI-compatible histories cannot reconstruct a pre-existing ChatGPT tree. A new Mirror conversation supplies the received history as explicit text context; subsequent calls can resume through an explicit `metadata.conversation_id` or a matching stored transcript fingerprint. Work Mode aliases are rejected rather than remapped.

@@ -24,6 +24,7 @@ const originalFetch = globalThis.fetch;
 const auth = { host: "localhost", authorization: "Bearer fixture-key" };
 function session() { store.saveVerifiedSession("synthetic-session", "fixture-account"); store.updateMintedToken("synthetic-access", Date.now() + 3600000, null); }
 function post(messages, id, stream = false) { return app.inject({ method: "POST", url: "/v1/chat/completions", headers: auth, payload: { model: "auto", messages, stream, ...(id ? { metadata: { conversation_id: id } } : {}) } }); }
+test.describe("server / todo-contract", () => {
 test.after(async () => { globalThis.fetch = originalFetch; await app.close(); rmSync(dir, { recursive: true, force: true }); });
 test.afterEach(() => { globalThis.fetch = originalFetch; delete process.env.MIRROR_TURN_TIMEOUT_MS; delete process.env.MIRROR_IDLE_TIMEOUT_MS; });
 
@@ -165,4 +166,5 @@ test("actual cm subprocesses interoperate across streamed and JSON turns with is
   assert.equal(store.listMessages(id).length, 6);
   assert.equal(store.getInstructions(id)[0].content, "Keep fixture instructions");
   assert.equal(sent.filter(item => item.pathname.endsWith("/f/conversation")).at(-1).body.parent_message_id, "assistant-2");
+});
 });

@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import {DatabaseSync} from 'node:sqlite';
+test.describe("server / storage-maintenance", () => {
 test('backup and restore preserve WAL-committed data; retention preserves credentials',()=>{
  const root=mkdtempSync(path.join(tmpdir(),'mirror-maintenance-'));
  const source=path.join(root,'source'),restored=path.join(root,'restored'),backup=path.join(root,'backup');
@@ -32,4 +33,5 @@ test('backup and restore preserve WAL-committed data; retention preserves creden
   assert.equal(check.prepare("SELECT count(*) AS n FROM settings WHERE key='session'").get().n,1);check.close();
   assert.throws(()=>run(['restore',backup,'--offline'],restored));
  }finally{rmSync(root,{recursive:true,force:true});}
+});
 });

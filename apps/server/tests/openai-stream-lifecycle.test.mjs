@@ -11,6 +11,7 @@ process.env.MIRROR_DATA_DIR = dir;
 const store = await import("../dist/store.js");
 const { registerOpenAiRoutes, remainingStreamText } = await import("../dist/openai.js");
 const nativeFetch = globalThis.fetch;
+test.describe("server / openai-stream-lifecycle", () => {
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 for (const responses of [false, true]) test(`a seventh full-history ${responses ? "Responses" : "Chat"} turn sends parseable keepalives while upstream is silent, then continues the same parent`, { timeout: 5000 }, async t => {
@@ -168,4 +169,5 @@ test("stream output may append to delivered text but cannot replace or truncate 
   for (const replacement of ["different answer", "already", ""]) {
     assert.throws(() => remainingStreamText(replacement, "already delivered"), /changed text already delivered/);
   }
+});
 });

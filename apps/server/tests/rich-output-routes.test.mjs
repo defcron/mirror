@@ -13,6 +13,7 @@ const { registerOpenAiRoutes } = await import("../dist/openai.js");
 const app = Fastify(); await registerOpenAiRoutes(app);
 const address = await app.listen({host:"127.0.0.1",port:0});
 const localFetch = globalThis.fetch;
+test.describe("server / rich-output-routes", () => {
 test.after(async()=>{globalThis.fetch=localFetch;await app.close();rmSync(dir,{recursive:true,force:true});});
 const download = "https://files.oaiusercontent.com/test?sig=synthetic";
 for (const endpoint of ["chat/completions","responses"]) for (const stream of [false,true]) test(`${endpoint} stream=${stream}: rich output, summary, downloads and three-turn continuity`,async()=>{
@@ -188,4 +189,5 @@ for (const scenario of ["image", "loaded-image", "sandbox", "plain-prefix", "emp
   if (scenario === "sandbox") assert.equal(new URL(downloads[0]).searchParams.get("message_id"), "answer");
   if (scenario === "plain-prefix") assert.equal(answer, "First line\nSecond line\n[ordinary label] is text\n");
   if (scenario === "empty-tool") assert.equal(answer, "First line\nSecond line\n");
+});
 });

@@ -15,6 +15,7 @@ const dir = mkdtempSync(path.join(tmpdir(), "mirror-auth-"));
 process.env.MIRROR_DATA_DIR = dir;
 const store = await import("../dist/store.js");
 const auth = await import("../dist/auth.js");
+test.describe("server / auth", () => {
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 function jwtWithExp(secondsFromNow) {
@@ -136,4 +137,16 @@ test("verifyCandidateSessionToken reuses the prior device id and rotated token w
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("verifyCandidateSessionToken returns a newly supplied pending challenge token", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => Response.json({ accessToken: jwtWithExp(3600) });
+    const result = await auth.verifyCandidateSessionToken("candidate-with-challenge", "fresh-challenge");
+    assert.equal(result.turnstileToken, "fresh-challenge");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 });

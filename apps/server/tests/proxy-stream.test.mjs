@@ -4,6 +4,7 @@ import {EventEmitter} from 'node:events';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+test.describe("server / proxy-stream", () => {
 test('proxy delivers the first SSE event before upstream EOF',async()=>{
  const dir=mkdtempSync(path.join(tmpdir(),'mirror-proxy-stream-'));process.env.MIRROR_DATA_DIR=dir;
  const {proxyChatGpt}=await import('../dist/proxy.js');const original=globalThis.fetch;
@@ -61,4 +62,5 @@ test('proxy stops pumping further chunks once the reply socket has been destroye
   await done;
   assert.deepEqual(writes,['chunk-one'],'no further chunks may be written once the reply socket is destroyed');
  }finally{globalThis.fetch=original;rmSync(dir,{recursive:true,force:true});}
+});
 });

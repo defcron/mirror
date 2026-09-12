@@ -17,6 +17,7 @@ const [{ default: Fastify }, store, openai, { buildApp }] = await Promise.all([
 const app = Fastify({ bodyLimit: 30 * 1024 * 1024 });
 await openai.registerOpenAiRoutes(app);
 
+test.describe("server / turnstile-api", () => {
 test.after(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });
@@ -68,7 +69,7 @@ function stubBackendWithHeaders(accountId, sentHeaders = [], sentBodies = []) {
       return Response.json({ default_model_slug: "model-a", limits_progress: [], blocked_features: [] });
     if (pathname.endsWith("/f/conversation/prepare")) return Response.json({ conduit_token: "conduit" });
     if (pathname.endsWith("/sentinel/chat-requirements/prepare"))
-      return Response.json({ prepare_token: "prepare", proofofwork: { required: false } });
+      return Response.json({ prepare_token: "prepare", proofofwork: { required: false }, turnstile: { required: true } });
     if (pathname.endsWith("/sentinel/chat-requirements/finalize")) {
       const finalizeBody = body ?? {};
       return Response.json({ token: "requirements", turnstileToken: finalizeBody.turnstile });
@@ -137,10 +138,10 @@ test("POST /v1/chat/completions forwards turnstile token from request header", a
       assert.ok(finalizeCall, "expected finalize call");
       assert.equal(finalizeCall.body.turnstile, "custom-hdr-turnstile-123");
 
-      // Verify the turnstile token was forwarded in headers to /f/conversation
+      // It is single-use and is not replayed on /f/conversation.
       const convCall = sentHeaders.find((s) => s.pathname.endsWith("/f/conversation"));
       assert.ok(convCall, "expected conversation call");
-      assert.equal(convCall.headers["openai-sentinel-turnstile-token"], "custom-hdr-turnstile-123");
+      assert.equal(convCall.headers["openai-sentinel-turnstile-token"], undefined);
     },
   );
 });
@@ -171,12 +172,12 @@ test("POST /v1/chat/completions forwards turnstile token from metadata.mirror_tu
 
       const convCall = sentHeaders.find((s) => s.pathname.endsWith("/f/conversation"));
       assert.ok(convCall);
-      assert.equal(convCall.headers["openai-sentinel-turnstile-token"], "meta-turnstile-456");
+      assert.equal(convCall.headers["openai-sentinel-turnstile-token"], undefined);
     },
   );
 });
 
-test("POST /v1/chat/completions automatically persists resolved turnstile token to session", async () => {
+test("POST /v1/chat/completions uses a request token without persisting it", async () => {
   // Session starts without turnstileToken
   useSession("turnstile-user-3");
   assert.equal(store.getSession()?.turnstileToken, undefined);
@@ -186,7 +187,7 @@ test("POST /v1/chat/completions automatically persists resolved turnstile token 
   await withFetch(
     stubBackendWithHeaders("turnstile-user-3", sentHeaders, sentBodies),
     async () => {
-      // API call with header provides token; turn completion must persist it to session
+      // A header token is scoped to this generation.
       const res = await app.inject({
         method: "POST",
         url: "/v1/chat/completions",
@@ -200,8 +201,9 @@ test("POST /v1/chat/completions automatically persists resolved turnstile token 
       });
       assert.equal(res.statusCode, 200, res.body);
 
-      // Verify that after the turn, store.getSession() has the turnstileToken saved!
-      assert.equal(store.getSession()?.turnstileToken, "retrieved-turnstile-token-789");
+      const finalizeCall = sentBodies.find((entry) => entry.pathname.endsWith("/sentinel/chat-requirements/finalize"));
+      assert.equal(finalizeCall.body.turnstile, "retrieved-turnstile-token-789");
+      assert.equal(store.getSession()?.turnstileToken, undefined);
     },
   );
 });
@@ -257,4 +259,5 @@ test("POST /v1/responses redacts turnstile tokens from response metadata", async
       assert.equal(json.metadata?.mirror_turnstile_token, undefined);
     },
   );
+});
 });

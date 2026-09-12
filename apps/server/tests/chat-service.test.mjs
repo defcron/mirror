@@ -15,6 +15,7 @@ const dir = mkdtempSync(path.join(tmpdir(), "mirror-chat-service-"));
 process.env.MIRROR_DATA_DIR = dir;
 const store = await import("../dist/store.js");
 const service = await import("../dist/chat-service.js");
+test.describe("server / chat-service", () => {
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 function useSession(accountId) {
@@ -360,4 +361,5 @@ test("an assistant reply with no text and no status is stored as empty content w
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
 });

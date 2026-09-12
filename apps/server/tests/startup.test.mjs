@@ -22,6 +22,7 @@ mock.module("fastify", { defaultExport: options => {
   };
   return app;
 } });
+test.describe("server / startup", () => {
 test.after(async () => { timers.forEach(clearInterval); await app?.close(); rmSync(dir, { recursive: true, force: true }); });
 
 test("executable startup applies defaults, handles failed upgrades, and closes on egress loss", async t => {
@@ -71,4 +72,5 @@ test("executable startup applies defaults, handles failed upgrades, and closes o
     if (originalPort === undefined) delete process.env.PORT; else process.env.PORT = originalPort;
     if (originalHost === undefined) delete process.env.HOST; else process.env.HOST = originalHost;
   }
+});
 });

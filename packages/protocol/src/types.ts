@@ -174,7 +174,6 @@ export interface SendMessageResult {
   userMessageId: string;
   status: string | null;
   events: NormalizedConversationEvent[];
-  turnstileToken?: string | null;
 }
 
 export class BackendApiError extends Error {

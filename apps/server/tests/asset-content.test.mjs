@@ -22,6 +22,7 @@ const session = () => {
 session();
 const ticket = () => store.sealAssetTicket({ pointer, conversationId: "upstream", messageId: "answer", fileName: "résumé [final].png" });
 const request = (value = ticket(), extra = "", method = "GET") => app.inject({ method, url: `/api/asset-content?ticket=${encodeURIComponent(value)}${extra}`, headers: { host: "127.0.0.1", origin: "https://www.google.com" } });
+test.describe("server / asset-content", () => {
 test.after(async () => { globalThis.fetch = fetchBefore; await app.close(); rmSync(dir, { recursive: true, force: true }); });
 
 test("Google image and download requests get real bytes without a browser bearer/cookie", async () => {
@@ -172,4 +173,5 @@ test("legacy saved sessions can issue links without changing session credentials
     const asset = { pointer: "sandbox:/mnt/data/test.csv", conversationId: null, messageId: null, fileName: "test.csv" };
     assert.deepEqual(legacy.openAssetTicket(legacy.sealAssetTicket(asset)), asset);
   } finally { process.env.MIRROR_DATA_DIR = dir; rmSync(legacyDir, { recursive: true, force: true }); }
+});
 });

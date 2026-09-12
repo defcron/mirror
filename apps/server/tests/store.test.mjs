@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+test.describe("server / store", () => {
 test("credentials are encrypted and conversation continuity persists", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "mirror-store-"));
   process.env.MIRROR_DATA_DIR = dir;
@@ -124,4 +125,5 @@ test("syncRemoteConversations preserves assistant parent when upstream entry lac
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
 });

@@ -18,6 +18,7 @@ const app = Fastify();
 await registerOpenAiRoutes(app);
 const address = await app.listen({ host: "127.0.0.1", port: 0 });
 const localFetch = globalThis.fetch;
+test.describe("server / conversation-continuation", () => {
 test.after(async () => {
   globalThis.fetch = localFetch;
   await app.close();
@@ -122,3 +123,4 @@ for (const tracking of ["history", "id-minimal", "id-full"]) {
     }
   }
 }
+});

@@ -228,14 +228,14 @@ const CompletionBody = z
             "See PROTOCOL.md's Turnstile resolution notes.",
         }),
       })
-      .strict()
+      .catchall(z.string())
       .optional()
       .openapi({
         description:
           "Officially a flat request-only string map in the real OpenAI API; Mirror " +
           "repurposes it (bidirectionally - the response carries its own mirror_tool_events/" +
           "mirror_images keys here too, see the response schema) for anything with no " +
-          "dedicated schema slot. Unknown metadata keys are rejected. See " +
+          "dedicated schema slot. Unknown string metadata is passed through unchanged. See " +
           "COMPATIBILITY.md.",
       }),
   })
@@ -944,9 +944,10 @@ export async function registerOpenAiRoutes(
           responseMetadata.mirror_assets = JSON.stringify(richOutput.assets);
           responseMetadata.mirror_tool_outputs = JSON.stringify(richOutput.tools);
           if (richOutput.summaries.length) responseMetadata.mirror_reasoning_summaries = JSON.stringify(richOutput.summaries);
-          if (richOutput.reasoning.length) responseMetadata.mirror_reasoning = JSON.stringify(richOutput.reasoning);
           const resolvedImages = richOutput.assets.filter(asset => asset.url && !asset.previewUnavailable && capturedEvents.some(event => (event.kind === "image" || (event.kind === "file" && typeof (event as any).assetPointer === "string" && (event as any).assetPointer.startsWith("sediment://"))) && event.assetPointer === asset.pointer));
-          if (resolvedImages.length) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
+          const hadImage = capturedEvents.some(event => event.kind === "image" ||
+            (event.kind === "file" && event.assetPointer.startsWith("sediment://")));
+          if (hadImage) responseMetadata.mirror_images = JSON.stringify(resolvedImages.map(asset => ({ url: asset.url })));
         }
 
         const sanitizedRequestMetadata = body.metadata ? { ...body.metadata } : {};

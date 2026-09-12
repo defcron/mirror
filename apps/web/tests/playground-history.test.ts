@@ -15,6 +15,7 @@ const trackedHistory: PlaygroundMessage[] = [
   { role: "user", content: "" },
 ];
 
+test.describe("web / playground-history", () => {
 test("assistant messages cannot be edited", () => {
   const result = editPlaygroundMessage(
     trackedHistory,
@@ -120,4 +121,5 @@ test("removing from an untracked history simply filters it out", () => {
   const result = removePlaygroundMessage(untracked, 1, false);
   assert.equal(result.invalidatesConversation, false);
   assert.deepEqual(result.messages, [{ role: "system", content: "Be concise." }]);
+});
 });

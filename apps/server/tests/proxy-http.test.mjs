@@ -15,6 +15,7 @@ const dir = mkdtempSync(path.join(tmpdir(), "mirror-proxy-http-"));
 process.env.MIRROR_DATA_DIR = dir;
 const store = await import("../dist/store.js");
 const { proxyChatGpt } = await import("../dist/proxy.js");
+test.describe("server / proxy-http", () => {
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 function jwtWithExp(secondsFromNow) {
@@ -589,3 +590,4 @@ test("proxyChatGpt: a request with no Accept header at all falls back to treatin
       assert.deepEqual(JSON.parse(writes.join("")), { ok: true });
     },
   ));
+});

@@ -17,6 +17,7 @@ function freshDir(label) {
 
 // --- encryption key handling ------------------------------------------------
 
+test.describe("server / store-migrations", () => {
 test("MIRROR_STORE_KEY accepts a hex-encoded 32-byte key", async () => {
   const dir = freshDir("key-hex");
   process.env.MIRROR_DATA_DIR = dir;
@@ -598,4 +599,5 @@ test("updateMintedToken is a no-op when there is no verified session yet", async
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
 });

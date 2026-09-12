@@ -33,7 +33,6 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
       accessToken: session.cachedAccessToken!,
       deviceId: session.deviceId,
       sessionToken: session.sessionToken,
-      ...(session.turnstileToken ? { turnstileToken: session.turnstileToken } : {}),
     };
   }
 
@@ -58,7 +57,6 @@ export async function getValidCredentials(): Promise<SessionCredentials> {
           accessToken: minted.accessToken,
           deviceId: current.deviceId,
           sessionToken: minted.rotatedSessionToken ?? current.sessionToken,
-          ...(current.turnstileToken ? { turnstileToken: current.turnstileToken } : {}),
         };
       } catch (err) {
         if (err instanceof SessionTokenInvalidError)
@@ -84,18 +82,18 @@ export async function verifyCandidateSessionToken(
 }> {
   const minted = await mintAccessToken(sessionToken);
   const prior = getSession();
-  const isSameSession = Boolean(prior && prior.sessionToken === sessionToken);
-  const effectiveTurnstile =
-    turnstileToken ?? (isSameSession ? prior?.turnstileToken : undefined);
+  // The device id represents this Mirror installation, not one spelling of
+  // a rotating session cookie. Keep it stable across successful rotations.
+  const isSameSession = Boolean(prior);
+  const effectiveTurnstile = turnstileToken;
   return {
     credentials: {
       accessToken: minted.accessToken,
       deviceId: (isSameSession ? prior?.deviceId : undefined) ?? randomUUID(),
       sessionToken: minted.rotatedSessionToken ?? sessionToken,
-      ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
     },
     persistedSessionToken: minted.rotatedSessionToken ?? sessionToken,
     expiresAt: minted.expiresAt,
-    ...(effectiveTurnstile ? { turnstileToken: effectiveTurnstile } : {}),
+    turnstileToken: effectiveTurnstile,
   };
 }

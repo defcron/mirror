@@ -11,6 +11,7 @@ import { getValidCredentials } from "./auth.js";
 import {
   getSessionRevision,
   assertSessionRevision,
+  consumeSessionTurnstileToken,
   onSessionChange,
   addMessage,
   createConversation,
@@ -188,7 +189,7 @@ export async function runChat(
       timezoneOffsetMin: opts.timezoneOffsetMin,
       attachments: opts.attachments,
       historyAndTrainingDisabled: conversation.private,
-      turnstileToken: opts.turnstileToken,
+      turnstileToken: opts.turnstileToken ?? consumeSessionTurnstileToken(),
       signal: controller.signal,
       onDelta: (delta, full) => {
         controller.signal.throwIfAborted();

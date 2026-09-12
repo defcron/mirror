@@ -81,6 +81,7 @@ process.env.MIRROR_DATA_DIR = dir;
 const security = await import("../dist/security.js");
 const store = await import("../dist/store.js");
 const proxy = await import("../dist/proxy.js");
+test.describe("server / proxy-websocket", () => {
 test.after(() => rmSync(dir, { recursive: true, force: true }));
 
 function jwtWithExp(secondsFromNow) {
@@ -278,4 +279,5 @@ test("pending websocket limits account for each supported RawData representation
     assert.equal(upstream.sent[0].data, data);
     client.close();
   }
+});
 });
