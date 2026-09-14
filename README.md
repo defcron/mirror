@@ -10,7 +10,7 @@ Mirror is a local, self-hosted ChatGPT client with an OpenAI-compatible API bolt
 
 > **Unofficial project.** Mirror depends on ChatGPT's private web protocol, which OpenAI can change at any time without notice. Keep it on localhost. See [PROTOCOL.md](./PROTOCOL.md) for the full reverse-engineered protocol notes.
 
-> **Provenance.** Mirror is an independent project inspired by earlier experimentation in ChatGPT-compatible tooling, including research into existing projects such as dairoot’s discontinued ChatGPT Mirror project. Mirror has a different architecture, goals, and implementation.
+> **Provenance.** Mirror is an independent project inspired by earlier experimentation in ChatGPT-compatible tooling, including research into existing projects such as [dairoot's discontinued ChatGPT-Mirror](https://github.com/dairoot/ChatGPT-Mirror) and [suphotP/chatgpt-api](https://github.com/suphotP/chatgpt-api). Mirror has a different architecture, goals, and implementation.
 
 ## Quickstart
 
