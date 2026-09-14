@@ -87,6 +87,25 @@ Effort: S / M / L as before.
   job (build the Docker image, verify it offline) wasn't ported to either
   service yet - worth revisiting once the basic CircleCI config is confirmed
   working.
+  **First real CircleCI run (2026-09-14) caught a genuine bug this sandbox's
+  Node v22 had been silently masking all session:** `apps/web/tests/main.test.ts`
+  stubs its CSS import via a `node:module` `registerHooks({ load(...) })` hook
+  that falls through to `next()` for every other module - under the pinned
+  Node >=24 engine (which this sandbox does not actually run; verified by
+  downloading Node v24.9.0 directly and reproducing there), a *second*
+  `next()` call for an already-resolved specifier (`react/jsx-runtime.js`,
+  pulled in repeatedly by main.js's component tree) throws
+  `ERR_INVALID_RETURN_PROPERTY_VALUE` instead of returning the cached result -
+  apparently a real Node 24 bug in the synchronous customization-hooks path,
+  not anything wrong with this repo's code. **Fixed** by switching from a
+  `load` hook to a `resolve` hook that redirects the CSS specifier to an
+  inert `data:` URL - `load` is then never customized at all, so the buggy
+  path is never exercised. Confirmed fixed and 100%-coverage-clean under
+  Node v24.9.0 specifically (not just this sandbox's v22). This is also a
+  standing reminder that CI on the correctly-pinned Node version is worth
+  more than it looks: this bug was invisible in every local run this whole
+  session because the sandbox quietly runs v22 despite the `>=24 <25`
+  `engines` constraint.
 - [x] **MIR-22 · Verify · S — `npm audit` and dependency freshness.**
   **Evidence (2026-09-14):** `npm audit` reports 0 vulnerabilities. `npm outdated`
   shows mostly minor/patch drift (Fastify 5.12.3->5.12.4, `@fastify/rate-limit`

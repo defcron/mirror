@@ -6,9 +6,20 @@ import React, { act } from "react";
 import ReactDOM from "react-dom/client";
 
 // CSS is loaded by Vite in production; Node only needs to exercise mounting.
-const css = registerHooks({ load(url, context, next) {
-  if (url === new URL("../src/styles.css", import.meta.url).href) return { format: "module", source: "", shortCircuit: true };
-  return next(url, context);
+// Redirected via a `resolve` hook (to an inert data: URL) rather than
+// intercepted in `load` - a `load` hook that calls `next()` for every other
+// module (react/jsx-runtime.js in particular, which main.js's tree pulls in
+// repeatedly) hits a real Node 24 bug where a later `next()` call for an
+// already-resolved specifier throws ERR_INVALID_RETURN_PROPERTY_VALUE
+// instead of returning the cached result. Rewriting the specifier in
+// `resolve` means `load` is never customized at all, so that path is never
+// exercised - confirmed reproducible/fixed against Node v24.9.0 directly
+// (this sandbox's own Node is v22, which never hit it - the pinned
+// >=24 <25 engine, e.g. under CircleCI, is what actually surfaces this).
+const cssUrl = new URL("../src/styles.css", import.meta.url).href;
+const css = registerHooks({ resolve(specifier, context, next) {
+  const result = next(specifier, context);
+  return result.url === cssUrl ? { ...result, url: "data:text/javascript," } : result;
 } });
 test.describe("web / main", () => {
 test.after(() => css.deregister());
