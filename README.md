@@ -1,5 +1,7 @@
 # Mirror
 
+[![CircleCI](https://circleci.com/gh/defcron/mirror.svg?style=svg)](https://circleci.com/gh/defcron/mirror) [![Coverage](https://img.shields.io/badge/coverage-100%25%20enforced-brightgreen)](.c8rc.json) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node](https://img.shields.io/badge/node-%3E%3D24-brightgreen)](.nvmrc) [![Last commit](https://img.shields.io/github/last-commit/defcron/mirror)](https://github.com/defcron/mirror/commits/main) [![Issues](https://img.shields.io/github/issues/defcron/mirror)](https://github.com/defcron/mirror/issues) [![Stars](https://img.shields.io/github/stars/defcron/mirror?style=social)](https://github.com/defcron/mirror/stargazers)
+
 See [TODO.md](TODO.md) for the issue-level backlog and
 [NEXT-STEPS.md](NEXT-STEPS.md) for the repository-audit roadmap and recommended
 order of work.
@@ -7,6 +9,8 @@ order of work.
 Mirror is a local, self-hosted ChatGPT client with an OpenAI-compatible API bolted on. It logs you into the *real* chatgpt.com web app — proxied through Mirror's own server, using your existing ChatGPT session — so you get the actual ChatGPT interface, Custom GPTs and all, with no OpenAI API key and no browser automation involved. Alongside that, Mirror ships a separate **Playground** page for testing its OpenAI-compatible `/v1/chat/completions` endpoint directly.
 
 > **Unofficial project.** Mirror depends on ChatGPT's private web protocol, which OpenAI can change at any time without notice. Keep it on localhost. See [PROTOCOL.md](./PROTOCOL.md) for the full reverse-engineered protocol notes.
+
+> **Provenance.** Mirror is an independent project inspired by earlier experimentation in ChatGPT-compatible tooling, including research into existing projects such as dairoot’s discontinued ChatGPT Mirror project. Mirror has a different architecture, goals, and implementation.
 
 ## Quickstart
 
@@ -51,7 +55,7 @@ The Playground offers **Chat** (`/v1/chat/completions`) and **Responses** (`/v1/
 
 Responses supports text input, instructions, named streaming events, and one-shot requests. Continue using `metadata.conversation_id` or full input history. This is a documented subset: tools, image/file input, `previous_response_id`, response retrieval, and background mode are not supported.
 
-By default the Playground keeps its bearer token in memory only and doesn't persist message history; there's a "Remember prompt history on this device" toggle if you want it to keep your working history in the browser's `localStorage` between visits — flip it back off to clear it.
+By default the Playground keeps its bearer token in memory only and doesn't persist message history; there's a "Remember prompt history on this device" toggle if you want it to keep your working history in the browser's `localStorage` between visits — flip it back off to clear it. The System box is different: it's always saved server-side, account-wide (`GET`/`PUT /api/settings/default-system-instructions`), not to `localStorage` — whatever you leave in it becomes the default a *new* conversation starts from, on any browser or device signed in to this Mirror instance, independent of the "remember prompt history" toggle above.
 
 ## Using the OpenAI-compatible API
 

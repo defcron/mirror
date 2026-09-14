@@ -5,7 +5,7 @@ import { getEgressStatus } from "./egress.js";
 import { configuredApiKeys } from "./security.js";
 import { recentFailures } from "./api-errors.js";
 import { DATABASE_SCHEMA_VERSION } from "./schema.js";
-import { databaseHealthy, getSession, getConversation, getInstructions, listMessages, searchConversations, relatedConversations } from "./store.js";
+import { databaseHealthy, getSession, getConversation, getInstructions, listMessages, searchConversations, relatedConversations, getDefaultSystemInstructions, setDefaultSystemInstructions, getHotkeys, setHotkeys } from "./store.js";
 
 export const SearchQuery = z.object({ q: z.string().trim().min(1).max(200) });
 export const ExportQuery = z.object({
@@ -14,6 +14,8 @@ export const ExportQuery = z.object({
   metadata: z.enum(["true", "false"]).default("false"),
 });
 export const IdParams = z.object({ id: z.string().min(1).max(200) });
+export const DefaultSystemInstructionsBody = z.object({ content: z.string().max(20_000) });
+export const HotkeysBody = z.object({ hotkeys: z.record(z.string(), z.string().max(60)) });
 
 export function capabilities() {
   return {
@@ -45,6 +47,27 @@ export async function registerInsightRoutes(app: FastifyInstance) {
       recentFailures: recentFailures(),
       nextAction: !egress.verified ? "Check the WARP container health." : !getSession() ? "Save a session in Mirror controls." : "Test model discovery, then explicitly run a generation in Playground.",
     };
+  });
+  // Account-wide sticky default for the Playground's System box: saved
+  // explicitly (not on every keystroke) so a half-typed edit is never
+  // silently promoted to the account default; see App.tsx's save trigger.
+  app.get("/api/settings/default-system-instructions", async () => ({
+    content: getDefaultSystemInstructions(account()),
+  }));
+  app.put("/api/settings/default-system-instructions", async req => {
+    const { content } = DefaultSystemInstructionsBody.parse(req.body);
+    setDefaultSystemInstructions(account(), content);
+    return { content };
+  });
+  // Per-account keyboard shortcut overrides. Only overrides are stored
+  // server-side - the built-in defaults (DEFAULT_HOTKEYS in the web app's
+  // hotkeys.ts) apply for anything missing here, so resetting a shortcut
+  // is just omitting its key rather than re-sending the default value.
+  app.get("/api/settings/hotkeys", async () => ({ hotkeys: getHotkeys(account()) }));
+  app.put("/api/settings/hotkeys", async req => {
+    const { hotkeys } = HotkeysBody.parse(req.body);
+    setHotkeys(account(), hotkeys);
+    return { hotkeys };
   });
   app.get("/api/conversations/search", async req => ({ items: searchConversations(account(), SearchQuery.parse(req.query).q) }));
   app.get("/api/conversations/:id/branches", async (req, reply) => {

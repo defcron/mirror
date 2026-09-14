@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { recentFailures } from "../dist/api-errors.js";
 
 // Shared store/app for the whole file, following the established pattern
 // (chat-service.test.mjs, openai-edit-history.test.mjs): openai.js's own
@@ -1231,6 +1232,29 @@ test("a non-streaming turn that fails upstream with no explicit statusCode repor
       assert.equal(body.error.type, "server_error");
       assert.equal(body.error.code, "upstream_failure");
       assert.doesNotMatch(body.error.message, /upstream is on fire/);
+    },
+  );
+});
+
+test("a non-streaming failure classified against the drift taxonomy records that category alongside the generic error, without changing the response", async () => {
+  useSession("account-error-drift");
+  await withFetch(
+    stubBackend("account-error-drift", {
+      turnFrames: () => {
+        throw new Error("Unsupported conversation response: no assistant node was received");
+      },
+    }),
+    async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/chat/completions",
+        payload: { model: "auto", messages: [{ role: "user", content: "hi" }] },
+      });
+      assert.equal(res.statusCode, 502, res.body);
+      assert.doesNotMatch(res.body, /no assistant node was received/);
+      const recorded = recentFailures().at(-1);
+      assert.equal(recorded?.code, "upstream_failure");
+      assert.equal(recorded?.protocolCategory, "unsupported-shape");
     },
   );
 });

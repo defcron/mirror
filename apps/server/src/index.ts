@@ -2,6 +2,7 @@ import { registerInsightRoutes } from "./insights.js";
 import { uploadMimeType } from "./upload-mime.js";
 import { registerAssetContentRoute } from "./asset-content.js";
 import { apiError, recordFailure } from "./api-errors.js";
+import { formatStartupFailure } from "./preflight.js";
 import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -578,12 +579,22 @@ return app;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-const app = await buildApp();
-const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST ?? "127.0.0.1";
-await verifyRequiredEgress();
-await app.listen({ port, host });
-app.log.info(`mirror server listening on http://${host}:${port}`);
+let app: Awaited<ReturnType<typeof buildApp>>;
+try {
+  app = await buildApp();
+  const port = Number(process.env.PORT ?? 8787);
+  const host = process.env.HOST ?? "127.0.0.1";
+  await verifyRequiredEgress();
+  await app.listen({ port, host });
+  app.log.info(`mirror server listening on http://${host}:${port}`);
+} catch (error) {
+  // Startup failures (bad config, an incompatible database, unverifiable
+  // WARP egress, a port already in use) are classified into one actionable
+  // line instead of surfacing as a raw unhandled-rejection stack trace -
+  // see preflight.ts for why these four categories specifically.
+  console.error(formatStartupFailure(error));
+  process.exit(1);
+}
 // The frontend also opens a raw WebSocket (realtime notifications) straight
 // to the upstream host; Fastify itself has no built-in WebSocket support, so
 // this proxies the HTTP upgrade through by hand, the same way every other

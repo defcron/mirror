@@ -1,6 +1,9 @@
 import { readResponsesStream, responseText } from "./responses-stream.js";
 import { ConnectionTools } from "./ConnectionTools.js";
 import { ConversationTools } from "./ConversationTools.js";
+import { CommandPalette } from "./CommandPalette.js";
+import { HotkeySettings } from "./HotkeySettings.js";
+import { DEFAULT_HOTKEYS, matchesHotkey } from "./hotkeys.js";
 import { readCompletionStream } from "./completion-stream.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -54,8 +57,9 @@ interface StoredMessageDto {
   content: string;
 }
 
+const FALLBACK_SYSTEM_INSTRUCTIONS = "You are a helpful assistant.";
 const DEFAULT_MESSAGES: PlaygroundMessage[] = [
-  { role: "system", content: "You are a helpful assistant." },
+  { role: "system", content: FALLBACK_SYSTEM_INSTRUCTIONS },
   { role: "user", content: "Say hello in one short sentence." },
 ];
 const STORAGE_KEY_CONVERSATION_ID = "mirror-playground-conversation-id";
@@ -153,6 +157,47 @@ export default function App() {
   });
   const [messages, setMessages] =
     useState<PlaygroundMessage[]>(loadStoredMessages);
+  // Account-wide sticky System box default (server-side, not localStorage -
+  // see store.ts's getDefaultSystemInstructions): follows the account across
+  // browsers/devices instead of one browser's "remember prompt history"
+  // toggle. Loaded once; if this browser's initial system message is still
+  // the untouched fallback (i.e. not something restored from a local
+  // snapshot), it's replaced by the saved account default.
+  const defaultSystemInstructionsLoaded = useRef(false);
+  useEffect(() => {
+    fetch("/api/settings/default-system-instructions")
+      .then(async (res) => (res.ok ? res.json() : { content: "" }))
+      .then(({ content }: { content?: string }) => {
+        if (content) {
+          setMessages((current) =>
+            current[0]?.role === "system" &&
+            current[0].content === FALLBACK_SYSTEM_INSTRUCTIONS
+              ? [{ ...current[0], content }, ...current.slice(1)]
+              : current,
+          );
+        }
+      })
+      .catch(() => undefined)
+      .finally(() => { defaultSystemInstructionsLoaded.current = true; });
+  }, []);
+  // Saving (debounced, and only after the initial load above so the
+  // fetched value is never immediately clobbered by the pre-fetch fallback)
+  // makes the System box "persist across conversations unless edited": every
+  // edit becomes the new account-wide default, in whichever conversation you
+  // make it, matching how the box already behaves within one conversation.
+  const systemInstructions =
+    messages[0]?.role === "system" ? messages[0].content : null;
+  useEffect(() => {
+    if (systemInstructions === null || !defaultSystemInstructionsLoaded.current) return;
+    const timer = setTimeout(() => {
+      fetch("/api/settings/default-system-instructions", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: systemInstructions }),
+      }).catch(() => undefined);
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [systemInstructions]);
   const [conversationsList, setConversationsList] = useState<
     ConversationSummary[]
   >([]);
@@ -310,6 +355,42 @@ export default function App() {
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
         void run();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  // Per-account keyboard shortcut overrides - defaults apply until/unless
+  // the settings panel below (HotkeySettings) saves an override for an
+  // action. Fetched once; edited combos are saved back immediately (see
+  // saveHotkeys), same "no separate save step" flow as the rest of the
+  // Playground's settings.
+  const [hotkeys, setHotkeysState] = useState<Record<string, string>>(DEFAULT_HOTKEYS);
+  useEffect(() => {
+    fetch("/api/settings/hotkeys")
+      .then(async (res) => (res.ok ? res.json() : { hotkeys: {} }))
+      .then(({ hotkeys: saved }: { hotkeys?: Record<string, string> }) => {
+        if (saved && typeof saved === "object")
+          setHotkeysState((current) => ({ ...current, ...saved }));
+      })
+      .catch(() => undefined);
+  }, []);
+  function saveHotkeys(next: Record<string, string>) {
+    setHotkeysState({ ...DEFAULT_HOTKEYS, ...next });
+    fetch("/api/settings/hotkeys", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ hotkeys: next }),
+    }).catch(() => undefined);
+  }
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (matchesHotkey(event, hotkeys.commandPalette)) {
+        event.preventDefault();
+        setCommandPaletteOpen((current) => !current);
+      } else if (event.key === "Escape") {
+        setCommandPaletteOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -481,6 +562,12 @@ export default function App() {
 
   return (
     <div className="playground-app">
+      <CommandPalette
+        open={commandPaletteOpen}
+        disabled={running || readingFiles}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSelect={(id) => void loadConversation(id)}
+      />
       <Header />
       <aside className="playground-sidebar">
         <div className="side-title">Playground</div>
@@ -658,6 +745,38 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  {message.role === "user" && index === messages.length - 1 && (
+                    // A second Run/Stop control right under the newest prompt,
+                    // so a long conversation never requires scrolling back up
+                    // to the top-right corner just to send the next message.
+                    // Same handlers as the button up top; only the
+                    // accessible name differs (deliberately not starting
+                    // with "Run") so existing tests/queries that target the
+                    // one-and-only top Run button by role+name are unaffected.
+                    <div className="inline-run-row">
+                      {running ? (
+                        <button
+                          type="button"
+                          className="stop-button"
+                          aria-label="Stop (same as the Stop button above)"
+                          onClick={() => controller?.abort()}
+                        >
+                          Stop
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="run-button"
+                          aria-label="Send this message (same as the Run button above)"
+                          disabled={readingFiles}
+                          title={runBlockedReason ?? undefined}
+                          onClick={() => void run()}
+                        >
+                          Run <span>⌘ ↵</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -779,10 +898,16 @@ export default function App() {
                   disabled={running || readingFiles}
                   onClick={() => {
                     setConversationId("");
-                    setMessages([
+                    setMessages((current) => [
                       {
                         role: "system",
-                        content: "You are a helpful assistant.",
+                        // Keep whatever the box currently holds (the sticky
+                        // account-wide default, or a same-session edit) -
+                        // "New" clears the conversation, not the default.
+                        content:
+                          current[0]?.role === "system"
+                            ? current[0].content
+                            : FALLBACK_SYSTEM_INSTRUCTIONS,
                       },
                       { role: "user", content: "" },
                     ]);
@@ -861,6 +986,7 @@ export default function App() {
               </p>
             </label>
             <ConversationTools conversationId={conversationId} disabled={running || readingFiles} onSelect={id => void loadConversation(id)} />
+            <HotkeySettings hotkeys={hotkeys} disabled={running || readingFiles} onSave={saveHotkeys} />
             <ConnectionTools domain={domain} apiKey={apiKey} generationSucceeded={status === "Completed"} />
             <div className="request-preview">
               <span>Request URL</span>

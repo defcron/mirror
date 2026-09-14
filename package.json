@@ -21,7 +21,8 @@
     "gen-api-key": "node scripts/gen-api-key.mjs",
     "coverage": "npm run build --workspace=packages/protocol && npm run build --workspace=apps/web && npm run build --workspace=apps/server && c8 npm run test:unit",
     "test:suites": "node scripts/check-test-suites.mjs",
-    "test:unit": "npm run test:suites && npm run test --workspace=apps/web && node --experimental-test-module-mocks --test --test-timeout=60000 packages/protocol/tests/*.test.mjs apps/server/tests/*.test.mjs"
+    "test:unit": "npm run test:suites && npm run test --workspace=apps/web && node --experimental-test-module-mocks --test --test-timeout=60000 packages/protocol/tests/*.test.mjs apps/server/tests/*.test.mjs",
+    "protocol-canary": "node scripts/protocol-canary.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

@@ -167,6 +167,77 @@ test("GET /api/health reports storage, configuration, and egress status", async 
   assert.equal(afterBody.ok, true, "healthy db + configured session + verified egress -> ok");
 });
 
+// --- /api/settings/default-system-instructions ----------------------------
+
+test("GET/PUT /api/settings/default-system-instructions round-trips a sticky, per-account default", async () => {
+  useSession("acct-default-system-instructions");
+  const empty = await app.inject({ url: "/api/settings/default-system-instructions", headers: AUTH });
+  assert.equal(empty.json().content, "");
+
+  const saved = await app.inject({
+    method: "PUT",
+    url: "/api/settings/default-system-instructions",
+    headers: { ...AUTH, "content-type": "application/json" },
+    payload: { content: "Always answer in metric." },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.equal(saved.json().content, "Always answer in metric.");
+
+  const read = await app.inject({ url: "/api/settings/default-system-instructions", headers: AUTH });
+  assert.equal(read.json().content, "Always answer in metric.");
+});
+
+test("PUT /api/settings/default-system-instructions rejects an oversized value with 400", async () => {
+  useSession("acct-default-system-instructions-2");
+  const res = await app.inject({
+    method: "PUT",
+    url: "/api/settings/default-system-instructions",
+    headers: { ...AUTH, "content-type": "application/json" },
+    payload: { content: "x".repeat(20_001) },
+  });
+  assert.equal(res.statusCode, 400);
+});
+
+// --- /api/settings/hotkeys -------------------------------------------------
+
+test("GET/PUT /api/settings/hotkeys round-trips per-account keyboard shortcut overrides", async () => {
+  useSession("acct-hotkeys");
+  const empty = await app.inject({ url: "/api/settings/hotkeys", headers: AUTH });
+  assert.deepEqual(empty.json().hotkeys, {});
+
+  const saved = await app.inject({
+    method: "PUT",
+    url: "/api/settings/hotkeys",
+    headers: { ...AUTH, "content-type": "application/json" },
+    payload: { hotkeys: { commandPalette: "mod+shift+p" } },
+  });
+  assert.equal(saved.statusCode, 200);
+  assert.deepEqual(saved.json().hotkeys, { commandPalette: "mod+shift+p" });
+
+  const read = await app.inject({ url: "/api/settings/hotkeys", headers: AUTH });
+  assert.deepEqual(read.json().hotkeys, { commandPalette: "mod+shift+p" });
+
+  // Resetting (an empty override map) clears it back to defaults-apply-client-side.
+  const reset = await app.inject({
+    method: "PUT",
+    url: "/api/settings/hotkeys",
+    headers: { ...AUTH, "content-type": "application/json" },
+    payload: { hotkeys: {} },
+  });
+  assert.deepEqual(reset.json().hotkeys, {});
+});
+
+test("PUT /api/settings/hotkeys rejects a combo string that's too long with 400", async () => {
+  useSession("acct-hotkeys-2");
+  const res = await app.inject({
+    method: "PUT",
+    url: "/api/settings/hotkeys",
+    headers: { ...AUTH, "content-type": "application/json" },
+    payload: { hotkeys: { commandPalette: "mod+" + "k".repeat(60) } },
+  });
+  assert.equal(res.statusCode, 400);
+});
+
 // --- /api/session --------------------------------------------------------------
 
 test("POST /api/session verifies, persists, and claims default-account data", () =>

@@ -557,3 +557,50 @@ a {
   .settings-panel, .prompt-panel, .response-panel { width: 100%; min-width: 0; }
   .workbench { min-width: 0; }
 }
+.command-palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+  z-index: 100;
+}
+.command-palette {
+  width: min(560px, 90vw);
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  padding: 12px;
+}
+.command-palette input {
+  width: 100%;
+  font-size: 16px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+.command-palette ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.command-palette li button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.command-palette li button.command-palette-active,
+.command-palette li button:hover {
+  background: #eef2ff;
+}
+.inline-run-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}

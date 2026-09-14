@@ -126,4 +126,72 @@ test("syncRemoteConversations preserves assistant parent when upstream entry lac
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("default system instructions are empty until set, are stored per account, and round-trip", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mirror-store-"));
+  process.env.MIRROR_DATA_DIR = dir;
+  const store = await import(`../dist/store.js?test=${Date.now()}`);
+  try {
+    assert.equal(store.getDefaultSystemInstructions("default"), "");
+    store.setDefaultSystemInstructions("default", "Always answer in metric.");
+    assert.equal(store.getDefaultSystemInstructions("default"), "Always answer in metric.");
+    // A different account's default is independent.
+    assert.equal(store.getDefaultSystemInstructions("other-account"), "");
+    store.setDefaultSystemInstructions("default", "Reply concisely.");
+    assert.equal(store.getDefaultSystemInstructions("default"), "Reply concisely.");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("hotkeys are empty (defaults apply client-side) until overridden, are stored per account, and tolerate garbage", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mirror-store-"));
+  process.env.MIRROR_DATA_DIR = dir;
+  const store = await import(`../dist/store.js?test=${Date.now()}`);
+  try {
+    assert.deepEqual(store.getHotkeys("default"), {});
+    store.setHotkeys("default", { commandPalette: "mod+shift+p" });
+    assert.deepEqual(store.getHotkeys("default"), { commandPalette: "mod+shift+p" });
+    // A different account's overrides are independent.
+    assert.deepEqual(store.getHotkeys("other-account"), {});
+    store.setHotkeys("default", {});
+    assert.deepEqual(store.getHotkeys("default"), {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a hotkeys setting that isn't a JSON object (corrupted or hand-edited) is tolerated as no overrides, and non-string values inside a valid object are dropped", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "mirror-store-"));
+  process.env.MIRROR_DATA_DIR = dir;
+  const store = await import(`../dist/store.js?test=${Date.now()}`);
+  const { DatabaseSync } = await import("node:sqlite");
+  try {
+    store.setDefaultSystemInstructions("placeholder", ""); // ensure the DB file/schema exists
+    const raw = new DatabaseSync(path.join(dir, "mirror.db"));
+    try {
+      const now = new Date().toISOString();
+      raw
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+        .run("hotkeys:garbage-account", "not json at all", now);
+      raw
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+        .run("hotkeys:array-account", "[1,2,3]", now);
+      raw
+        .prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)")
+        .run(
+          "hotkeys:mixed-account",
+          JSON.stringify({ commandPalette: "mod+k", weird: 42 }),
+          now,
+        );
+    } finally {
+      raw.close();
+    }
+    assert.deepEqual(store.getHotkeys("garbage-account"), {});
+    assert.deepEqual(store.getHotkeys("array-account"), {});
+    assert.deepEqual(store.getHotkeys("mixed-account"), { commandPalette: "mod+k" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 });

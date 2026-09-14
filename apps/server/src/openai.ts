@@ -8,6 +8,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
   ChatGptBackendClient,
+  classifyProtocolFailure,
   normalizeGizmos,
   normalizeModels,
   type NormalizedConversationEvent,
@@ -1042,8 +1043,14 @@ export async function registerOpenAiRoutes(
       const message = error instanceof Error ? error.message : "Generation failed";
       const status = Number((error as { statusCode?: number }).statusCode ?? 502);
       const envelope = apiError(status, message, req.id);
+      // Classify against the private-protocol drift taxonomy (MIR-31) so a
+      // real backend-api shape change is distinguishable from an ordinary
+      // expired session or rate limit in diagnostics - this never changes
+      // the sanitized message/status sent to the caller, only an internal,
+      // already-generic-safe category recorded alongside it.
+      const protocolCategory = classifyProtocolFailure(error).category;
+      recordFailure(envelope.error.code, req.id, protocolCategory === "unknown" ? null : protocolCategory);
       if (body.stream) {
-        recordFailure(envelope.error.code, req.id);
         if (responses) responses.fail(envelope.error.message, envelope.error.code);
         else sse(reply, envelope);
         reply.raw.end();

@@ -110,3 +110,16 @@ Do not overwrite the failed database or force a lower schema version.
 The offline drill proves the backup/restore mechanism. A real Compose volume
 restore with production-shaped data and authenticated continuation is a
 separate release acceptance task.
+
+## Tested revision (2026-09-14)
+
+Base commit `e25cae9563407d9fb1d484191a511a42e18e0cbc` (working tree had further
+uncommitted changes on top from this pass - see TODO.md MIR-31/32/34/35 -
+not yet committed). On this base plus those changes: `npm run typecheck`,
+`npm run coverage` (552/552 tests, 100% line/branch/function/statement on
+every file per `.c8rc.json`'s per-file gate), and `npm run manifest` all
+passed from the actual working tree (not a from-scratch `npm ci` - see
+TODO.md MIR-20 for that remaining gap). `npm audit` reported 0
+vulnerabilities. The Playwright/browser e2e suite could not be run in this
+environment (see TODO.md MIR-21) - this is not proof it passes, only that
+everything else does.

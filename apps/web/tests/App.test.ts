@@ -702,6 +702,73 @@ test("the New button resets the conversation id and the transcript to the defaul
   assert.equal(screen.getAllByRole("textbox").filter((el) => el.tagName === "TEXTAREA").length, 2);
 });
 
+test("New preserves an edited System box instead of resetting it to the fallback", async () => {
+  await renderApp();
+  const systemTextarea = screen.getAllByRole("textbox").find(
+    (el) => el.tagName === "TEXTAREA" && (el as HTMLTextAreaElement).value === "You are a helpful assistant.",
+  ) as HTMLTextAreaElement;
+  fireEvent.change(systemTextarea, { target: { value: "Always answer in metric." } });
+  fireEvent.click(screen.getByRole("button", { name: "New" }));
+  assert.ok(screen.getByDisplayValue("Always answer in metric."));
+  assert.equal(screen.queryByDisplayValue("You are a helpful assistant."), null);
+});
+
+test("a saved account-wide default system instruction preloads a fresh System box", async () => {
+  await renderApp([
+    [/^\/api\/settings\/default-system-instructions$/, () => jsonResponse({ content: "Reply concisely, always in Rust code examples." })],
+  ]);
+  assert.ok(screen.getByDisplayValue("Reply concisely, always in Rust code examples."));
+  assert.equal(screen.queryByDisplayValue("You are a helpful assistant."), null);
+});
+
+test("a failed default-system-instructions fetch is tolerated, keeping the fallback System text", async () => {
+  await renderApp([
+    [/^\/api\/settings\/default-system-instructions$/, () => new Response("", { status: 500 })],
+  ]);
+  assert.ok(screen.getByDisplayValue("You are a helpful assistant."));
+});
+
+test("New falls back to the default System text when the first row isn't role=system at the time", async () => {
+  await renderApp();
+  const selects = screen.getAllByRole("combobox").filter((el) => el.closest(".message-editor"));
+  fireEvent.change(selects[0] as HTMLSelectElement, { target: { value: "developer" } });
+  fireEvent.click(screen.getByRole("button", { name: "New" }));
+  assert.ok(screen.getByDisplayValue("You are a helpful assistant."));
+});
+
+test("a saved account-wide default arriving after the System box was already edited away from the fallback is not applied", async () => {
+  const deferredDefault = deferred<Response>();
+  await renderApp([
+    [/^\/api\/settings\/default-system-instructions$/, () => deferredDefault.promise],
+  ]);
+  const systemTextarea = screen.getAllByRole("textbox").find(
+    (el) => el.tagName === "TEXTAREA" && (el as HTMLTextAreaElement).value === "You are a helpful assistant.",
+  ) as HTMLTextAreaElement;
+  fireEvent.change(systemTextarea, { target: { value: "Edited before the default arrived." } });
+  await act(async () => {
+    deferredDefault.resolve(jsonResponse({ content: "Some other saved default" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  assert.ok(screen.getByDisplayValue("Edited before the default arrived."));
+  assert.equal(screen.queryByDisplayValue("Some other saved default"), null);
+});
+
+test("editing the System box saves it as the new account-wide default after a short pause", async () => {
+  const puts: unknown[] = [];
+  await renderApp([
+    [/^\/api\/settings\/default-system-instructions$/, (url, init) => {
+      if (init?.method === "PUT") { puts.push(JSON.parse(String(init.body))); return jsonResponse({ content: "" }); }
+      return jsonResponse({ content: "" });
+    }],
+  ]);
+  const systemTextarea = screen.getAllByRole("textbox").find(
+    (el) => el.tagName === "TEXTAREA" && (el as HTMLTextAreaElement).value === "You are a helpful assistant.",
+  ) as HTMLTextAreaElement;
+  fireEvent.change(systemTextarea, { target: { value: "Always answer in metric." } });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 850)); });
+  assert.deepEqual(puts.at(-1), { content: "Always answer in metric." });
+});
+
 // ---------------------------------------------------------------------------
 // Keyboard shortcut
 // ---------------------------------------------------------------------------
@@ -714,6 +781,122 @@ test("Ctrl/Cmd+Enter triggers a run", async () => {
   });
   await screen.findByText("Completed");
   assert.ok(screen.getByDisplayValue("via keyboard"));
+});
+
+// ---------------------------------------------------------------------------
+// Command palette / configurable hotkeys
+// ---------------------------------------------------------------------------
+
+test("Cmd/Ctrl+K opens the quick-open command palette by default, and Escape closes it", async () => {
+  await renderApp();
+  assert.equal(screen.queryByRole("dialog"), null);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+  });
+  assert.ok(screen.getByRole("dialog"));
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  assert.equal(screen.queryByRole("dialog"), null);
+});
+
+test("a saved hotkeys override changes which combo opens the command palette", async () => {
+  await renderApp([
+    [/^\/api\/settings\/hotkeys$/, () => jsonResponse({ hotkeys: { commandPalette: "mod+shift+p" } })],
+  ]);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+  });
+  assert.equal(screen.queryByRole("dialog"), null, "the old default no longer opens it");
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "p", ctrlKey: true, shiftKey: true, bubbles: true }));
+  });
+  assert.ok(screen.getByRole("dialog"));
+});
+
+test("a non-ok hotkeys fetch is tolerated, leaving the default binding in place", async () => {
+  await renderApp([
+    [/^\/api\/settings\/hotkeys$/, () => new Response("", { status: 500 })],
+  ]);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+  });
+  assert.ok(screen.getByRole("dialog"));
+});
+
+test("selecting a result in the command palette loads that conversation", async () => {
+  await renderApp([
+    [/^\/api\/conversations\/search$/, () => jsonResponse({ items: [{ id: "conv-9", title: "Picked from palette" }] })],
+    [/^\/api\/conversations\/conv-9$/, () => jsonResponse({ conversation: { id: "conv-9" }, messages: [{ role: "user", content: "hi" }] })],
+  ]);
+  await act(async () => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }));
+  });
+  fireEvent.change(screen.getByLabelText("Jump to a conversation"), { target: { value: "picked" } });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+  fireEvent.click(screen.getByRole("button", { name: "Picked from palette" }));
+  await screen.findByText("Loaded");
+  assert.equal(screen.queryByRole("dialog"), null);
+});
+
+test("changing a shortcut in the keyboard-shortcuts panel saves it to the server", async () => {
+  const puts: unknown[] = [];
+  await renderApp([
+    [/^\/api\/settings\/hotkeys$/, (url, init) => {
+      if (init?.method === "PUT") { puts.push(JSON.parse(String(init.body))); return jsonResponse({ hotkeys: {} }); }
+      return jsonResponse({ hotkeys: {} });
+    }],
+  ]);
+  fireEvent.click(screen.getByText("Keyboard shortcuts"));
+  fireEvent.click(screen.getByRole("button", { name: "Change" }));
+  fireEvent.keyDown(
+    screen.getByLabelText("Press a key combo for Quick-open conversation search"),
+    { key: "p", ctrlKey: true, shiftKey: true },
+  );
+  assert.deepEqual(puts.at(-1), { hotkeys: { commandPalette: "mod+shift+p" } });
+});
+
+// ---------------------------------------------------------------------------
+// Inline "Run" control under the newest user prompt
+// ---------------------------------------------------------------------------
+
+test("a second Run control appears under the newest user message and sends the same request", async () => {
+  await renderApp([[/^\/v1\/chat\/completions$/, () => jsonResponse({ choices: [{ message: { content: "via inline run" } }] })]]);
+  fireEvent.click(screen.getByLabelText("Stream response")); // turn OFF streaming
+  fireEvent.change(lastUserTextarea(), { target: { value: "Hello from the bottom button" } });
+  const inline = screen.getByRole("button", { name: "Send this message (same as the Run button above)" });
+  fireEvent.click(inline);
+  await screen.findByText("Completed");
+  assert.ok(screen.getByDisplayValue("via inline run"));
+});
+
+test("the inline Run control is absent when the last row isn't a user message", async () => {
+  await renderApp();
+  const selects = screen.getAllByRole("combobox").filter((el) => el.closest(".message-editor"));
+  fireEvent.change(selects.at(-1) as HTMLSelectElement, { target: { value: "developer" } });
+  assert.equal(screen.queryByRole("button", { name: /Send this message/ }), null);
+});
+
+test("the inline control switches to Stop while a run is in flight, and aborts the same controller", async () => {
+  await renderApp([
+    [
+      /^\/v1\/chat\/completions$/,
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const error = new Error("The operation was aborted.");
+            error.name = "AbortError";
+            reject(error);
+          });
+        }),
+    ],
+  ]);
+  fireEvent.change(lastUserTextarea(), { target: { value: "Long one" } });
+  const inline = screen.getByRole("button", { name: "Send this message (same as the Run button above)" });
+  fireEvent.click(inline);
+  const inlineStop = await screen.findByRole("button", { name: "Stop (same as the Stop button above)" });
+  fireEvent.click(inlineStop);
+  await screen.findByText("Stopped");
 });
 
 // ---------------------------------------------------------------------------

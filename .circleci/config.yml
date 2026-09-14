@@ -1,0 +1,48 @@
+# CircleCI - a free-for-open-source, third-party CI service, deliberately
+# independent of GitHub Actions billing. Added 2026-09-14 because GitHub
+# Actions on this account is blocked by an unpaid-invoice suspension (that
+# suspension only affects GitHub's own Actions infrastructure, not
+# integrations that just talk to GitHub over the API/webhooks). Cirrus CI
+# was tried first but was unreachable (ERR_CONNECTION_CLOSED) from Jeremy's
+# location, so this uses CircleCI instead - a long-established, widely
+# reachable provider with a generous open-source free tier (400,000 Linux
+# credits/month at last check).
+#
+# Activation is a one-time manual step Jeremy has to do himself (needs his
+# GitHub login): sign in at https://circleci.com/vcs-authorize/, connect the
+# defcron/mirror GitHub repo, and follow its prompt to start building from
+# this file - no separate app install step like Cirrus needed a marketplace
+# authorization for. Once that's done, pushes/PRs trigger this automatically
+# and the badge in README.md goes live.
+#
+# Mirrors the "verify" job from .github/workflows/ci.yml (typecheck, the
+# 100%-enforced coverage gate, build, the storage backup/restore drill,
+# Playwright e2e, and the manifest check). Does NOT yet port the "container"
+# job (building the Docker image and verifying offline restore inside it) -
+# see TODO.md for that follow-up.
+version: 2.1
+
+jobs:
+  verify:
+    docker:
+      - image: cimg/node:24.0
+    steps:
+      - checkout
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run coverage
+      - run: npm run build
+      - run: npm run storage:drill
+      - run:
+          name: Install Playwright's Chromium and OS dependencies
+          command: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm run manifest -- --check
+      - store_artifacts:
+          path: test-results
+          destination: test-results
+
+workflows:
+  verify:
+    jobs:
+      - verify

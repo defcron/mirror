@@ -11,12 +11,17 @@ const { default: Fastify } = await import("fastify");
 let app, listenOptions, checkEgress;
 const timers = [];
 let verified = false;
+let failListenOnce = false;
 mock.module("fastify", { defaultExport: options => {
   app = Fastify(options);
   const listen = app.listen.bind(app);
   app.listen = async options => {
     assert.equal(verified, true, "egress must be verified before binding");
     listenOptions = options;
+    if (failListenOnce) {
+      failListenOnce = false;
+      throw Object.assign(new Error("listen EADDRINUSE: address already in use 127.0.0.1:8787"), { code: "EADDRINUSE" });
+    }
     // Always bind a private ephemeral test port, including for the defaults case.
     return listen({ port: 0, host: "127.0.0.1" });
   };
@@ -24,6 +29,29 @@ mock.module("fastify", { defaultExport: options => {
 } });
 test.describe("server / startup", () => {
 test.after(async () => { timers.forEach(clearInterval); await app?.close(); rmSync(dir, { recursive: true, force: true }); });
+
+test("a failed bind (e.g. the port is already in use) is classified and exits 1 instead of crashing raw", async t => {
+  t.mock.method(globalThis, "fetch", async () => { verified = true; return new Response("warp=on\n"); });
+  const originalArgv = process.argv;
+  process.env.PORT = "0";
+  process.env.HOST = "127.0.0.1";
+  verified = false;
+  failListenOnce = true;
+  let exit;
+  const exited = new Promise(resolve => { exit = resolve; });
+  t.mock.method(process, "exit", code => { exit(code); });
+  let logged = "";
+  t.mock.method(console, "error", (...args) => { logged = args.join(" "); });
+  try {
+    process.argv = [process.execPath, fileURLToPath(new URL("../dist/index.js", import.meta.url))];
+    await import(`../dist/index.js?startup=failListen`);
+    assert.equal(await exited, 1);
+    assert.match(logged, /^mirror failed to start \[port-in-use\]: listen EADDRINUSE/);
+    assert.match(logged, /Next step: Another process is already using this port/);
+  } finally {
+    process.argv = originalArgv;
+  }
+});
 
 test("executable startup applies defaults, handles failed upgrades, and closes on egress loss", async t => {
   let egressLost = false;

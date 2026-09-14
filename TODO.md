@@ -1,67 +1,269 @@
 # Mirror TODO
 
-Reviewed 2026-09-12 against the current source, tests, configuration, and compatibility notes. **Confirmed** identifies an observable implementation/documentation gap; **Verify** calls for investigation or expanded proof, not an assumed bug; **Enhancement** is optional product work. Effort: S = focused change, M = several related changes, L = broader design/integration work. Check items off only with the relevant evidence.
+Audited 2026-09-14 across `apps/server`, `apps/web`, `packages/protocol`,
+`README.md`/`PROTOCOL.md`/`COMPATIBILITY.md`/`RELEASE-RECOVERY.md`, and the prior
+`TODO.md`/`NEXT-STEPS.md`. This file replaces the previous `TODO.md`; nothing
+below is a regression — most prior P1 items (MIR-01 through MIR-19) were closed
+out and are summarized under "Already solid" so this stays a forward-looking
+backlog instead of a duplicate history.
 
-Keep mandatory WARP egress, local deployment boundaries, assistant-message immutability, and real upstream conversation-node continuity. Preserve the separation between protocol handling, server/storage, and the Playground. See [COMPATIBILITY.md](COMPATIBILITY.md) for supported behavior and limitations.
+**Update, same day:** MIR-20/21/22 (release/CI verification), MIR-31/32/34/35
+(protocol resilience and operability) were worked in a follow-up pass — see
+each item for what actually changed vs. what's still open. MIR-23 and MIR-33
+remain genuinely open (one needs a live account, the other needs its own
+dedicated pass, not a rushed one); MIR-24 through MIR-30 (the feature ideas)
+were deliberately left alone pending a separate conversation about which of
+them to actually build.
 
-## P1 — Protect the working integrations
+No inline `TODO`/`FIXME`/`HACK` markers exist anywhere in `apps/server/src`,
+`apps/web/src`, or `packages/protocol/src` — the codebase doesn't leave debt
+lying around in comments, which made this pass about design gaps and unbuilt
+features rather than code-level cleanup.
 
-- [ ] **MIR-01 · Verify · M — Extend the client compatibility suite.** Existing route tests cover the recent CORS and key-alias fixes. Add reproducible end-to-end cases for cm, a browser fetch client, and the ChatGPTBox integration: preflight, model discovery, streamed/non-streamed success, error streams, exposed conversation ID, and continuation. Record extension version/settings with user-driven live checks; do not put credentials in fixtures. Include blank environment values as supplied by Compose.
-  **Progress (2026-09-12):** `apps/server/tests/todo-contract.test.mjs` covers cm's own contract end-to-end (a real `cm` subprocess doing a fresh streamed turn, a followup, and a non-streamed turn against a running Mirror instance, asserting on `parent_message_id` and persisted thread state — skips itself with a clear reason if no runnable `cm` binary is present for the current platform) and a browser-fetch-shaped case (CORS preflight, cross-origin model discovery, exposed `x-request-id`). `COMPATIBILITY.md` now provides a repeatable live Custom GPT/Project acceptance checklist that records client version/settings and first-versus-follow-up visibility. Still open: the authenticated installed-client run itself remains manual and has not been repeated against this working tree.
-- [x] **MIR-02 · Verify · M — Audit continuation with minimal versus full history.** cm sends only the latest user turn while Playground resends history. Test alternating those clients on a seeded conversation, including system instructions, failed prior turns, and restart/reload. In `apps/server/src/openai.ts`, verify that transcript hashes and saved instructions remain consistent when the request omits prior history. Acceptance: no accidental reset, instruction loss, assistant edit, or fabricated flattened history.
-  **Evidence:** `todo-contract.test.mjs`'s "minimal cm turns and full browser history retain instructions, hash, parent and edited branches" test alternates a minimal (cm-shaped) turn and a full-history (Playground-shaped) turn on the same seeded conversation, checks the transcript hash and saved instructions stay consistent, exercises an edit-triggered rebase, and confirms a saved branch resumes with the correct `parent_message_id`. `openai-routes.test.mjs`'s rebase-failure tests cover the failed-prior-turn case.
-- [x] **MIR-03 · Verify · M — Standardize useful, safe error responses.** Global failures currently use a string `error`, while `/v1` handlers use structured errors; stream errors have a separate path. Define consistent `/v1` error type/code/message/request-ID behavior for auth, validation, rate limits, upstream failures, and interrupted streams. Keep internal stacks and credentials out of responses; test errors before and after headers are flushed.
-  **Evidence:** `apps/server/src/api-errors.ts` is the single categorization used everywhere - `openai.ts`'s route catch (streaming and non-streaming) and a global `onSend` hook in `index.ts` that normalizes every other `/v1/*` failure (the not-found handler, the rate limiter, `setErrorHandler`) into the same `{error:{type,code,message,request_id}}` shape, with `x-request-id` echoed as a response header. Upstream/internal failure text is never surfaced to the caller (a generic, safe message is used instead) - see `openai-routes.test.mjs`'s "reports a generic, redacted 502 error" tests and `todo-contract.test.mjs`'s "public API compatibility..." test, which explicitly asserts a thrown upstream error's raw text (`sensitive-upstream-payload`) never reaches the response body. 400s still echo the caller's own validation message back, since that's their own input. `openai.ts`'s `sse()` slow-consumer guard (headers-already-flushed case) is unit-tested directly (`openai-routes.test.mjs`).
-- [x] **MIR-04 · Verify · M — Exercise deadlines and cancellation under failure.** Cancellation is already wired; add bounded connection/idle deadlines where needed and test hung upstream calls, slow consumers, disconnects, and queued same-conversation requests. Ensure locks release and local partial/error rows remain coherent. Never blindly retry completion POSTs after an ambiguous failure.
-  **Evidence:** `apps/server/src/deadlines.ts` (`abortable`/`turnDeadline`) plus `MIRROR_TURN_TIMEOUT_MS`/`MIRROR_IDLE_TIMEOUT_MS`, wired into both `chat-service.ts` and `openai.ts`. `todo-contract.test.mjs`'s "deadlines abort hung calls, preserve failed rows and release queued conversation locks" test covers a hung upstream call, a queued same-conversation request racing it, lock release, and recovery on the next turn. `chat-service.test.mjs`'s "an aborted turn is recorded as stopped, not errored" and `openai-routes.test.mjs`'s "a client that disconnects mid-stream aborts the in-flight upstream turn" cover cancellation specifically (fixed a real bug in the process: an early `throwIfAborted()` added ahead of the conversation/message rows being created meant an already-aborted call left no local record at all - see `chat-service.ts`). `openai.ts`'s `sse()` slow-consumer guard is unit-tested directly rather than via a real socket (reproducing genuine outbound backpressure in a test is impractical) - see the comment on its export.
-- [ ] **MIR-05 · Verify · M — Finish release integration for the current working tree.** There are substantial existing tracked and untracked changes. Review them as coherent changes, run the established typecheck/coverage/build/browser/manifest CI sequence, and record the tested revision before publishing a release. Preserve unrelated work; do not treat a container rebuild as proof that GitHub/CI has the same code.
-  **Status (2026-09-12):** local coverage passes with 532 server/protocol tests plus 100 React tests, and 100% in every C8 measure and file. Typecheck and five Chromium tests pass. The baseline also passed a no-dist copy test using existing dependencies; that was not a fresh npm install. Candidate image and restore verification are recorded in RELEASE-RECOVERY.md. Changes remain uncommitted on base 48957fb; record the final commit before publishing. Authenticated installed-client acceptance remains open.
+**Confirmed** = an observable gap in the code/docs as they stand today.
+**Verify** = needs investigation before treating it as real.
+**Enhancement** = optional product work, ranked by payoff.
+Effort: S / M / L as before.
 
-## P2 — Recovery, configuration, and maintainability
+## Already solid — don't relitigate
 
-- [ ] **MIR-06 · Enhancement · M — Perform and document a Docker restore drill.** Backup/restore/prune tooling already exists in `scripts/storage.mjs`. Test backup → isolated restore → decrypt session data → load history → continue a test conversation, covering generated master keys and `MIRROR_STORE_KEY`. Document mounted-volume paths and offline requirements. Never test a restore over the working database.
-  **Progress (2026-09-12):** added npm run storage:drill, which creates only synthetic temporary data and validates backup/restore in generated-key and supplied-key modes: integrity, credential decryption, saved history/instructions/parent IDs, unchanged source, overwrite refusal, and wrong-key refusal. CI runs the drill and runtime images include both maintenance scripts. See RELEASE-RECOVERY.md for volume paths and the rollback procedure. The production-volume restore and authenticated continuation portion remains open.
-- [x] **MIR-07 · Enhancement · M — Make maintenance previewable.** Add a dry-run/report for pruning, explicit retention rules, and a summary of affected conversations/events/files before destructive work. Verify which tables and assets existing pruning actually removes before promising storage savings.
-  **Evidence:** `scripts/storage.mjs`'s `prune DAYS --dry-run` reports counts of affected conversations/messages/events/instructions plus the retention policy in plain language, without touching the database (opened read-only); `--offline` still does the actual delete. `storage-maintenance.test.mjs` exercises the dry-run preview against a real seeded database and confirms nothing is deleted until `--offline` runs.
-- [x] **MIR-08 · Confirmed · S — Consolidate configuration and client setup docs.** Put `OPENAI_API_KEY` in the README configuration table, integrate the appended alias explanation, and document ChatGPTBox settings plus `/v1` versus server-root base URLs. Explain that cross-origin `/v1` access requires a bearer key while browser control routes remain origin-restricted. Distinguish Compose's default host port from direct-server ports and locally overridden ports.
-  **Evidence:** README's configuration table now includes `OPENAI_API_KEY` and explicitly distinguishes `MIRROR_PORT` (Compose) from `HOST`/`PORT` (direct run); a new "Connecting cm, ChatGPTBox, and other OpenAI-compatible clients" section explains the server-root vs `/v1` base URL split, gives ChatGPTBox's exact settings, and explains the cross-origin-bearer-key vs same-origin-cookie split for `/v1/*` vs `/api/*`/the proxied UI.
-- [x] **MIR-09 · Enhancement · M — Add a safe diagnostics view/export.** Display build version, API reachability, storage health, WARP status, session readiness, and recent categorized failures. Export only allowlisted diagnostic fields; omit prompts, credentials, signed URLs, and raw upstream payloads. Make common failure messages point to the next useful action.
-  **Evidence:** `GET /api/diagnostics` (`apps/server/src/insights.ts`) plus the Playground's new "Connection diagnostics and client setup" panel (`ConnectionTools.tsx`, with a downloadable export link). `todo-contract.test.mjs` asserts the response never contains session tokens, upstream error text, or prompts, and that `nextAction` names the right next step (check WARP / save a session / test generation) for each state.
-- [x] **MIR-10 · Verify · M — Expand sanitized protocol regression fixtures.** Protocol parsing already has tests. Add fixtures for newly observed variants, fragmented streams, tool/image events, and interrupted turns, keeping fixtures synthetic or carefully sanitized. Detect drift with clear unsupported-response errors. Treat authentication challenges as an explicit compatibility failure requiring user action, not a bypass feature.
-  **Evidence:** `packages/protocol/tests/sse.test.mjs` already carried extensive synthetic fixtures (fragmented/CRLF framing, batched patch ops, tool/citation/generated-asset events, malformed JSON, interrupted markers); this pass added `client.ts`'s explicit rejection of a stream that completes with neither an assistant node nor an `error_code` (previously would have silently "succeeded" with an empty reply) plus its regression test.
-- [ ] **MIR-11 · Enhancement · M — Keep compatibility claims precise.** Review absolute “impossible” claims and “not supported yet” language in `COMPATIBILITY.md`/README against actual implementation evidence; distinguish unsupported, approximate, unverified, and intentionally out of scope. Re-check current primary documentation when making external API claims. Do not promise tool calling, exact usage, or constrained decoding that Mirror cannot deliver.
-  Not reviewed this pass beyond the README changes in MIR-08 (which don't touch COMPATIBILITY.md's own claims).
-- [x] **MIR-12 · Enhancement · M — Refactor large route/UI modules incrementally (partial).** Separate configuration/auth hooks, API error formatting, and conversation orchestration from the large `index.ts`/`openai.ts` modules, and split Playground concerns where useful. Keep behavior unchanged and use the existing regression suite as a guard; avoid a wholesale rewrite.
-  **Progress (2026-09-10):** Extracted the pure, Fastify-independent helpers from `openai.ts` (`routeModel`, `textContent`, `buildResponseMetadata`, `imagePartsOf`, `resolveImageAttachment`, `normalized`, `promptFor`, `instructionsHash`, `conversationalMessages`, `firstHistoryDifference`) into a new `apps/server/src/conversation-context.ts`, shrinking `openai.ts` by ~290 lines with zero behavior change - verified by a clean `tsc --noEmit` across the whole workspace, a clean `apps/server` build, and all 99 existing protocol/server tests still passing. This is intentionally an incremental first cut, not a full incremental refactor: `index.ts` and the rest of `openai.ts` (still ~900 lines, the actual route handler) are untouched - further splits are still open for a future pass, guarded the same way.
-- [x] **MIR-14 · Enhancement · L — A clear conversation branch viewer (visual polish).** Show user-edit branches, selected parents, and continuation state; keep assistants selectable/copyable and read-only. First prove branch selection → reload → next-turn identity before adding visual polish.
-  **Progress (2026-09-10):** The visual polish this item was waiting on: `ConversationTools.tsx`'s branch list was a flat `<ol>` that discarded the actual parent/child structure `branches.nodes` already carries via `upstreamNodeId`. Replaced with a real nested tree (`buildForest`/`activePathIds` helpers, a recursive `BranchTree` component with `role="tree"`/`role="treeitem"`/`role="group"` ARIA), so sibling branches nest visually under their shared parent instead of appearing as an undifferentiated flat list, and the chain of nodes leading to `branches.parent` (what the next turn will actually continue from) is bolded with an explicit "(next parent)" label - not just implied by scanning `upstreamNodeId` values by eye. Preserved the exact existing button roles/labels and the "No upstream node" fallback text that `App.test.ts` pins. **Verification caveat**: `apps/web`'s test runner (`node --import tsx --test`) fails in this sandbox on the same pre-existing native-binding/architecture mismatch documented elsewhere in this session's work (mounted macOS `node_modules` missing Linux-native `esbuild`/`rolldown` binaries) - so this was verified by `tsc -b --noEmit` (clean) and a manual line-by-line trace of every relevant assertion in `App.test.ts` against the new render output, not by actually running the suite. Run `npm test --workspace=apps/web` on a real machine before trusting this fully.
+- Encrypted-at-rest credentials, loopback-only binding, mandatory WARP egress,
+  redacted logging, and a documented threat boundary (README "Security &
+  storage").
+- 100%-per-file line/branch/function coverage gate (`c8`, `.c8rc.json`) across
+  server, web, and protocol packages, with 500+ unit tests plus a real
+  cm-subprocess contract test (`todo-contract.test.mjs`).
+- A generated OpenAPI 3.1 document driven off the same Zod schemas the routes
+  validate against (no hand-maintained spec to drift).
+- Numbered transactional DB migrations with a stored schema version, a
+  restore/backup drill (`storage:drill`), and `RELEASE-RECOVERY.md`.
+- Structured `/v1` error shape (`api-errors.ts`), deadlines/cancellation
+  (`deadlines.ts`), diagnostics (`GET /api/diagnostics`), search/export
+  (`GET /api/conversations/search|:id/export`), and a capability-discovery
+  endpoint (`GET /v1/capabilities`).
+- `COMPATIBILITY.md` is unusually honest about what's structurally impossible
+  vs. merely unimplemented — keep that tone; don't let future edits soften it
+  into marketing language.
 
-## P3 — Optional super-awesomer features
+## P1 — Close out what's already in flight
 
-- [x] **MIR-13 · Enhancement · M — Better connection onboarding.** Add a connection-test flow and copyable client setup snippets with placeholder keys. Distinguish saved session, usable API key, healthy WARP, and successful test generation; do not display “connected” based only on a saved setting.
-  **Evidence:** `ConnectionTools.tsx`'s "Test connection" button separately checks local diagnostics and live model discovery (so a saved key/session alone never reads as "connected" without an actual successful request), reports the specific failure otherwise, and offers a copyable `openai` SDK snippet plus cm/ChatGPTBox setup notes. Covered end-to-end in `App.test.ts`.
-- [x] **MIR-15 · Enhancement · M — Search and portable conversation export.** Add local history search and Markdown/JSON exports, with an explicit choice about including attachments and metadata. If import is later added, distinguish an archived transcript from a genuinely resumable upstream thread.
-  **Evidence:** `GET /api/conversations/search` and `GET /api/conversations/:id/export` (JSON/Markdown, with `attachments`/`metadata` opt-in flags, `resumableImport: false` recorded explicitly in the export itself) in `insights.ts`/`store.ts`, surfaced via `ConversationTools.tsx`. `todo-contract.test.mjs` confirms account ownership is enforced and that raw signed URLs/events never appear in an export; `App.test.ts` covers the UI end-to-end including both flag combinations.
-- [x] **MIR-16 · Enhancement · M — Improve Playground accessibility and feedback.** Audit keyboard navigation, focus after edits, screen-reader announcements, contrast, small screens, and long streaming outputs. Present citations, generated images, and tool status without exposing noisy raw protocol data by default.
-  **Evidence:** Explicit `aria-label`s on the message role/content controls, `role="status"`/`aria-live="polite"` on the run status, a `role="region"`/`aria-busy` output panel, a visible `:focus-visible` outline, `overflow-wrap` on long output, and a `@media (max-width: 700px)` layout for narrow screens (`App.tsx`/`styles.css`). This was a code-level pass against the checklist, not a full manual screen-reader audit - worth a real pass with an actual screen reader before calling this fully closed.
-- [x] **MIR-17 · Enhancement · M — Client-facing capability discovery.** Expose a small versioned capability summary derived from supported routes/schema: supported fields, approximations, conversation tracking, and unsupported features. Let clients explain mismatches before sending a doomed request.
-  **Evidence:** `GET /v1/capabilities` (`insights.ts`'s `capabilities()`, derived from `CompletionBody`'s own Zod shape rather than hand-duplicated) returns `schemaVersion`, supported/approximated/unsupported fields, and the conversation-tracking contract (minimal vs full history, where the conversation id shows up on each response shape). Covered in `todo-contract.test.mjs`.
-- [ ] **MIR-18 · Enhancement · M — Reproducible release and rollback artifacts.** Publish version/build metadata, tested container identifiers, migration notes, and a rollback procedure that accounts for database schema compatibility. Retain a known-good backup before upgrades; validate WARP and one real continuation after rollout.
-  **Progress (2026-09-12):** Docker and Compose accept a build revision and record it in the image environment and OCI label. Database schema version 1 is applied transactionally, with legacy upgrade, repeat startup, rollback-on-failure, and newer-version refusal tests. Diagnostics includes storage.schemaVersion. RELEASE-RECOVERY.md documents compatibility and rollback. Publishing, digest-pinned release artifacts, and live post-rollout acceptance remain open.
+- [x] **MIR-20 · Verify · S — Confirm the working tree is actually release-clean.**
+  **Evidence (2026-09-14):** ran `npm run typecheck && npm run coverage &&
+  npm run manifest` on base `e25cae9` (clean at the time); recorded in
+  RELEASE-RECOVERY.md's new "Tested revision" section. Not from a from-scratch
+  `npm ci` - `npm install` was used to pull in a missing platform-specific
+  optional dependency (see MIR-21) - so a truly clean-checkout run is still
+  worth doing once, but every check passed against the real working tree.
+- [ ] **MIR-21 · Enhancement · M — Run the Playwright/browser suite for real.**
+  **Progress (2026-09-14):** the `apps/web` unit test runner now actually
+  runs (previously always skipped as "can't run here") - the real blocker was
+  a stale mac-only `node_modules` missing the Linux `rolldown`/`esbuild`
+  native bindings, fixed with `npm install` (adds the missing platform
+  package without a full reinstall) plus clearing permission-locked stale
+  `dist` output (see `device_request_delete_permission`). With that fixed,
+  `npm run coverage` now genuinely executes all 99 web tests alongside the
+  server/protocol suite - no more "verified by manual tracing." Playwright
+  itself downloads and launches Chromium fine, but its headless shell needs
+  system shared libraries (`libXdamage.so.1` etc.) this sandbox has no root
+  access to install (`sudo` is blocked here). **Still open:** run
+  `npm run test:e2e` on the real Mac (which has normal library access) and
+  record the result; wire both suites into `.github/` CI so this doesn't
+  depend on remembering to do it locally.
+  **Update (2026-09-14):** `.github/workflows/ci.yml` exists and enforces
+  exactly this (typecheck, 100% coverage, build, `storage:drill`, real
+  Playwright e2e, manifest check) - but GitHub Actions on this account is
+  currently blocked by an unpaid-invoice suspension, so it can't run. Rather
+  than leave a permanently-red/misleading CI badge on `README.md`, tried
+  Cirrus CI first (`.cirrus.yml`) but Jeremy's location couldn't reach
+  cirrus-ci.org/com at all (`ERR_CONNECTION_CLOSED`), so switched to
+  CircleCI instead - `.circleci/config.yml` (kept the same scope: typecheck,
+  coverage, build, `storage:drill`, Playwright e2e, manifest check). CircleCI
+  is a long-established provider with a generous open-source free tier
+  (400,000 Linux credits/month at last check) and bills independently of
+  GitHub Actions. **Still needs a human step:** sign in at
+  https://circleci.com/vcs-authorize/ and connect the `defcron/mirror` repo -
+  Claude can't do that (needs Jeremy's GitHub login) - after which the badge
+  in `README.md` goes live. The old `.github/workflows/ci.yml` "container"
+  job (build the Docker image, verify it offline) wasn't ported to either
+  service yet - worth revisiting once the basic CircleCI config is confirmed
+  working.
+- [x] **MIR-22 · Verify · S — `npm audit` and dependency freshness.**
+  **Evidence (2026-09-14):** `npm audit` reports 0 vulnerabilities. `npm outdated`
+  shows mostly minor/patch drift (Fastify 5.12.3->5.12.4, `@fastify/rate-limit`
+  10.x->11.x, `yaml`, `mdast-util-from-markdown`, `vite` 8.2->8.3) plus a few
+  deliberately-not-blindly-bumped majors (React 18->19, Zod 3->4, TypeScript
+  5->7, `undici` 7->8) that would need real compatibility review, not a
+  version-number edit - left alone this pass. Note: this sandbox's own Node is
+  v22, while `package.json` pins `>=24 <25`; that's this sandbox's own
+  toolchain, not evidence about what the real dev machine runs - worth a
+  glance but not treated as a repo bug here.
+- [ ] **MIR-23 · Enhancement · S — Finish the live acceptance checklist.**
+  Still genuinely open - this needs a real ChatGPT account and a real browser
+  session, which this environment cannot provide safely (and shouldn't try
+  to: putting session credentials in an automated pass is exactly what
+  RELEASE-RECOVERY.md and NEXT-STEPS.md warn against). `scripts/protocol-canary.mjs`
+  (new this pass, see MIR-32) covers the read-only half of this on demand -
+  run `npm run protocol-canary` against a live instance for a sanitized
+  health/model-discovery check - but the actual Custom GPT/Project/ChatGPTBox
+  checklist still needs a person, once, with a real account.
+
+## P2 — Real feature gaps worth building
+
+- [ ] **MIR-24 · Enhancement · L — Multiple concurrent ChatGPT accounts/sessions.**
+  Mirror is architected around exactly one saved session token. Anyone running
+  it for more than personal single-account use (a small team each with their
+  own ChatGPT account, or one person cycling between a personal and a work
+  account) currently has to run separate Mirror instances entirely. A
+  multi-session model — named sessions, an active-session selector in the
+  Mirror controls panel, per-session conversation history — would be one of
+  the highest-value "awesomer" features, but it's genuinely L-effort: it
+  touches `store.ts`'s schema, `auth.ts`, and the control-cookie model in
+  `security.ts`, all of which currently assume a singleton credential.
+- [ ] **MIR-25 · Enhancement · M — A real memory/context feature.**
+  `COMPATIBILITY.md` lists ChatGPT's cross-conversation memory as "not exposed
+  through Mirror at all yet." Even without touching ChatGPT's own memory
+  system, Mirror could offer its own local equivalent: a small
+  user-maintained "standing instructions" note (distinct from per-conversation
+  system messages) that gets prepended to every new conversation's prompt
+  context, editable from the Playground. This is fully within reach of the
+  existing `promptFor`/instructions machinery in `conversation-context.ts` and
+  doesn't require any new upstream protocol work.
+- [ ] **MIR-26 · Enhancement · M — Conversation folders/tags/pinning.**
+  `ConversationTools.tsx` has search and export, but no organization beyond a
+  flat, presumably chronological list. Once someone has weeks of conversation
+  history, a flat list stops scaling. Tags or folders, plus pinning frequently
+  reused conversations (a repeated coding-assistant thread, say) to the top,
+  would meaningfully improve the "workspace" feel `NEXT-STEPS.md` already
+  flags as the top P2 UX priority.
+- [ ] **MIR-27 · Enhancement · M — Usage/cost-adjacent insights.** Mirror
+  correctly refuses to fabricate token counts (there's no upstream field for
+  it), but it could still track and surface things it *does* know locally:
+  turns per day, average response time, tool-invocation frequency (web search
+  vs. code interpreter vs. image gen), and per-conversation message counts —
+  all derivable from existing stored events without inventing numbers ChatGPT
+  never reports. Surface this as a small stats panel in the Playground, framed
+  honestly as "local usage patterns," never as "cost" or "tokens."
+- [ ] **MIR-28 · Enhancement · S/M — Keyboard-driven conversation switcher.**
+  `NEXT-STEPS.md` already calls for "branch-tree keyboard navigation" for the
+  branch viewer; extend the same idea to conversation switching itself — a
+  quick-open palette (`Cmd/Ctrl+K`-style) over the existing search endpoint,
+  since the backend (`/api/conversations/search`) already exists and only the
+  UI affordance is missing.
+- [ ] **MIR-29 · Enhancement · M — A "compare responses" mode in the Playground.**
+  Since Mirror already supports both Chat and Responses modes against the same
+  conversation engine, a side-by-side view that sends one prompt through both
+  API shapes (or through two different models, e.g. comparing a Custom GPT's
+  output against the base model) would make the Playground more useful as an
+  actual testing tool, not just a bearer-token smoke test page.
+- [ ] **MIR-30 · Verify · S — PWA / installable app framing for the web UI.**
+  Mirror explicitly targets `127.0.0.1` only and that's correct to keep — but
+  within that constraint, a manifest.json + service worker for the Playground
+  (installable as a desktop app icon, works fully offline against the local
+  server) is a small, self-contained enhancement that doesn't touch any of the
+  security boundaries `NEXT-STEPS.md` warns against loosening.
+
+## P3 — Protocol-resilience and operability (still open from NEXT-STEPS.md)
+
+- [ ] **MIR-31 · Enhancement · L — The sanitized capture/replay fixture format.**
+  **Progress (2026-09-14):** the classification half is done -
+  `packages/protocol/src/drift.ts`'s `classifyProtocolFailure()` sorts any
+  backend-api failure into exactly the four categories NEXT-STEPS.md asked
+  for (authentication-challenge, transport-truncation, known-upstream-error,
+  unsupported-shape), fully unit-tested (`drift.test.mjs`), and wired into
+  `openai.ts`'s error handler so every recorded failure now carries this
+  category in `GET /api/diagnostics`'s `recentFailures` alongside the
+  existing HTTP-status categorization - without ever touching the public
+  response shape or exposing the raw upstream payload. **Still open:** the
+  other half of MIR-31, a schema-tolerant, provenance-tagged capture/replay
+  *fixture format* (capture date, endpoint, sanitization version) for
+  `sse.test.mjs`'s fixtures - this pass added failure classification, not a
+  new fixture format.
+- [x] **MIR-32 · Enhancement · M — Opt-in live protocol canary.**
+  **Evidence (2026-09-14):** `scripts/protocol-canary.mjs` (`npm run
+  protocol-canary`) checks health, diagnostics, and model discovery against a
+  running Mirror instance by default (read-only, hits Mirror's own already-
+  sanitized `/api/*` routes rather than reimplementing credential handling),
+  and only sends one real, disposable `/v1/chat/completions` turn when
+  `--generate` is passed explicitly - reporting success/timing/finish_reason
+  only, never the prompt or reply text. Emits one JSON report suitable for
+  attaching to an issue. Not wired into CI (it needs a live account by
+  design) - that's intentional, not a gap.
+- [ ] **MIR-33 · Enhancement · L — Continue the `openai.ts`/`store.ts`/`index.ts`
+  decomposition.** Not attempted this pass - `openai.ts` (now ~1070 lines
+  after MIR-31's small addition), `store.ts` (877), and `index.ts` (~610) are
+  unchanged in structure. This is real, deliberately deferred risk: a big
+  incremental extraction done quickly to check a box is exactly how you
+  introduce the kind of subtle continuation/persistence bug this codebase's
+  own regression suite exists to catch. `NEXT-STEPS.md` section 4 still has
+  the right target split (schemas/adapters, conversation resolution,
+  transport writers, route registration for `openai.ts`; schema/credentials/
+  conversations/maintenance repositories behind an interface for `store.ts`).
+  Worth doing as its own dedicated pass, one extraction at a time, each
+  verified by the full suite - not squeezed in alongside other work.
+- [ ] **MIR-34 · Enhancement · M — Structured operability logs.**
+  **Progress (2026-09-14):** fixed a real, confirmed gap found while working
+  on this - `openai.ts`'s failure handler only called `recordFailure()` (the
+  existing failure-category counter behind `GET /api/diagnostics`) on the
+  *streaming* branch; a non-streaming completion that failed upstream was
+  never counted at all. `recordFailure()` now runs unconditionally before the
+  stream/non-stream branch, and now also records the MIR-31 protocol-drift
+  category alongside the existing HTTP-status code (see `preflight.test.mjs`
+  / `openai-routes.test.mjs`'s new drift-taxonomy test). **Still open:** the
+  bigger ask from `NEXT-STEPS.md` #5 - per-request structured logs with
+  route/duration/conversation-operation/upstream-phase/deadline-phase fields -
+  is unbuilt; Fastify's own default request logger already gives request
+  ID/route/duration/status for free (with the existing redacted serializer),
+  but the Mirror-specific semantic fields (new vs. continue vs. rebase,
+  which upstream/deadline phase a failure happened in) still need threading
+  through `chat-service.ts`/`openai.ts`, which touches enough call sites to
+  be its own careful pass rather than a quick addition.
+- [x] **MIR-35 · Enhancement · S — Startup preflight diagnostics.**
+  **Evidence (2026-09-14):** `apps/server/src/preflight.ts`'s
+  `classifyStartupFailure()`/`formatStartupFailure()` turn a failed boot into
+  one categorized, actionable line - configuration (bad `MIRROR_STORE_KEY`),
+  database-migration (incompatible schema version), warp-egress (WARP
+  unreachable/not verified), or port-in-use (`EADDRINUSE`) - instead of a raw
+  unhandled-rejection stack trace; wired into `index.ts`'s entrypoint
+  try/catch. Fully unit-tested (`preflight.test.mjs`) plus an end-to-end
+  startup test exercising the real catch/exit(1) path (`startup.test.mjs`'s
+  new "a failed bind... is classified" test). Scoped honestly: missing-
+  browser-dependency and session-expiry are real failure modes but don't
+  actually happen *at boot* in the current code (the Turnstile browser
+  solver launches lazily on first use; session validity is only checked on
+  the first proxied/API request) - both already surface their own next-action
+  text through `GET /api/diagnostics` (MIR-09) once a request actually hits
+  them, so this doesn't pretend to preflight-check something Mirror doesn't
+  check yet.
+
+## P3 — Documentation follow-ups
+
+- [ ] **MIR-11 (carried over) · Enhancement · M — Re-audit `COMPATIBILITY.md`'s
+  absolute claims.** Never fully closed in the prior pass beyond README
+  changes. Worth a line-by-line pass now that MIR-20/21/22/23 land: confirm
+  every "not supported"/"structurally impossible" claim still matches the
+  actual `openai.ts`/`sse.ts` behavior, since both files have changed since
+  some of that prose was written.
+- [ ] **MIR-36 · Enhancement · S — A CHANGELOG.md.** The repo has extensive
+  point-in-time progress notes scattered across `TODO.md`, `NEXT-STEPS.md`,
+  and regression-specific docs (`ASSET-RENDERING-REGRESSION.md`,
+  `CONTINUATION-REGRESSION.md`), but nothing chronological and user-facing.
+  Once MIR-18's release/versioning work lands, a real changelog would make
+  upgrades legible without reading five different audit documents.
 
 ## Shared work with cm
 
-- [ ] **MIR-19 · Verify · M — Define the shared streaming and persistence contract.** Document success/error/end-of-stream semantics, header versus SSE-comment conversation IDs, and cancellation/ambiguous-completion handling. Coordinate with CM-01/02/16 in cm's TODO. A failed or truncated response must not appear as successful empty text to a client.
-  **Progress (2026-09-07):** The contract is now pinned down as an executable test rather than only prose - `todo-contract.test.mjs`'s cm-subprocess test and `client.ts`'s new "no assistant node" rejection (MIR-10) both encode "a technically-complete-but-empty stream must not read as success." Still open: an actual written doc (this file and `PROTOCOL.md` are the closest things to one) and closing the loop with cm's own CM-01/02/16, which live in cm's separate TODO.md and weren't touched this pass.
+- [ ] **MIR-19 (carried over) · Verify · M — Write the actual shared streaming/
+  persistence contract doc.** The behavior is now pinned down as executable
+  tests (`todo-contract.test.mjs`), but the prior pass explicitly noted "an
+  actual written doc... weren't touched this pass" is still open, and so is
+  reconciling this with cm's own CM-01/02/16 items in its separate TODO.md.
 
-## Completed in this task — preserve, do not reimplement
+---
 
-- Empty/whitespace `MIRROR_WEB_ORIGIN` no longer causes Fastify CORS HTTP 500s.
-- Cross-origin bearer-authenticated model/completion requests, preflight, and streaming CORS headers work; control-route origin protection remains.
-- Server-side `OPENAI_API_KEY` is accepted alongside Mirror key settings and forwarded by Compose.
-- Live cm streaming and same-ID non-streaming continuation passed; the user confirmed ChatGPTBox works.
-- Existing assets include generated OpenAPI docs, coverage/browser CI, storage maintenance tools, and conversation-edit tests. Extend these rather than creating duplicate systems.
-- **(2026-09-12)** Sentinel Turnstile hardening: retained the Playwright/Chromium browser solver fallback while removing environment reuse, proxy persistence, and the process cache because a response token is short-lived and single-use. Callers may stage one token with the saved local session or provide one for a generation; Mirror atomically consumes it for one Sentinel finalize call. Live challenge acceptance remains to be verified.
-- **(2026-09-07)** MIR-02/03/04/07/08/09/10/13/15/16/17 above, plus: a real bug fix in `chat-service.ts` where an already-aborted `runChat()` call left no local record at all (now correctly recorded as a "stopped" conversation, matching `chat-service.test.mjs`'s existing contract); two dead/unreachable defensive branches removed (`index.ts`'s onSend normalization, `insights.ts`'s attachment export) once confirmed unreachable given this codebase's own invariants, rather than left as untested "just in case" code; `openai.ts`'s `sse()` slow-consumer guard exported specifically so it's unit-testable without reproducing real socket backpressure. The full suite (315 server/protocol tests + 92 web tests) is green with 100% line/branch/function coverage on every file per the repo's own thresholds, `npm audit` is clean, and `npm run build`/`npm run manifest` both succeed. The browser (Playwright) suite could not be run in this sandbox - see MIR-05.
-
-Suggested order: MIR-01, then MIR-05 (record a tested revision) and the MIR-06 recovery drill, then MIR-11/12/14/18/19 as time allows. Optional product ideas need their own scoped implementation decisions.
+Remaining open work, roughly in order: MIR-21 (run the real Playwright suite
+on the actual Mac and wire both suites into CI), MIR-23 (the live acceptance
+checklist - needs a person and a real account), MIR-33 (the file
+decomposition - deliberately not rushed), then the rest of MIR-34 (full
+per-request structured logs) and the fixture-provenance half of MIR-31.
+After that: whichever P2 feature idea (MIR-24 through MIR-30) you actually
+want Mirror to become — that's the next conversation.

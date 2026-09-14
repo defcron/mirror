@@ -9,13 +9,13 @@ const categories: Record<number, [string, string, string]> = {
   429: ["rate_limit_error", "rate_limit_exceeded", "Rate limit reached. Wait before sending another request."],
   504: ["timeout_error", "deadline_exceeded", "Generation deadline exceeded. Reload history before retrying; upstream completion is uncertain."],
 };
-const recent: Array<{ at: string; code: string; requestId: string }> = [];
+const recent: Array<{ at: string; code: string; requestId: string; protocolCategory: string | null }> = [];
 export function apiError(status: number, message: string, requestId: string) {
   const [type, code, fallback] = categories[status] ?? ["server_error", "upstream_failure", "Generation failed. Check WARP and session readiness, then reload history before retrying."];
   return { error: { type, code, message: status === 400 ? message : fallback, request_id: requestId } };
 }
-export function recordFailure(code: string, requestId: string) {
-  recent.push({ at: new Date().toISOString(), code, requestId });
+export function recordFailure(code: string, requestId: string, protocolCategory: string | null = null) {
+  recent.push({ at: new Date().toISOString(), code, requestId, protocolCategory });
   if (recent.length > 20) recent.shift();
 }
 export function recentFailures() { return recent.map(item => ({ ...item })); }

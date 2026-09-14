@@ -158,6 +158,50 @@ export function getSession(): StoredSession | null {
   return sealed ? (JSON.parse(decrypt(sealed)) as StoredSession) : null;
 }
 
+// Account-wide default system instructions (MIR-brainstorm #3/#6 hybrid):
+// unlike a conversation's own system/developer messages (part of that one
+// conversation's transcript, per the OpenAI request shape), this is a single
+// sticky value the Playground's System box initializes from for every *new*
+// conversation, stored server-side so it follows the account across
+// browsers/devices instead of living in one browser's localStorage. Not
+// encrypted - this is conversation-shaping text the account owner wrote
+// themselves, the same trust level as a saved conversation's own content,
+// not a credential.
+const DEFAULT_SYSTEM_INSTRUCTIONS_KEY_PREFIX = "default_system_instructions:";
+
+export function getDefaultSystemInstructions(accountId: string): string {
+  return readSetting(`${DEFAULT_SYSTEM_INSTRUCTIONS_KEY_PREFIX}${accountId}`) ?? "";
+}
+
+export function setDefaultSystemInstructions(accountId: string, content: string): void {
+  writeSetting(`${DEFAULT_SYSTEM_INSTRUCTIONS_KEY_PREFIX}${accountId}`, content);
+}
+
+const HOTKEYS_KEY_PREFIX = "hotkeys:";
+
+// Per-account overrides only - the actual defaults live in the web app's
+// hotkeys.ts (DEFAULT_HOTKEYS) so both sides don't need to agree on a
+// duplicated default map. An action missing from what's returned here just
+// means "use the built-in default" on the client.
+export function getHotkeys(accountId: string): Record<string, string> {
+  const raw = readSetting(`${HOTKEYS_KEY_PREFIX}${accountId}`);
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const entries = Object.entries(parsed as Record<string, unknown>).filter(
+      ([, value]) => typeof value === "string",
+    );
+    return Object.fromEntries(entries) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+export function setHotkeys(accountId: string, hotkeys: Record<string, string>): void {
+  writeSetting(`${HOTKEYS_KEY_PREFIX}${accountId}`, JSON.stringify(hotkeys));
+}
+
 export function saveVerifiedSession(
   sessionToken: string,
   accountId?: string,
