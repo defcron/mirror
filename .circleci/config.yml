@@ -8,18 +8,14 @@
 # reachable provider with a generous open-source free tier (400,000 Linux
 # credits/month at last check).
 #
-# Activation is a one-time manual step Jeremy has to do himself (needs his
-# GitHub login): sign in at https://circleci.com/vcs-authorize/, connect the
-# defcron/mirror GitHub repo, and follow its prompt to start building from
-# this file - no separate app install step like Cirrus needed a marketplace
-# authorization for. Once that's done, pushes/PRs trigger this automatically
-# and the badge in README.md goes live.
-#
-# Mirrors the "verify" job from .github/workflows/ci.yml (typecheck, the
-# 100%-enforced coverage gate, build, the storage backup/restore drill,
-# Playwright e2e, and the manifest check). Does NOT yet port the "container"
-# job (building the Docker image and verifying offline restore inside it) -
-# see TODO.md for that follow-up.
+# This now fully replaces .github/workflows/ci.yml (which has been removed -
+# see TODO.md), porting both of its jobs:
+#   - verify: typecheck, the 100%-enforced coverage gate, build, the storage
+#     backup/restore drill, Playwright e2e, and the manifest check.
+#   - container: builds the Docker image and verifies offline backup/restore
+#     and the embedded build revision inside it, using CircleCI's
+#     setup_remote_docker (its equivalent of GitHub Actions' docker-in-docker
+#     support on ubuntu-latest runners).
 version: 2.1
 
 jobs:
@@ -42,7 +38,29 @@ jobs:
           path: test-results
           destination: test-results
 
+  container:
+    docker:
+      - image: cimg/base:2024.11
+    steps:
+      - checkout
+      - setup_remote_docker:
+          docker_layer_caching: false
+      - run:
+          name: Build the verified revision
+          command: docker build --build-arg MIRROR_BUILD_REVISION="$CIRCLE_SHA1" -t mirror-verified .
+      - run:
+          name: Verify recovery inside the runtime image without network access
+          command: docker run --rm --network none --entrypoint node mirror-verified scripts/restore-drill.mjs
+      - run:
+          name: Verify embedded revision and record image identity
+          command: |
+            docker run --rm --network none -e EXPECTED_REVISION="$CIRCLE_SHA1" --entrypoint node mirror-verified -e 'require("node:assert/strict").equal(process.env.MIRROR_BUILD_REVISION, process.env.EXPECTED_REVISION)'
+            docker image inspect --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}' mirror-verified
+
 workflows:
   verify:
     jobs:
       - verify
+      - container:
+          requires:
+            - verify

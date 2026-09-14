@@ -83,10 +83,22 @@ Effort: S / M / L as before.
   GitHub Actions. **Still needs a human step:** sign in at
   https://circleci.com/vcs-authorize/ and connect the `defcron/mirror` repo -
   Claude can't do that (needs Jeremy's GitHub login) - after which the badge
-  in `README.md` goes live. The old `.github/workflows/ci.yml` "container"
-  job (build the Docker image, verify it offline) wasn't ported to either
-  service yet - worth revisiting once the basic CircleCI config is confirmed
-  working.
+  in `README.md` goes live.
+  **Update (2026-09-14):** first real run hit two more things, both fixed
+  and re-verified (100% coverage/typecheck/manifest, against Node v24.9.0
+  directly, not just this sandbox's v22) - see the Node 24 `registerHooks`
+  bug note above, and a one-edit-stale `SHA256-MANIFEST.json` (regenerated
+  `npm run manifest` was run before, not after, a later `TODO.md` edit).
+  Once CI was green, ported the remaining `.github/workflows/ci.yml`
+  "container" job (build the Docker image, verify offline backup/restore and
+  the embedded build revision inside it) to CircleCI too, using
+  `setup_remote_docker` as the equivalent of GitHub Actions' docker-in-docker
+  support - validated via the CircleCI MCP's config-validate tool - and
+  **removed `.github/workflows/ci.yml` entirely** (the whole now-empty
+  `.github/` directory, in fact), since its permanently-failing run (blocked
+  by the billing suspension) was what still showed as a red X on commits
+  even with CircleCI green. CircleCI now covers 100% of what the old
+  workflow did.
   **First real CircleCI run (2026-09-14) caught a genuine bug this sandbox's
   Node v22 had been silently masking all session:** `apps/web/tests/main.test.ts`
   stubs its CSS import via a `node:module` `registerHooks({ load(...) })` hook
