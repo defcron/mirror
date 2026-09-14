@@ -1,0 +1,60 @@
+# GitHub Actions - restored 2026-09-14 now that Actions billing on this
+# account is unblocked. Runs in parallel with .circleci/config.yml rather
+# than replacing it (two independent, redundant CI signals cost nothing
+# extra here and catch environment-specific bugs neither alone would -
+# see TODO.md's note on the Node 24 registerHooks bug CircleCI's real run
+# caught that this dev sandbox's Node v22 was silently masking).
+#
+# Deliberately stays inside GitHub's free tier for a public repo: only
+# standard `ubuntu-latest` runners (unlimited free minutes on public repos,
+# no per-minute billing), the standard `actions/*` steps, and Docker
+# build/run directly on the runner (Docker ships preinstalled on
+# ubuntu-latest - no paid Docker Hub/registry, no larger/custom runners,
+# no macOS or Windows runners, which are the ones that actually cost).
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # .c8rc.json enables check-coverage with 100% thresholds for statements,
+      # branches, functions, and lines, enforced separately for every file.
+      - name: Enforce 100% coverage across all measures
+        run: npm run coverage
+      - run: npm run build
+      - name: Verify isolated backup and restore in both key modes
+        run: npm run storage:drill
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm run manifest -- --check
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: test-results/
+  container:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the verified revision
+        run: docker build --build-arg MIRROR_BUILD_REVISION="${{ github.sha }}" -t mirror-verified .
+      - name: Verify recovery inside the runtime image without network access
+        run: docker run --rm --network none --entrypoint node mirror-verified scripts/restore-drill.mjs
+      - name: Verify embedded revision and record image identity
+        env:
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          docker run --rm --network none -e EXPECTED_REVISION --entrypoint node mirror-verified -e 'require("node:assert/strict").equal(process.env.MIRROR_BUILD_REVISION, process.env.EXPECTED_REVISION)'
+          docker image inspect --format '{{.Id}} {{index .Config.Labels "org.opencontainers.image.revision"}}' mirror-verified

@@ -99,6 +99,15 @@ Effort: S / M / L as before.
   by the billing suspension) was what still showed as a red X on commits
   even with CircleCI green. CircleCI now covers 100% of what the old
   workflow did.
+  **Update (2026-09-14, later the same day):** Jeremy got GitHub Actions
+  billing unblocked, so restored `.github/workflows/ci.yml` verbatim -
+  running in parallel with CircleCI, not replacing it, since two independent
+  CI signals catch environment-specific bugs neither alone would (see the
+  Node 24 `registerHooks` bug above, which only a real Node-24-pinned run
+  caught). Both stay inside their respective free tiers: GitHub Actions uses
+  only standard `ubuntu-latest` runners (unlimited free minutes on a public
+  repo) and preinstalled Docker, no paid runners or add-ons; CircleCI's
+  `.circleci/config.yml` was untouched. README badges now show both.
   **First real CircleCI run (2026-09-14) caught a genuine bug this sandbox's
   Node v22 had been silently masking all session:** `apps/web/tests/main.test.ts`
   stubs its CSS import via a `node:module` `registerHooks({ load(...) })` hook
