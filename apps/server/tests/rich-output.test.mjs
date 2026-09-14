@@ -65,6 +65,57 @@ test("inline self-contained widget markers (entity, image_group) render without 
   assert.equal(result.text, "David Bowie's Space Oddity.");
   assert.ok(!result.text.includes("Reference unavailable"));
 });
+test("malformed and sparse inline widget markers degrade safely", async () => {
+  const malformed = "\uE200entity\uE202[not-json]\uE201";
+  const fallbackName = "\uE200entity\uE202[\"Only available label\"]\uE201";
+  const emptyEntity = "\uE200entity\uE202[null,false]\uE201";
+  const result = await renderRichOutput([
+    text(`${malformed} ${fallbackName} ${emptyEntity}`),
+  ], "", async () => url);
+  assert.equal(result.text, "[Reference unavailable] Only available label [Reference unavailable]");
+});
+test("citation field variants and empty reference shapes resolve or stay unavailable without leaking markers", async () => {
+  const markers = Array.from({ length: 12 }, (_, index) => `\uE200cite\uE202variant${index}\uE201`);
+  const references = [
+    { matched_text: markers[0], attribution: "Attribution" },
+    { matched_text: markers[1], snippet: "Snippet" },
+    { matched_text: markers[2], alt: "Alt text" },
+    { matched_text: markers[3], pill_text: "Pill" },
+    { matched_text: markers[4], tool_name: "Connector" },
+    { matched_text: markers[5], cloud_doc_url: "https://example.com/cloud" },
+    { matched_text: markers[6], extra: { cloud_doc_url: "https://example.com/extra" } },
+    { matched_text: markers[7], clicked_from_url: "https://example.com/clicked" },
+    { matched_text: markers[8], asset_pointer_links: ["https://example.com/asset"] },
+    { matched_text: markers[9], items: [null, { name: "Ignored second item" }], description: "Fallback description" },
+    { matched_text: markers[10], items: [{ url: "https://example.com/url-only" }] },
+    { matched_text: markers[11] },
+  ];
+  const result = await renderRichOutput([
+    text(markers.join(" ")),
+    message({ metadata: { content_references: references } }),
+  ], "", async () => url);
+  assert.doesNotMatch(result.text, /[\uE000-\uF8FF]/);
+  assert.match(result.text, /Attribution Snippet Alt text Pill Connector/);
+  assert.match(result.text, /\[https:\/\/example\.com\/cloud\]/);
+  assert.match(result.text, /Ignored second item/);
+  assert.match(result.text, /\[https:\/\/example\.com\/url-only\]/);
+  assert.match(result.text, /\[Reference unavailable\]$/);
+});
+test("alternate citation containers and late patch merging preserve every reference", async () => {
+  const groupedMarker = "\uE200cite\uE202grouped\uE201";
+  const citationMarker = "\uE200cite\uE202citation\uE201";
+  const patchedMarker = "\uE200cite\uE202patched\uE201";
+  const result = await renderRichOutput([
+    text(`${groupedMarker} ${citationMarker} ${patchedMarker}`),
+    message({ metadata: {
+      content_references: [{ matched_text: patchedMarker, description: "Original patch target" }],
+      content_references_by_file: { file: [{ matched_text: groupedMarker, title: "Grouped source" }, null] },
+      citations: [{ matched_text: citationMarker, title: "Citation source" }],
+    } }),
+    { kind: "citation_patch", messageId: "a", contentReferences: [{ matched_text: patchedMarker, title: "Duplicate ignored" }], raw: {} },
+  ], "", async () => url);
+  assert.equal(result.text, "Grouped source Citation source Original patch target");
+});
 test("sandbox and image pointers keep Markdown positions; duplicate pointer snapshots resolve once", async () => {
   const value = "First [report](sandbox:/mnt/data/report.csv) then ![plot](sediment://file-plot) done.";
   const result = await renderRichOutput([text(value), text(value)], "", async () => url);

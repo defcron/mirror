@@ -6,8 +6,35 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   editPlaygroundMessage,
   removePlaygroundMessage,
+  addPlaygroundAttachment,
+  removePlaygroundAttachment,
   type PlaygroundMessage,
+  type PlaygroundAttachment,
 } from "./playground-history.js";
+
+/** Turns a PlaygroundMessage's text + attachments into the wire shape the OpenAI-compatible
+ * endpoints expect: a plain string when there are no attachments (unchanged, back-compat), or
+ * a content-part array when there are. Preserve filenames for images too;
+ * the server selects their MIME type and upload route from the extension. */
+function messageForRequest(message: PlaygroundMessage): { role: string; content: unknown } {
+  const attachments = message.attachments ?? [];
+  if (!attachments.length) return { role: message.role, content: message.content };
+  const parts: unknown[] = [];
+  if (message.content.trim()) parts.push({ type: "text", text: message.content });
+  for (const attachment of attachments) {
+    parts.push({ type: "file", file: { file_data: attachment.dataUrl, filename: attachment.name } });
+  }
+  return { role: message.role, content: parts };
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
 
 interface ApiModel {
   id: string;
@@ -138,6 +165,8 @@ export default function App() {
   const [raw, setRaw] = useState("");
   const [showRaw, setShowRaw] = useState(false);
   const [running, setRunning] = useState(false);
+  const [readingFiles, setReadingFiles] = useState(false);
+  const readingFilesRef = useRef(false);
   const [status, setStatus] = useState("Ready");
   const [controller, setController] = useState<AbortController | null>(null);
   const endpoint = useMemo(
@@ -159,15 +188,17 @@ export default function App() {
   // Not used to disable the Run button (that turned out to trap people who
   // typed into the freshly-appended row and still saw it stay disabled) -
   // only to show *why* a click was a no-op, via runBlockedReason below.
-  const canRun = Boolean(
-    lastMessage && lastMessage.role === "user" && lastMessage.content.trim(),
-  );
   const runBlockedReason =
-    !lastMessage || lastMessage.role !== "user"
+    readingFiles
+      ? "Wait for the selected files to finish reading."
+      : mode === "responses" && messages.some(message => message.attachments?.length)
+      ? "File attachments require Chat mode. Switch to Chat to send these files."
+      : !lastMessage || lastMessage.role !== "user"
       ? "The last message must be from the user."
-      : !lastMessage.content.trim()
+      : !lastMessage.content.trim() && !lastMessage.attachments?.length
         ? "Type a message in the last (user) row before running."
         : null;
+  const canRun = runBlockedReason === null;
 
   useEffect(() => {
     fetch(`${domain.replace(/\/$/, "")}/v1/models`, { headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {} })
@@ -239,7 +270,7 @@ export default function App() {
   }, []);
 
   async function loadConversation(id: string) {
-    if (!id) return;
+    if (!id || readingFilesRef.current) return;
     setStatus("Loading…");
     try {
       const res = await fetch(
@@ -289,7 +320,7 @@ export default function App() {
     key: keyof PlaygroundMessage,
     value: string,
   ) {
-    if (runningRef.current) return;
+    if (runningRef.current || readingFilesRef.current) return;
     const mutation = editPlaygroundMessage(
       messages,
       index,
@@ -300,10 +331,47 @@ export default function App() {
     setMessages(mutation.messages);
   }
   function removeMessage(index: number) {
-    if (runningRef.current) return;
+    if (runningRef.current || readingFilesRef.current) return;
     const mutation = removePlaygroundMessage(
       messages,
       index,
+      Boolean(conversationId.trim()),
+    );
+    setMessages(mutation.messages);
+  }
+  async function addAttachments(index: number, files: File[]) {
+    if (runningRef.current || readingFilesRef.current || !files.length) return;
+    readingFilesRef.current = true;
+    setReadingFiles(true);
+    setStatus("Reading files…");
+    try {
+      // Commit the entire selection together. Separate async updates based on
+      // the captured messages array overwrite each other's files.
+      const attachments: PlaygroundAttachment[] = await Promise.all(files.map(async file => ({
+        name: file.name || "attachment",
+        mimeType: file.type || "application/octet-stream",
+        dataUrl: await readFileAsDataUrl(file),
+      })));
+      setMessages(current => attachments.reduce((updated, attachment) =>
+        addPlaygroundAttachment(updated, index, attachment, Boolean(conversationId.trim())).messages,
+        current,
+      ));
+      setStatus("Ready");
+    } catch (error) {
+      setStatus("Error");
+      setRaw(String((error as Error).message ?? error));
+      setShowRaw(true);
+    } finally {
+      readingFilesRef.current = false;
+      setReadingFiles(false);
+    }
+  }
+  function removeAttachment(index: number, attachmentIndex: number) {
+    if (runningRef.current || readingFilesRef.current) return;
+    const mutation = removePlaygroundAttachment(
+      messages,
+      index,
+      attachmentIndex,
       Boolean(conversationId.trim()),
     );
     setMessages(mutation.messages);
@@ -316,7 +384,7 @@ export default function App() {
     // that used to race two overlapping requests for the same conversation
     // and could leave a sibling reply logged upstream with no user message
     // of its own attached to it.
-    if (runningRef.current) return;
+    if (runningRef.current || readingFilesRef.current) return;
     if (!canRun) {
       setStatus("Blocked");
       setRaw(runBlockedReason!);
@@ -346,7 +414,9 @@ export default function App() {
         },
         body: JSON.stringify({
           model,
-          ...(mode === "responses" ? { input: messages } : { messages }),
+          ...(mode === "responses"
+            ? { input: messages.map(messageForRequest) }
+            : { messages: messages.map(messageForRequest) }),
           stream,
           store: !oneShot,
           ...(Object.keys(metadata).length ? { metadata } : {}),
@@ -403,7 +473,7 @@ export default function App() {
   }
 
   function selectMode(next: "chat" | "responses") {
-    if (runningRef.current || next === mode) return;
+    if (runningRef.current || readingFilesRef.current || next === mode) return;
     setMode(next);
     setPath(next === "responses" ? "/v1/responses" : "/v1/chat/completions");
     setOutput(""); setRaw(""); setShowRaw(false); setStatus("Ready");
@@ -414,10 +484,10 @@ export default function App() {
       <Header />
       <aside className="playground-sidebar">
         <div className="side-title">Playground</div>
-        <button className={`side-item ${mode === "chat" ? "active" : ""}`} aria-pressed={mode === "chat"} disabled={running} onClick={() => selectMode("chat")}>
+        <button className={`side-item ${mode === "chat" ? "active" : ""}`} aria-pressed={mode === "chat"} disabled={running || readingFiles} onClick={() => selectMode("chat")}>
           <span>☷</span> Chat
         </button>
-        <button className={`side-item ${mode === "responses" ? "active" : ""}`} aria-pressed={mode === "responses"} disabled={running} onClick={() => selectMode("responses")}>
+        <button className={`side-item ${mode === "responses" ? "active" : ""}`} aria-pressed={mode === "responses"} disabled={running || readingFiles} onClick={() => selectMode("responses")}>
           <span>◇</span> Responses
         </button>
         <div className="side-section">Mirror</div>
@@ -461,6 +531,7 @@ export default function App() {
             ) : (
               <button
                 className="run-button"
+                disabled={readingFiles}
                 title={runBlockedReason ?? undefined}
                 onClick={() => void run()}
               >
@@ -499,7 +570,8 @@ export default function App() {
             <div className="panel-title">
               <b>Messages</b>
               <button
-                disabled={running}
+                disabled={running || readingFiles || Boolean(lastMessage?.attachments?.length)}
+                title={lastMessage?.attachments?.length ? "Send or remove the attached files before adding another message." : undefined}
                 onClick={() =>
                   setMessages((current) => [
                     ...current,
@@ -511,12 +583,13 @@ export default function App() {
               </button>
             </div>
             <div className="messages-editor">
+              <p className="field-hint">Attach files to the last user message in Chat mode. Files are sent when you run the request.</p>
               {messages.map((message, index) => (
                 <div className="message-editor" key={index}>
                   <div className="message-toolbar">
                     <select
                       aria-label={`Message ${index + 1} role`}
-                      disabled={running || message.role === "assistant"}
+                      disabled={running || readingFiles || message.role === "assistant" || Boolean(message.attachments?.length)}
                       value={message.role}
                       onChange={(event) =>
                         updateMessage(index, "role", event.target.value)
@@ -533,7 +606,7 @@ export default function App() {
                           ? "Assistant messages cannot be removed"
                           : "Remove message"
                       }
-                      disabled={running || message.role === "assistant"}
+                      disabled={running || readingFiles || message.role === "assistant"}
                       onClick={() => removeMessage(index)}
                     >
                       ×
@@ -541,8 +614,8 @@ export default function App() {
                   </div>
                   <textarea
                     aria-label={`Message ${index + 1} ${message.role} content`}
-                    readOnly={running || message.role === "assistant"}
-                    aria-readonly={running || message.role === "assistant"}
+                    readOnly={running || readingFiles || message.role === "assistant"}
+                    aria-readonly={running || readingFiles || message.role === "assistant"}
                     title={
                       message.role === "assistant"
                         ? "Assistant messages are read-only; you can select and copy their text."
@@ -553,6 +626,38 @@ export default function App() {
                       updateMessage(index, "content", event.target.value)
                     }
                   />
+                  {message.role === "user" && (
+                    <div className="message-attachments">
+                      {mode === "chat" && index === messages.length - 1 && (
+                      <label className="attach-button">
+                        📎 Attach file
+                        <input
+                          type="file"
+                          multiple
+                          disabled={running || readingFiles}
+                          style={{ display: "none" }}
+                          onChange={(event) => {
+                            const files = event.target.files;
+                            if (files) void addAttachments(index, Array.from(files));
+                            event.target.value = "";
+                          }}
+                        />
+                      </label>
+                      )}
+                      {(message.attachments ?? []).map((attachment, attachmentIndex) => (
+                        <span className="attachment-chip" key={attachmentIndex}>
+                          {attachment.name}
+                          <button
+                            aria-label={`Remove attachment ${attachment.name}`}
+                            disabled={running || readingFiles}
+                            onClick={() => removeAttachment(index, attachmentIndex)}
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -663,7 +768,7 @@ export default function App() {
               <span>Conversation ID</span>
               <div className="model-picker-row">
                 <input
-                  disabled={running}
+                  disabled={running || readingFiles}
                   value={conversationId}
                   onChange={(event) => setConversationId(event.target.value)}
                   placeholder="auto (filled in after the first response)"
@@ -671,7 +776,7 @@ export default function App() {
                 <button
                   type="button"
                   className="model-mode-toggle"
-                  disabled={running}
+                  disabled={running || readingFiles}
                   onClick={() => {
                     setConversationId("");
                     setMessages([
@@ -727,7 +832,7 @@ export default function App() {
                     <button
                       type="button"
                       key={item.id}
-                      disabled={running}
+                      disabled={running || readingFiles}
                       className={`conversation-list-item${
                         item.id === conversationId ? " active" : ""
                       }`}
@@ -755,7 +860,7 @@ export default function App() {
                 conversation onto the edited history.
               </p>
             </label>
-            <ConversationTools conversationId={conversationId} disabled={running} onSelect={id => void loadConversation(id)} />
+            <ConversationTools conversationId={conversationId} disabled={running || readingFiles} onSelect={id => void loadConversation(id)} />
             <ConnectionTools domain={domain} apiKey={apiKey} generationSucceeded={status === "Completed"} />
             <div className="request-preview">
               <span>Request URL</span>

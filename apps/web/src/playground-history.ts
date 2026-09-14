@@ -1,6 +1,15 @@
+export interface PlaygroundAttachment {
+  name: string;
+  mimeType: string;
+  /** A data: URI containing the file's bytes, ready to send as an image_url/file content part. */
+  dataUrl: string;
+}
+
 export interface PlaygroundMessage {
   role: "system" | "developer" | "user" | "assistant";
   content: string;
+  /** File attachments to send alongside this message's text (see App.tsx's attach button). */
+  attachments?: PlaygroundAttachment[];
 }
 
 export interface HistoryMutation {
@@ -81,6 +90,76 @@ export function removePlaygroundMessage(
     messages: withUserDraft(messages.slice(0, index)),
     // Removing a committed turn is the same kind of history rewrite as an
     // edit: preserve the Mirror id and let the server rebase it.
+    invalidatesConversation: false,
+  };
+}
+
+export function addPlaygroundAttachment(
+  messages: PlaygroundMessage[],
+  index: number,
+  attachment: PlaygroundAttachment,
+  hasTrackedConversation: boolean,
+): HistoryMutation {
+  const current = messages[index];
+  if (!current) throw new RangeError(`Message index ${index} is out of bounds`);
+  if (current.role === "assistant")
+    return { messages, invalidatesConversation: false };
+
+  const edited: PlaygroundMessage = {
+    ...current,
+    attachments: [...(current.attachments ?? []), attachment],
+  };
+  const isFinalUserDraft =
+    hasTrackedConversation &&
+    index === messages.length - 1 &&
+    current.role === "user";
+
+  if (!hasTrackedConversation || isFinalUserDraft) {
+    return {
+      messages: messages.map((message, currentIndex) =>
+        currentIndex === index ? edited : message,
+      ),
+      invalidatesConversation: false,
+    };
+  }
+
+  return {
+    messages: withUserDraft([...messages.slice(0, index), edited]),
+    invalidatesConversation: false,
+  };
+}
+
+export function removePlaygroundAttachment(
+  messages: PlaygroundMessage[],
+  index: number,
+  attachmentIndex: number,
+  hasTrackedConversation: boolean,
+): HistoryMutation {
+  const current = messages[index];
+  if (!current) throw new RangeError(`Message index ${index} is out of bounds`);
+  if (current.role === "assistant")
+    return { messages, invalidatesConversation: false };
+
+  const edited: PlaygroundMessage = {
+    ...current,
+    attachments: (current.attachments ?? []).filter((_, i) => i !== attachmentIndex),
+  };
+  const isFinalUserDraft =
+    hasTrackedConversation &&
+    index === messages.length - 1 &&
+    current.role === "user";
+
+  if (!hasTrackedConversation || isFinalUserDraft) {
+    return {
+      messages: messages.map((message, currentIndex) =>
+        currentIndex === index ? edited : message,
+      ),
+      invalidatesConversation: false,
+    };
+  }
+
+  return {
+    messages: withUserDraft([...messages.slice(0, index), edited]),
     invalidatesConversation: false,
   };
 }

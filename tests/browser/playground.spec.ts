@@ -45,4 +45,37 @@ test("Responses mode runs, retains history and switches back to Chat", async ({p
  await expect(page.getByLabel("Path",{exact:true})).toHaveValue("/v1/chat/completions");
  await expect(page.getByPlaceholder("auto (filled in after the first response)")).toHaveValue("responses-conversation");
 });
+test("Markdown and text files selected together keep their exact contents and the latest prompt", async ({ page }) => {
+ let request: any;
+ await page.addInitScript(() => {
+  const read = FileReader.prototype.readAsDataURL;
+  const pending: Array<() => void> = [];
+  FileReader.prototype.readAsDataURL = function(file) { pending.push(() => read.call(this, file)); };
+  (window as any).releaseUploads = () => pending.splice(0).forEach(start => start());
+ });
+ await page.route("**/v1/chat/completions", route => {
+  request = route.request().postDataJSON();
+  return route.fulfill({ contentType: "text/event-stream", body: 'data: {"choices":[{"delta":{"content":"Received"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n' });
+ });
+ await page.goto("/mirror/playground");
+ await page.locator("textarea").last().fill("Read both attachments.");
+ await page.locator('input[type="file"]').last().setInputFiles([
+  { name: "notes.md", mimeType: "text/markdown", buffer: Buffer.from("# Notes\n\nUnique contents: café 🐈\n") },
+  { name: "other.txt", mimeType: "text/plain", buffer: Buffer.from("Second file contents\n") },
+ ]);
+ await expect(page.locator(".run-status")).toHaveText("Reading files…");
+ await expect(page.getByRole("button", { name: /^Run\b/ })).toBeDisabled();
+ await page.keyboard.press("Control+Enter");
+ expect(request).toBeUndefined();
+ await page.evaluate(() => (window as any).releaseUploads());
+ await expect(page.locator(".attachment-chip")).toHaveCount(2);
+ await page.locator("textarea").last().fill("Read both attachments, including Unicode.");
+ await page.getByRole("button", { name: /^Run\b/ }).click();
+ await expect(page.locator(".run-status")).toHaveText("Completed");
+ const parts = request.messages.at(-1).content;
+ expect(parts[0]).toEqual({ type: "text", text: "Read both attachments, including Unicode." });
+ expect(parts.slice(1).map((part: any) => [part.file.filename, Buffer.from(part.file.file_data.split(",")[1], "base64").toString()])).toEqual([
+  ["notes.md", "# Notes\n\nUnique contents: café 🐈\n"], ["other.txt", "Second file contents\n"],
+ ]);
+});
 });

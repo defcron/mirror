@@ -21,6 +21,10 @@ RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
 
+ARG MIRROR_BUILD_REVISION=development
+LABEL org.opencontainers.image.revision=$MIRROR_BUILD_REVISION
+ENV MIRROR_BUILD_REVISION=$MIRROR_BUILD_REVISION
+
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
@@ -35,6 +39,7 @@ COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/packages/protocol/package.json ./packages/protocol/package.json
 COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
+COPY scripts/storage.mjs scripts/restore-drill.mjs ./scripts/
 RUN mkdir -p /home/node/.mirror && chown node:node /home/node/.mirror
 USER node
 EXPOSE 8787

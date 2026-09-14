@@ -918,9 +918,13 @@ test("a stray re-entrant run() call while one is already in flight is a no-op (b
   // React ever gets a chance to re-render the Run button into a Stop
   // button - runningRef.current is set synchronously at the very top of
   // run(), before the first await, specifically to catch this.
-  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
-  window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
-  gate.resolve(jsonResponse({ choices: [{ message: { content: "only once" } }] }));
+  act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }));
+  });
+  await act(async () => {
+    gate.resolve(jsonResponse({ choices: [{ message: { content: "only once" } }] }));
+  });
   await screen.findByText("Completed");
   assert.equal(fetchCount, 1);
 });
@@ -1265,5 +1269,165 @@ for (const transport of ["stream", "metadata", "header"]) test(`Responses mode $
   assert.ok(screen.getByRole("heading", { name: "Chat" }));
   assert.ok(screen.getAllByDisplayValue("Responses answer").length);
   assert.equal((screen.getByLabelText(/Conversation ID/i) as HTMLInputElement).value, "responses-id");
+});
+
+// ---------------------------------------------------------------------------
+// File attachments (playground upload button)
+// ---------------------------------------------------------------------------
+
+function lastAttachInput() {
+  const inputs = screen.getAllByLabelText("\uD83D\uDCCE Attach file") as HTMLInputElement[];
+  return inputs.at(-1) as HTMLInputElement;
+}
+
+test("attaching an image preserves its filename for server extension detection", async () => {
+  let capturedBody: Record<string, unknown> | null = null;
+  await renderApp([
+    [
+      /^\/v1\/chat\/completions$/,
+      (_url, init) => {
+        capturedBody = JSON.parse(String(init?.body));
+        return jsonResponse({ choices: [{ message: { content: "I see a cat" } }] });
+      },
+    ],
+  ]);
+  fireEvent.change(lastUserTextarea(), { target: { value: "what is this?" } });
+  const file = new window.File(["fake-bytes"], "cat.png", { type: "image/png" });
+  fireEvent.change(lastAttachInput(), { target: { files: [file] } });
+  await screen.findByText("cat.png");
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  const messages = (capturedBody as unknown as { messages: Array<{ content: unknown }> }).messages;
+  const sentContent = messages.at(-1)?.content as Array<Record<string, unknown>>;
+  assert.ok(Array.isArray(sentContent));
+  assert.deepEqual(sentContent[0], { type: "text", text: "what is this?" });
+  const imagePart = sentContent[1] as { type: string; file: { filename: string; file_data: string } };
+  assert.equal(imagePart.type, "file");
+  assert.equal(imagePart.file.filename, "cat.png");
+  assert.equal(imagePart.file.file_data, "data:image/png;base64," + Buffer.from("fake-bytes").toString("base64"));
+});
+
+test("attaching a non-image file sends it as a file part with its filename", async () => {
+  let capturedBody: Record<string, unknown> | null = null;
+  await renderApp([
+    [
+      /^\/v1\/chat\/completions$/,
+      (_url, init) => {
+        capturedBody = JSON.parse(String(init?.body));
+        return jsonResponse({ choices: [{ message: { content: "Summarized" } }] });
+      },
+    ],
+  ]);
+  const file = new window.File(["hello world"], "notes.txt", { type: "text/plain" });
+  fireEvent.change(lastAttachInput(), { target: { files: [file] } });
+  await screen.findByText("notes.txt");
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  const messages = (capturedBody as unknown as { messages: Array<{ content: unknown }> }).messages;
+  const sentContent = messages.at(-1)?.content as Array<Record<string, unknown>>;
+  const filePart = sentContent[1] as { type: string; file: { file_data: string; filename: string } };
+  assert.equal(filePart.type, "file");
+  assert.equal(filePart.file.filename, "notes.txt");
+  assert.match(filePart.file.file_data, /^data:text\/plain;base64,/);
+});
+
+test("removing an attachment drops its chip and its content part", async () => {
+  await renderApp();
+  const file = new window.File(["x"], "temp.txt", { type: "text/plain" });
+  fireEvent.change(lastAttachInput(), { target: { files: [file] } });
+  await screen.findByText("temp.txt");
+  fireEvent.click(screen.getByLabelText("Remove attachment temp.txt"));
+  await waitFor(() => assert.equal(screen.queryByText("temp.txt"), null));
+});
+
+test("a message with no attachments is still sent as a plain string (back-compat)", async () => {
+  let capturedBody: Record<string, unknown> | null = null;
+  await renderApp([
+    [
+      /^\/v1\/chat\/completions$/,
+      (_url, init) => {
+        capturedBody = JSON.parse(String(init?.body));
+        return jsonResponse({ choices: [{ message: { content: "ok" } }] });
+      },
+    ],
+  ]);
+  fireEvent.change(lastUserTextarea(), { target: { value: "plain text only" } });
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  const messages = (capturedBody as unknown as { messages: Array<{ content: unknown }> }).messages;
+  assert.equal(messages.at(-1)?.content, "plain text only");
+});
+
+test("a file-only user message can run and attachment placement matches the endpoint", async () => {
+  let sent: any;
+  await renderApp([[/^\/v1\/chat\/completions$/, (_url, init) => {
+    sent = JSON.parse(String(init?.body));
+    return jsonResponse({ choices: [{ message: { content: "Received" } }] });
+  }]]);
+  assert.equal(screen.getAllByLabelText("📎 Attach file").length, 1);
+  fireEvent.change(lastUserTextarea(), { target: { value: "" } });
+  fireEvent.change(lastAttachInput(), { target: { files: [new window.File(["# contents"], "notes.md")] } });
+  await screen.findByText("notes.md");
+  assert.equal((screen.getByRole("button", { name: "＋ Add message" }) as HTMLButtonElement).disabled, true);
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findByText("Completed");
+  assert.equal(sent.messages.at(-1).content.length, 1);
+  assert.equal(sent.messages.at(-1).content[0].file.filename, "notes.md");
+  assert.equal(screen.getAllByLabelText("📎 Attach file").length, 1);
+});
+
+test("Responses mode explains unsupported attachments and preserves them for Chat", async () => {
+  await renderApp();
+  fireEvent.change(lastAttachInput(), { target: { files: [new window.File(["# contents"], "notes.md")] } });
+  await screen.findByText("notes.md");
+  fireEvent.click(screen.getByRole("button", { name: "◇ Responses" }));
+  assert.equal(screen.queryByLabelText("📎 Attach file"), null);
+  fireEvent.click(runButton());
+  await screen.findByText("Blocked");
+  assert.ok(screen.getByText(/File attachments require Chat mode/));
+  fireEvent.click(screen.getByRole("button", { name: "☷ Chat" }));
+  assert.ok(screen.getByText("notes.md"));
+  assert.ok(lastAttachInput());
+});
+
+for (const readerError of [null, new Error("File is no longer readable"), "File read failed"]) test(`file read failures preserve the draft and report ${readerError instanceof Error ? readerError.message : readerError ?? "a fallback error"}`, async (t) => {
+  await renderApp();
+  t.mock.method(FileReader.prototype, "readAsDataURL", function(this: FileReader) {
+    if (typeof readerError === "string") throw readerError;
+    Object.defineProperty(this, "error", { value: readerError });
+    this.onerror!(new window.ProgressEvent("error") as ProgressEvent<FileReader>);
+  });
+  fireEvent.change(lastAttachInput(), { target: { files: [new window.File(["data"], "failed.md")] } });
+  await screen.findByText("Error");
+  assert.ok(screen.getByText(readerError instanceof Error ? readerError.message : readerError ?? "Could not read file"));
+  assert.equal(screen.queryByText("failed.md"), null);
+  assert.equal(lastUserTextarea().value, "Say hello in one short sentence.");
+  assert.equal((runButton() as HTMLButtonElement).disabled, false);
+});
+
+test("empty file selections are ignored and unnamed files get a usable label", async () => {
+  await renderApp();
+  fireEvent.change(lastAttachInput(), { target: { files: [] } });
+  assert.ok(screen.getByText("Ready"));
+  fireEvent.change(lastAttachInput(), { target: { files: [new window.File(["bytes"], "")] } });
+  await screen.findByText("attachment");
+});
+
+test("a queued attachment removal cannot change the submitted message", async () => {
+  const gate = deferred<Response>();
+  await renderApp([[/^\/v1\/chat\/completions$/, () => gate.promise]]);
+  fireEvent.change(lastAttachInput(), { target: { files: [new window.File(["bytes"], "notes.md")] } });
+  await screen.findByText("notes.md");
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  const remove = screen.getByLabelText("Remove attachment notes.md");
+  const run = runButton();
+  act(() => { run.click(); remove.click(); });
+  await act(async () => gate.resolve(jsonResponse({ choices: [{ message: { content: "Received" } }] })));
+  await screen.findByText("Completed");
+  assert.ok(screen.getByText("notes.md"));
 });
 });

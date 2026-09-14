@@ -16,6 +16,7 @@ import {
   type UploadedFile,
 } from "@mirror/protocol";
 import { fingerprintValue } from "./store.js";
+import { uploadMimeType } from "./upload-mime.js";
 import type { OpenAiMessage, TextPart, ContentPart } from "./openai.js";
 
 /**
@@ -127,13 +128,13 @@ export function makePublicLookup(resolve: AddressResolver = lookup as AddressRes
 
 export const publicLookup = makePublicLookup();
 
-async function fetchPublicImage(url: string, signal: AbortSignal | undefined, index: number) {
+async function fetchPublicResource(url: string, signal: AbortSignal | undefined, index: number, label: string) {
   const agent = new Agent({ connect: { lookup: publicLookup } });
   let current = new URL(url);
   try {
     for (let redirects = 0; ; redirects += 1) {
       if (!isPublicImageHost(current.hostname))
-        throw new Error(`image_url[${index}] host is not permitted: ${current.hostname}`);
+        throw new Error(`${label}[${index}] host is not permitted: ${current.hostname}`);
       const res = await fetch(current, {
         signal,
         redirect: "manual",
@@ -141,10 +142,10 @@ async function fetchPublicImage(url: string, signal: AbortSignal | undefined, in
       } as RequestInit & { dispatcher: Agent });
       if (![301, 302, 303, 307, 308].includes(res.status)) {
         if (!res.ok)
-          throw new Error(`Could not fetch image_url[${index}]: upstream returned ${res.status}`);
+          throw new Error(`Could not fetch ${label}[${index}]: upstream returned ${res.status}`);
         const cl = res.headers.get("content-length");
         if (cl && Number(cl) > MAX_IMAGE_BYTES)
-          throw new Error(`image_url[${index}] is too large (${cl} bytes, max ${MAX_IMAGE_BYTES})`);
+          throw new Error(`${label}[${index}] is too large (${cl} bytes, max ${MAX_IMAGE_BYTES})`);
         const mimeType = res.headers.get("content-type")?.split(";")[0] || "application/octet-stream";
         const reader = res.body?.getReader();
         if (!reader) return { data: new Uint8Array(await res.arrayBuffer()), mimeType };
@@ -156,7 +157,7 @@ async function fetchPublicImage(url: string, signal: AbortSignal | undefined, in
           total += value.byteLength;
           if (total > MAX_IMAGE_BYTES) {
             await reader.cancel().catch(() => {});
-            throw new Error(`image_url[${index}] is too large (${total} bytes, max ${MAX_IMAGE_BYTES})`);
+            throw new Error(`${label}[${index}] is too large (${total} bytes, max ${MAX_IMAGE_BYTES})`);
           }
           chunks.push(value);
         }
@@ -169,13 +170,13 @@ async function fetchPublicImage(url: string, signal: AbortSignal | undefined, in
         return { data, mimeType };
       }
       if (redirects >= MAX_IMAGE_REDIRECTS)
-        throw new Error(`Could not fetch image_url[${index}]: too many redirects`);
+        throw new Error(`Could not fetch ${label}[${index}]: too many redirects`);
       const location = res.headers.get("location");
       if (!location)
-        throw new Error(`Could not fetch image_url[${index}]: redirect has no location`);
+        throw new Error(`Could not fetch ${label}[${index}]: redirect has no location`);
       current = new URL(location, current);
       if (current.protocol !== "http:" && current.protocol !== "https:")
-        throw new Error(`image_url[${index}] redirect protocol is not permitted`);
+        throw new Error(`${label}[${index}] redirect protocol is not permitted`);
     }
   } finally {
     await agent.close();
@@ -189,6 +190,16 @@ export function imagePartsOf(
   return content.filter(
     (part): part is Extract<z.infer<typeof ContentPart>, { type: "image_url" }> =>
       part.type === "image_url",
+  );
+}
+
+export function filePartsOf(
+  content: z.infer<typeof OpenAiMessage>["content"],
+): Extract<z.infer<typeof ContentPart>, { type: "file" }>[] {
+  if (!Array.isArray(content)) return [];
+  return content.filter(
+    (part): part is Extract<z.infer<typeof ContentPart>, { type: "file" }> =>
+      part.type === "file",
   );
 }
 
@@ -219,7 +230,7 @@ export async function resolveImageAttachment(
       ? Buffer.from(payload, "base64")
       : Buffer.from(decodeURIComponent(payload), "utf-8");
   } else if (/^https?:\/\//i.test(url)) {
-    ({ data, mimeType } = await fetchPublicImage(url, signal, index));
+    ({ data, mimeType } = await fetchPublicResource(url, signal, index, "image_url"));
   } else {
     throw new Error(
       `image_url[${index}] must be a data: URI or an http(s) URL`,
@@ -238,6 +249,47 @@ export async function resolveImageAttachment(
     data,
     fileName: `image-${index}.${extension}`,
     mimeType,
+    signal,
+  });
+}
+
+/**
+ * Resolves one OpenAI-shape "file" content part (Mirror's addition, mirroring
+ * the newer official Chat Completions file input shape) into an uploaded
+ * backend-api file. The filename extension selects the MIME type; client
+ * MIME labels and file contents do not affect classification. Image extensions
+ * use the multimodal route and other files use my_files.
+ */
+export async function resolveFileAttachment(
+  client: ChatGptBackendClient,
+  part: Extract<z.infer<typeof ContentPart>, { type: "file" }>,
+  index: number,
+  signal?: AbortSignal,
+): Promise<UploadedFile> {
+  const url = part.file.file_data;
+  let data: Uint8Array;
+  const dataUrlMatch = DATA_URL_RE.exec(url);
+  if (dataUrlMatch) {
+    const [, , , isBase64, payload] = dataUrlMatch;
+    data = isBase64
+      ? Buffer.from(payload, "base64")
+      : Buffer.from(decodeURIComponent(payload), "utf-8");
+  } else if (/^https?:\/\//i.test(url)) {
+    ({ data } = await fetchPublicResource(url, signal, index, "file"));
+  } else {
+    throw new Error(`file[${index}] must be a data: URI or an http(s) URL`);
+  }
+  if (data.byteLength === 0)
+    throw new Error(`file[${index}] resolved to an empty file`);
+  if (data.byteLength > MAX_IMAGE_BYTES)
+    throw new Error(
+      `file[${index}] is too large (${data.byteLength} bytes, max ${MAX_IMAGE_BYTES})`,
+    );
+  const fileName = part.file.filename?.trim() || `attachment-${index}`;
+  return client.uploadFile({
+    data,
+    fileName,
+    mimeType: uploadMimeType(fileName),
     signal,
   });
 }

@@ -1,6 +1,8 @@
 # Mirror
 
-See [TODO.md](TODO.md) for prioritized remaining work, verification gaps, and suggested improvements.
+See [TODO.md](TODO.md) for the issue-level backlog and
+[NEXT-STEPS.md](NEXT-STEPS.md) for the repository-audit roadmap and recommended
+order of work.
 
 Mirror is a local, self-hosted ChatGPT client with an OpenAI-compatible API bolted on. It logs you into the *real* chatgpt.com web app — proxied through Mirror's own server, using your existing ChatGPT session — so you get the actual ChatGPT interface, Custom GPTs and all, with no OpenAI API key and no browser automation involved. Alongside that, Mirror ships a separate **Playground** page for testing its OpenAI-compatible `/v1/chat/completions` endpoint directly.
 
@@ -105,11 +107,13 @@ Streaming completions send an empty content delta every 10 seconds while waiting
 
 Either base URL requires a configured `MIRROR_API_KEY` (or `MIRROR_API_KEYS` / `OPENAI_API_KEY`) sent as `Authorization: Bearer ...` for any **cross-origin** request — that's what lets a browser extension on its own origin, or a script on a different host/port, reach `/v1/*` at all. Mirror's *other* routes (`/api/*`, the proxied ChatGPT UI, the Playground) are deliberately not exposed this way: they stay restricted to same-origin browser requests (backed by the control cookie from step 3 of the Quickstart) specifically so a bearer key alone can't be used to drive them. A same-origin browser client (the Playground itself, for instance) doesn't need a bearer key for `/v1/*` either, for the same reason.
 
-**What's supported:** `model`, `messages`, `stream`, `store`, `max_tokens` / `max_completion_tokens`, `stop`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option. The final user message's `content` may also include `image_url` parts (`{"type": "image_url", "image_url": {"url": "..."}}`) — both `data:` URIs and `https://` URLs are accepted; Mirror uploads the image to ChatGPT's file service on your behalf before sending the turn, same as attaching it in the real UI would.
+**What's supported:** `model`, `messages`, `stream`, `store`, `max_tokens` / `max_completion_tokens`, `stop`, and `metadata.conversation_id` / `metadata.mirror_model` / `metadata.private`. Any other field is rejected rather than silently ignored, so you'll know immediately if you've hit an unsupported option. The final user message's `content` may also include `image_url` parts (`{"type": "image_url", "image_url": {"url": "..."}}`) — both `data:` URIs and `https://` URLs are accepted; Mirror uploads the image to ChatGPT's file service on your behalf before sending the turn, same as attaching it in the real UI would. Non-image files (PDFs, text files, spreadsheets, etc.) are supported the same way via `file` parts (`{"type": "file", "file": {"file_data": "...", "filename": "notes.txt"}}`), also accepting `data:` URIs or `https://` URLs; `filename` is optional and defaults to `attachment-<index>`.
 
 `max_tokens`, `max_completion_tokens`, and `stop` are **accepted but ignored** for client compatibility. Mirror does not impose a token/character ceiling or truncate answers at stop strings. Successful completions report `finish_reason: "stop"`. The local API transcript and its continuation fingerprint contain the exact answer returned to the caller. Upstream message IDs and captured events are retained independently. ChatGPT-only behavior that happens mid-turn — a web search, the code-interpreter sandbox running, or an in-chat generated image — is surfaced back to you via `metadata.mirror_tool_events` / `metadata.mirror_images` on the response, since the official response schema has no field for any of that. See [COMPATIBILITY.md](./COMPATIBILITY.md) for the exact shape of both.
 
 **What's not supported (yet):** tool/function calling, audio content parts, response-format constraints, sampling controls (temperature, top_p, etc.), penalties, seeds, and multiple choices per request. See [COMPATIBILITY.md](./COMPATIBILITY.md) for the full rundown of what's structurally possible against ChatGPT's backend-api and what isn't, in both directions.
+
+**Playground attachments:** In Chat mode, use **Attach file** on the final user message, select one or more files, wait for file reading to finish, then run. A file-only user message is also accepted. The browser sends the original filename and complete bytes, including for images. Mirror selects MIME types on the server from the filename extension: `.md`/`.markdown` become `text/markdown`, `.png` becomes `image/png`, and unknown or missing extensions become `application/octet-stream`. Client MIME labels and file contents do not override this choice. The same rule applies to Chat Completions `file` parts and native `POST /api/files` uploads. The separate, filename-free `image_url` API retains its existing image MIME handling. Responses mode supports text input only and explains that attachments require Chat mode.
 
 ### API docs and the OpenAPI schema
 
@@ -129,6 +133,10 @@ Because the main interface is the real ChatGPT web app (proxied through Mirror r
 **Not included by design:** support for multiple auth methods beyond the one session-token flow, and a solved Cloudflare Turnstile challenge (Mirror currently relies on the fact that ChatGPT doesn't always demand one — see [PROTOCOL.md](./PROTOCOL.md) for details on that gap).
 
 ## Security & storage
+
+See [RELEASE-RECOVERY.md](RELEASE-RECOVERY.md) for database schema compatibility,
+image revision identification, the isolated `npm run storage:drill` check, and
+the upgrade/rollback procedure.
 
 - Everything is scoped to `127.0.0.1` by default. Mirror checks the request `Host` header and rejects anything that isn't loopback (`localhost`, `127.0.0.0/8`, `::1`). It is **not** designed for remote or multi-user deployment — that would need TLS, real auth, CSRF protection, and a proper security review, not just a changed `HOST` value.
 - Your session token and minted access token are encrypted at rest with AES-256-GCM, in a local SQLite database (`.data/mirror.db` by default). The token is never inserted into the proxied ChatGPT page's own scripts.
@@ -210,7 +218,7 @@ Tests cover SSE framing, conversation-tree/branch logic, encrypted credential st
 
 Every server build runs `apps/server/tests/conversation-continuation.test.mjs` after compiling and before generating the OpenAPI artifacts. This is mandatory for `npm run build`, `npm start`, the server workspace build, CI, and the Docker image build. A failed assertion exits nonzero and stops the build. The suite drives three successive HTTP completions through both explicit-ID forms (minimal and full history) and transcript matching, using the actual returned answer in subsequent requests. It verifies stable local/upstream IDs, the preceding assistant parent, one conversation only, complete untruncated output, and reloadable matching history. Streaming, JSON, mixed modes, multi-message turns, and replacement snapshots are covered. Tests use isolated storage and synthetic upstream responses; they do not establish compatibility with every future live protocol change.
 
-`npm run coverage` builds the protocol and server, then runs the same unit and integration tests as `npm test` under C8. It collects one fresh report across the server, protocol workers, and React tests, and requires **100% statements, branches, functions, and lines in every application source file**. Unimported files are included so adding untested code fails the gate. CI runs this command as well.
+`npm run coverage` builds the protocol, web application, and server, then runs the same unit and integration tests as `npm test` under C8. Building the web workspace first makes the command self-contained on a clean checkout because server route tests exercise the generated Playground shell. It collects one fresh report across the server, protocol workers, and React tests, and requires **100% statements, branches, functions, and lines in every application source file**. Unimported files are included so adding untested code fails the gate. CI runs this command as an explicit required step before the production build.
 
 Every test case must be nested in a named `test.describe(...)` suite. Use a suite name that identifies the component or behavior under test; add nested suites when they make a large file easier to scan. `npm run test:suites` enforces this structure across server, web, protocol, and browser tests, and the normal unit and coverage commands run that check automatically. New behavior must retain the per-file **100% statements, branches, functions, and lines** coverage gate; do not lower the thresholds or add coverage exclusions to accommodate untested code.
 

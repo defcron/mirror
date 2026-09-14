@@ -4,6 +4,7 @@ import { CompletionBody } from "./openai.js";
 import { getEgressStatus } from "./egress.js";
 import { configuredApiKeys } from "./security.js";
 import { recentFailures } from "./api-errors.js";
+import { DATABASE_SCHEMA_VERSION } from "./schema.js";
 import { databaseHealthy, getSession, getConversation, getInstructions, listMessages, searchConversations, relatedConversations } from "./store.js";
 
 export const SearchQuery = z.object({ q: z.string().trim().min(1).max(200) });
@@ -38,7 +39,7 @@ export async function registerInsightRoutes(app: FastifyInstance) {
       schemaVersion: 1,
       build: { version: "0.1.0", revision: /^[a-f0-9]{7,40}$/.test(process.env.MIRROR_BUILD_REVISION ?? "") ? process.env.MIRROR_BUILD_REVISION : "development" },
       api: { reachable: true, keyConfigured: configuredApiKeys().length > 0 },
-      storage: { engine: "sqlite", healthy: databaseHealthy() },
+      storage: { engine: "sqlite", healthy: databaseHealthy(), schemaVersion: DATABASE_SCHEMA_VERSION },
       egress: { required: egress.required, verified: egress.verified, mode: egress.mode, checkedAt: egress.checkedAt },
       session: { saved: Boolean(getSession()), generationVerified: false },
       recentFailures: recentFailures(),

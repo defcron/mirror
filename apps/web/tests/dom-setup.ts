@@ -33,6 +33,7 @@ for (const name of [
   "CustomEvent", "KeyboardEvent", "MouseEvent", "getComputedStyle",
   "requestAnimationFrame", "cancelAnimationFrame", "SVGElement",
   "DocumentFragment", "Text", "Comment", "MutationObserver", "Storage",
+  "FileReader",
 ]) {
   copy(name);
 }

@@ -23,6 +23,8 @@ services:
   mirror:
     build:
       context: .
+      args:
+        MIRROR_BUILD_REVISION: ${MIRROR_BUILD_REVISION:-development}
     network_mode: "service:warp"
     depends_on:
       warp:

@@ -106,7 +106,9 @@ test("/api/health and /mirror/assets/ bypass the local-authorization check entir
 test("mayBootstrapBrowser requests get a fresh control cookie set", async () => {
   const res = await app.inject({
     method: "GET",
-    url: "/",
+    // Exercise the same bootstrap hook using local HTML, without waiting
+    // for a real chatgpt.com proxy response in the unit suite.
+    url: "/mirror/playground",
     headers: { host: "localhost", accept: "text/html,application/xhtml+xml" },
   });
   const setCookie = res.headers["set-cookie"];
@@ -486,7 +488,7 @@ test("POST /api/files requires a file and otherwise uploads it through the backe
       assert.equal(noFile.statusCode, 400);
       assert.match(JSON.parse(noFile.body).error, /No file uploaded/);
 
-      const { boundary, body } = multipartBody("file", "pic.png", "image/png", "pretend-image-bytes");
+      const { boundary, body } = multipartBody("file", "pic.png", "text/plain", "pretend-image-bytes");
       const res = await app.inject({
         method: "POST",
         url: "/api/files",
@@ -496,6 +498,8 @@ test("POST /api/files requires a file and otherwise uploads it through the backe
       assert.equal(res.statusCode, 200, res.body);
       const file = JSON.parse(res.body);
       assert.equal(file.fileId, "file-abc");
+      assert.equal(file.mimeType, "image/png");
+      assert.equal(file.useCase, "multimodal");
       assert.equal(store.ownsFile("file-abc", "acct-files"), true);
     },
   ));

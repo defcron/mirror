@@ -19,6 +19,8 @@ import {
   buildResponseMetadata,
   imagePartsOf,
   resolveImageAttachment,
+  filePartsOf,
+  resolveFileAttachment,
   normalized,
   promptFor,
   instructionsHash,
@@ -91,7 +93,39 @@ const ImageUrlPart = z
       "Vision input content part. See COMPATIBILITY.md for how this maps onto ChatGPT's " +
       "own file-upload flow.",
   });
-const ContentPart = z.union([TextPart, ImageUrlPart]).openapi({ ref: "ContentPart" });
+/**
+ * Mirror's addition (not an original OpenAI vision-only field): a generic,
+ * filename-bearing file attachment, mirroring the shape of the newer official
+ * Chat Completions "file" content part. `file_data` accepts the same
+ * data: URI / https:// URL forms as image_url.url above, and is resolved
+ * the same way - uploaded to ChatGPT's file service before the turn is
+ * sent (see resolveFileAttachment in conversation-context.ts). The filename
+ * extension determines its MIME type and whether it uses the image upload route.
+ */
+const FilePart = z
+  .object({
+    type: z.literal("file"),
+    file: z
+      .object({
+        file_data: z.string().openapi({
+          description:
+            "A data: URI (uploaded inline) or an https:// URL, containing the file's bytes. " +
+            "Mirror uploads the resolved file to ChatGPT's file service before sending the turn.",
+        }),
+        filename: z.string().optional().openapi({
+          description: "Original filename; its extension determines the server-side MIME type. Unknown or absent extensions use application/octet-stream. Defaults to attachment-<index>.",
+        }),
+      })
+      .strict(),
+  })
+  .strict()
+  .openapi({
+    description:
+      "Filename-bearing file attachment content part for images, PDFs, Markdown, text files, spreadsheets, etc. " +
+      "MIME type is selected from the filename extension, without content sniffing. " +
+      "See COMPATIBILITY.md.",
+  });
+const ContentPart = z.union([TextPart, ImageUrlPart, FilePart]).openapi({ ref: "ContentPart" });
 const OpenAiMessage = z
   .object({
     role: z.enum(["system", "developer", "user", "assistant", "tool"]).openapi({
@@ -436,7 +470,8 @@ export async function registerOpenAiRoutes(
     // UI (and Mirror's /api/chat) treat attachments as belonging to the
     // message being sent right now, not to arbitrary history.
     const imageParts = imagePartsOf(body.messages.at(-1)?.content ?? null);
-    if (!last.content.trim() && imageParts.length === 0) {
+    const fileParts = filePartsOf(body.messages.at(-1)?.content ?? null);
+    if (!last.content.trim() && imageParts.length === 0 && fileParts.length === 0) {
       // An empty final turn (e.g. a client that pre-appends a fresh blank
       // user row after each reply for convenience, then gets submitted
       // before anything is typed into it) would otherwise be forwarded to
@@ -455,18 +490,21 @@ export async function registerOpenAiRoutes(
       });
     }
     let resolvedAttachments: UploadedFile[] | undefined;
-    if (imageParts.length) {
+    if (imageParts.length || fileParts.length) {
       try {
         const uploadClient = new ChatGptBackendClient(await getValidCredentials());
-        resolvedAttachments = await Promise.all(
-          imageParts.map((part, i) => resolveImageAttachment(uploadClient, part, i, (req as any).raw?.signal ?? req.signal)),
-        );
+        const signal = (req as any).raw?.signal ?? req.signal;
+        const [uploadedImages, uploadedFiles] = await Promise.all([
+          Promise.all(imageParts.map((part, i) => resolveImageAttachment(uploadClient, part, i, signal))),
+          Promise.all(fileParts.map((part, i) => resolveFileAttachment(uploadClient, part, i, signal))),
+        ]);
+        resolvedAttachments = [...uploadedImages, ...uploadedFiles];
         const accountId = getSession()?.accountId ?? "default";
         for (const file of resolvedAttachments) saveFile(file, accountId);
       } catch (error) {
         return reply.code(400).send({
           error: {
-            message: error instanceof Error ? error.message : "Could not process an image_url attachment",
+            message: error instanceof Error ? error.message : "Could not process an attachment",
             type: "invalid_request_error",
           },
         });

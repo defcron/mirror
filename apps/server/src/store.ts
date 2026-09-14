@@ -1,3 +1,4 @@
+import { migrateDatabase } from "./schema.js";
 import { resolveDataDirectory } from "./storage-config.js";
 import {
   createCipheriv,
@@ -91,59 +92,8 @@ function decrypt(value: string): string {
 
 const db = new DatabaseSync(DATABASE_FILE);
 chmodSync(DATABASE_FILE, 0o600);
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY, account_id TEXT NOT NULL DEFAULT 'default', upstream_id TEXT,
-    current_node_id TEXT NOT NULL, model TEXT NOT NULL, gizmo_id TEXT, title TEXT NOT NULL,
-    initialized INTEGER NOT NULL DEFAULT 0, init_json TEXT, is_private INTEGER NOT NULL DEFAULT 0,
-    is_branch INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS conversations_updated_idx ON conversations(account_id, updated_at DESC);
-  CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    upstream_node_id TEXT, role TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL,
-    events_json TEXT NOT NULL DEFAULT '[]', attachments_json TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS messages_conversation_idx ON messages(conversation_id, created_at);
-  CREATE TABLE IF NOT EXISTS openai_contexts (
-    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
-    instructions_hash TEXT NOT NULL, updated_at TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS openai_transcripts (
-    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
-    account_id TEXT NOT NULL, transcript_hash TEXT NOT NULL, updated_at TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS openai_transcripts_hash_idx ON openai_transcripts(account_id, transcript_hash);
-  CREATE TABLE IF NOT EXISTS conversation_instructions (conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE, messages_json TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY, account_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL
-  );
-`);
-const messageColumns = db
-  .prepare("PRAGMA table_info(messages)")
-  .all() as Array<{ name: string }>;
-if (!messageColumns.some((column) => column.name === "attachments_json")) {
-  db.exec(
-    "ALTER TABLE messages ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]'",
-  );
-}
-const conversationColumns = db
-  .prepare("PRAGMA table_info(conversations)")
-  .all() as Array<{ name: string }>;
-if (!conversationColumns.some((column) => column.name === "is_private")) {
-  db.exec(
-    "ALTER TABLE conversations ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0",
-  );
-}
-if (!conversationColumns.some((column) => column.name === "is_branch")) {
-  db.exec(
-    "ALTER TABLE conversations ADD COLUMN is_branch INTEGER NOT NULL DEFAULT 0",
-  );
-}
+db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+migrateDatabase(db);
 db.prepare(
   "UPDATE messages SET status = 'interrupted' WHERE status = 'streaming'",
 ).run();

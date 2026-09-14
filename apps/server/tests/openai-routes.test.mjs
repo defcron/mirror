@@ -289,8 +289,14 @@ function stubBackendWithUploads(accountId, opts = {}) {
         return Response.json({ upload_url: "https://blob.example/put", file_id: id });
       }
     }
-    if (pathname === "/put") return new Response(null, { status: 200 });
-    if (/^\/backend-api\/files\/file-\d+\/uploaded$/.test(pathname)) return Response.json({ status: "success" });
+    if (pathname === "/put") {
+      opts.uploads?.push({ data: Buffer.from(init.body), mimeType: init.headers["content-type"] });
+      return new Response(null, { status: 200 });
+    }
+    if (/^\/backend-api\/files\/file-\d+\/uploaded$/.test(pathname)) {
+      opts.marked?.push(pathname);
+      return Response.json({ status: "success" });
+    }
     return base(url, init);
   };
 }
@@ -321,6 +327,140 @@ test("a data: URI image attachment is resolved, uploaded, and forwarded to the t
     const conversationId = res.headers["x-mirror-conversation-id"];
     assert.equal(store.listFiles?.("account-image-1")?.length ?? 1, store.listFiles ? store.listFiles("account-image-1").length : 1);
     void conversationId;
+  });
+});
+
+test("a data: URI file attachment (non-image) is resolved, uploaded as my_files, and forwarded to the turn", async () => {
+  useSession("account-file-1");
+  const sent = [];
+  await withFetch(stubBackendWithUploads("account-file-1", { sent }), async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "auto",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "summarize this" },
+              {
+                type: "file",
+                file: {
+                  file_data: "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                  filename: "notes.txt",
+                },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const uploadCall = sent.find((s) => s.pathname === "/backend-api/files");
+    assert.equal(uploadCall.body.use_case, "my_files");
+    assert.equal(uploadCall.body.file_name, "notes.txt");
+  });
+});
+
+test("Playground files preserve bytes through upload and continuation with MIME selected by extension", async () => {
+  useSession("account-playground-files");
+  const sent = [], uploads = [], marked = [];
+  const fixtures = [
+    { name: "NOTES.MD", declared: "image/png", mime: "text/markdown", bytes: Buffer.from("# Markdown\n\nUnique: café 🐈\n") },
+    { name: "diagram.PNG", declared: "text/plain", mime: "image/png", bytes: Buffer.from([137, 80, 78, 71, 0, 255, 1]) },
+    { name: "document.unknown", declared: "application/pdf", mime: "application/octet-stream", bytes: Buffer.from("%PDF-pretend") },
+  ];
+  await withFetch(stubBackendWithUploads("account-playground-files", { sent, uploads, marked }), async () => {
+    const messages = [{ role: "system", content: "Be concise." }, {
+      role: "user", content: [
+        { type: "text", text: "Read these files." },
+        ...fixtures.map(file => ({ type: "file", file: { filename: file.name, file_data: `data:${file.declared};base64,${file.bytes.toString("base64")}` } })),
+      ],
+    }];
+    let conversationId;
+    for (let turn = 0; turn < 3; turn++) {
+      const response = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: {
+        model: "auto", messages, ...(conversationId ? { metadata: { conversation_id: conversationId } } : {}),
+      } });
+      assert.equal(response.statusCode, 200, response.body);
+      conversationId = response.headers["x-mirror-conversation-id"];
+      messages.push({ role: "assistant", content: response.json().choices[0].message.content }, { role: "user", content: `Follow-up ${turn + 1}` });
+    }
+    assert.deepEqual(uploads, fixtures.map(file => ({ data: file.bytes, mimeType: file.mime })));
+    assert.equal(marked.length, fixtures.length);
+    const creates = sent.filter(call => call.pathname === "/backend-api/files");
+    assert.deepEqual(creates.map(call => call.body), fixtures.map(file => ({
+      file_name: file.name, file_size: file.bytes.length, use_case: file.mime.startsWith("image/") ? "multimodal" : "my_files",
+    })));
+    const turns = sent.filter(call => call.pathname === "/backend-api/f/conversation");
+    assert.deepEqual(turns[0].body.messages[0].metadata.attachments.map(file => [file.name, file.mimeType, file.size]), fixtures.map(file => [file.name, file.mime, file.bytes.length]));
+    assert.deepEqual(turns[0].body.messages[0].content.parts.slice(0, -1).map(part => part.asset_pointer), ["file-service://file-1", "file-service://file-2", "file-service://file-3"]);
+    assert.equal(turns[1].body.parent_message_id, "assistant-1");
+    assert.equal(turns[2].body.parent_message_id, "assistant-2");
+    assert.equal(store.listMessages(conversationId)[0].attachments.length, 3);
+  });
+});
+
+test("a file attachment without a filename defaults to attachment-<index>", async () => {
+  useSession("account-file-2");
+  const sent = [];
+  await withFetch(stubBackendWithUploads("account-file-2", { sent }), async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "auto",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "file", file: { file_data: "data:application/pdf;base64,AAAA" } }],
+          },
+        ],
+      },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const uploadCall = sent.find((s) => s.pathname === "/backend-api/files");
+    assert.equal(uploadCall.body.file_name, "attachment-0");
+  });
+});
+
+test("file inputs decode URL-encoded bytes and use filename MIME for remote URLs", async () => {
+  const client = { uploadFile: async file => file };
+  const inline = await context.resolveFileAttachment(client, { type: "file", file: {
+    filename: "notes.md", file_data: "data:application/octet-stream,%23%20Notes%0Acaf%C3%A9",
+  } }, 0);
+  assert.equal(Buffer.from(inline.data).toString(), "# Notes\ncafé");
+  assert.equal(inline.mimeType, "text/markdown");
+  await withFetch(async () => new Response("# Remote", { headers: { "content-type": "image/png" } }), async () => {
+    const remote = await context.resolveFileAttachment(client, { type: "file", file: { filename: "remote.MD", file_data: "https://example.com/file" } }, 0);
+    assert.equal(Buffer.from(remote.data).toString(), "# Remote");
+    assert.equal(remote.mimeType, "text/markdown");
+  });
+  await assert.rejects(context.resolveFileAttachment(client, { type: "file", file: { file_data: "not-a-data-url" } }, 0), /must be a data: URI/);
+  await assert.rejects(context.resolveFileAttachment(client, { type: "file", file: {
+    filename: "too-big.md", file_data: "data:text/markdown;base64," + Buffer.alloc(20 * 1024 * 1024 + 1).toString("base64"),
+  } }, 0), /is too large/);
+});
+
+test("an empty file attachment is rejected", async () => {
+  useSession("account-file-3");
+  await withFetch(stubBackend("account-file-3", {}), async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "auto",
+        messages: [
+          {
+            role: "user",
+            content: [{ type: "text", text: "hi" }, { type: "file", file: { file_data: "data:text/plain;base64," } }],
+          },
+        ],
+      },
+    });
+    assert.equal(res.statusCode, 400, res.body);
+    assert.match(res.json().error.message, /resolved to an empty file/);
   });
 });
 
@@ -1303,7 +1443,7 @@ test("a non-Error value thrown while resolving an image attachment is still repo
         },
       });
       assert.equal(res.statusCode, 400, res.body);
-      assert.equal(res.json().error.message, "Could not process an image_url attachment");
+      assert.equal(res.json().error.message, "Could not process an attachment");
     },
   );
 });

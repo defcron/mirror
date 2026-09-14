@@ -37,6 +37,8 @@ Because of this, Mirror rejects `role: "tool"` messages outright and doesn't acc
 
 **Streaming snapshots and continuation.** Backend-api can emit more than one assistant message and can replace a text snapshot. Mirror appends growing text within each message and separates new/replacement segments with a blank line, since bytes already streamed cannot be retracted. The API's saved logical assistant row and transcript fingerprint use exactly the text delivered to the client. The upstream tree and raw captured events remain available independently. JSON completions return the final upstream assistant text. Switching response modes does not change conversation identity.
 
+**File input and MIME classification.** Chat Completions accepts `file` content parts in the final user message, including image files. Supply the original `file.filename` and the bytes in `file.file_data` as a data URI or HTTP(S) URL. The server determines the MIME type from the filename extension, case-insensitively; it does not sniff contents or trust browser/data-URI/remote Content-Type labels. Markdown uses `text/markdown`; unknown or absent extensions use `application/octet-stream`. Native `/api/files` follows the same rule. Filename-free `image_url` parts retain their existing image MIME behavior. The Playground uses filename-bearing `file` parts for every upload and enables attachment selection only on the final user message in Chat mode. Responses input remains text-only.
+
 ### Not structurally impossible, just not implemented
 
 **Audio/image *input* content parts beyond `image_url`.** Mirror added `image_url` support (both `data:` URIs and `https://` URLs — see the README) because backend-api does support image attachments end-to-end (the same file-upload flow the real UI uses). Audio input parts have no equivalent upload/attachment path that's been reverse-engineered yet, so they're rejected for now rather than silently dropped — that could change if ChatGPT's audio-input flow gets mapped.
@@ -110,9 +112,9 @@ conversation, Mirror displays the assistant answer, Python tool output
 and every other tool the model can invoke in direct response to the user's
 own turn - image generation (`image_gen`/`dalle`/`dalle.text2im`), web browsing/search
 (`browser`/`web`), canvas (`canmore`), and video/sora (`sora`/`video_gen`) -
-exactly as it would on any later turn. Chain-of-thought (the raw "analysis"
-channel) is likewise never hidden, on this or any turn, in any chat type; see
-"Chain-of-thought / reasoning" below for how it's surfaced.
+exactly as it would on any later turn. Internal chain-of-thought (the raw
+`analysis` channel) is always hidden; see "Chain-of-thought / reasoning" below
+for the separate, documented reasoning summaries that may be surfaced.
 
 What *is* still excluded on this first turn only: `file_search`/`myfiles_browser`
 results and status cards (the quiet retrieval pass over a gizmo/Project's
@@ -127,6 +129,32 @@ Completions and Responses, streaming and JSON, and Mirror's native chat event
 feed. Follow-ups in existing upstream conversations and ordinary model chats
 were never affected by any of this (nothing here is first-turn-gated for
 them). The proxied ChatGPT website continues to use ChatGPT's own rendering.
+
+#### Live acceptance checklist
+
+Use a disposable new conversation with a Custom GPT or Project that has a
+knowledge file and Python enabled. Record the date, Mirror commit, client name
+and version, base URL, streaming mode, selected GPT/Project, and whether the
+request used Chat Completions or Responses. Do not record credentials, cookies,
+authorization headers, signed asset URLs, or the contents of private files.
+
+1. Start a new conversation and ask a question that requires both the attached
+   knowledge file and a small visible Python calculation. The first response
+   must contain the ordinary assistant answer and Python code/output. It must
+   not contain `file_search`/`myfiles_browser` results or status, generic system
+   framing, commentary preambles, or raw `analysis` content.
+2. Confirm any user-requested web, image, canvas, or video output is still
+   visible. Confirm citations and files intentionally included in the final
+   answer still render; a hidden retrieval event must not create a stray asset.
+3. Send a follow-up in the same conversation. Confirm the returned conversation
+   ID is unchanged, the answer uses the first turn's context, and ordinary
+   follow-up tool output is not accidentally subjected to the first-turn-only
+   suppression rule.
+4. Repeat once in the other response mode (streaming versus JSON). If both API
+   families are in release scope, repeat through the other family as well.
+5. Save only a sanitized pass/fail record. Label this result as installed-client
+   and live-upstream evidence; the synthetic suite and Chromium Playground tests
+   are separate evidence layers.
 
 ### Chain-of-thought / reasoning
 

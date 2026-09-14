@@ -71,6 +71,7 @@ test("public API compatibility preflight, errors, request IDs and allowlisted di
   const health = await app.inject({ url: "/api/diagnostics", headers: auth });
   assert.equal(health.json().api.reachable, true); assert.doesNotMatch(health.body, /synthetic-session|synthetic-access|sensitive-upstream-payload|prompt/);
   assert.equal(health.json().build.revision, "development");
+  assert.equal(health.json().storage.schemaVersion, 1);
   process.env.MIRROR_BUILD_REVISION = "abcdef0";
   globalThis.fetch = async () => new Response("warp=on"); await egress.verifyRequiredEgress();
   assert.match((await app.inject({ url: "/api/diagnostics", headers: auth })).json().nextAction, /Test model/);

@@ -112,6 +112,42 @@ test("structured events preserve tools, citations and generated assets", () => {
   );
 });
 
+test("typed content reference patches remain visible during first-turn suppression", () => {
+  const reducer = new ConversationStreamReducer({ suppressFirstTurnToolNarration: true });
+  reducer.feed(JSON.stringify({
+    type: "content_references_patch",
+    message_id: "assistant-cited",
+    content_references: [{ matched_text: "marker", title: "Source" }],
+  }));
+  reducer.feed(JSON.stringify({
+    type: "content_references_patch",
+    message_id: 42,
+    content_references: null,
+  }));
+  assert.deepEqual(reducer.drainEvents(), [
+    {
+      kind: "citation_patch",
+      messageId: "assistant-cited",
+      contentReferences: [{ matched_text: "marker", title: "Source" }],
+      raw: {
+        type: "content_references_patch",
+        message_id: "assistant-cited",
+        content_references: [{ matched_text: "marker", title: "Source" }],
+      },
+    },
+    {
+      kind: "citation_patch",
+      messageId: null,
+      contentReferences: [],
+      raw: {
+        type: "content_references_patch",
+        message_id: 42,
+        content_references: null,
+      },
+    },
+  ]);
+});
+
 test("data-line extraction ignores SSE metadata", () => {
   assert.deepEqual(
     [...iterSseDataLines("event: delta\ndata: one\nid: 3\ndata: two")],

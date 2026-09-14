@@ -1,4 +1,5 @@
 import { registerInsightRoutes } from "./insights.js";
+import { uploadMimeType } from "./upload-mime.js";
 import { registerAssetContentRoute } from "./asset-content.js";
 import { apiError, recordFailure } from "./api-errors.js";
 import { syncConversationPage, hasRemoteHistory } from "./conversation-sync.js";
@@ -400,7 +401,7 @@ app.post("/api/files", async (req, reply) => {
   const file = await client.uploadFile({
     data,
     fileName: part.filename,
-    mimeType: part.mimetype,
+    mimeType: uploadMimeType(part.filename),
   });
   const publicFile = { ...file, raw: {} };
   saveFile(publicFile, accountKey());
