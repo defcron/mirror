@@ -1,6 +1,8 @@
 import { readResponsesStream, responseText } from "./responses-stream.js";
 import { ConnectionTools } from "./ConnectionTools.js";
 import { ConversationTools } from "./ConversationTools.js";
+import { ConversionTools } from "./ConversionTools.js";
+import { InlineMediaPreview } from "./InlineMediaPreview.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { HotkeySettings } from "./HotkeySettings.js";
 import { DEFAULT_HOTKEYS, matchesHotkey } from "./hotkeys.js";
@@ -208,7 +210,13 @@ export default function App() {
   const [conversationsHasMore, setConversationsHasMore] = useState(false);
   const [output, setOutput] = useState("");
   const [raw, setRaw] = useState("");
-  const [showRaw, setShowRaw] = useState(false);
+  // "convert" is a third tab, not a response variant -- it hosts the
+  // file-format conversion tools rather than showing (a transform of) the
+  // model's own output, but lives in the same tab strip since there's no
+  // other natural home for it in this three-column layout.
+  const [responseTab, setResponseTab] = useState<"output" | "raw" | "convert">("output");
+  const showRaw = responseTab === "raw";
+  const setShowRaw = (raw: boolean) => setResponseTab(raw ? "raw" : "output");
   const [running, setRunning] = useState(false);
   const [readingFiles, setReadingFiles] = useState(false);
   const readingFilesRef = useRef(false);
@@ -456,6 +464,34 @@ export default function App() {
       Boolean(conversationId.trim()),
     );
     setMessages(mutation.messages);
+  }
+  // Both of these feed the ConversionTools panel: they land the result in the
+  // draft user message the same way typing/attaching there directly would,
+  // appending a fresh user row first if the last message isn't already one
+  // (e.g. right after a completed run left the last message as the assistant
+  // reply). Guarded the same way every other chat mutation is -- a mid-run
+  // insert would otherwise land after run()'s own trailing setMessages and
+  // scramble turn order.
+  function insertTextIntoChat(text: string) {
+    if (runningRef.current || readingFilesRef.current) return;
+    setMessages((current) => {
+      const last = current.at(-1);
+      if (last?.role === "user") {
+        const content = last.content ? `${last.content}\n\n${text}` : text;
+        return [...current.slice(0, -1), { ...last, content }];
+      }
+      return [...current, { role: "user", content: text }];
+    });
+  }
+  function attachToChat(attachment: PlaygroundAttachment) {
+    if (runningRef.current || readingFilesRef.current) return;
+    setMessages((current) => {
+      const last = current.at(-1);
+      if (last?.role === "user") {
+        return [...current.slice(0, -1), { ...last, attachments: [...(last.attachments ?? []), attachment] }];
+      }
+      return [...current, { role: "user", content: "", attachments: [attachment] }];
+    });
   }
 
   const runningRef = useRef(false);
@@ -713,6 +749,7 @@ export default function App() {
                       updateMessage(index, "content", event.target.value)
                     }
                   />
+                  <InlineMediaPreview text={message.content} />
                   {message.role === "user" && (
                     <div className="message-attachments">
                       {mode === "chat" && index === messages.length - 1 && (
@@ -784,25 +821,45 @@ export default function App() {
           <section className="response-panel">
             <div className="response-tabs">
               <button
-                className={!showRaw ? "active" : ""}
-                onClick={() => setShowRaw(false)}
+                className={responseTab === "output" ? "active" : ""}
+                onClick={() => setResponseTab("output")}
               >
                 Output
               </button>
               <button
-                className={showRaw ? "active" : ""}
-                onClick={() => setShowRaw(true)}
+                className={responseTab === "raw" ? "active" : ""}
+                onClick={() => setResponseTab("raw")}
               >
                 Raw response
               </button>
+              <button
+                className={responseTab === "convert" ? "active" : ""}
+                onClick={() => setResponseTab("convert")}
+              >
+                Convert
+              </button>
             </div>
-            <div
-              role="region" aria-label="Response output" tabIndex={0} aria-busy={running}
-              className={`output ${(showRaw ? raw : output) ? "" : "empty"}`}
-            >
-              {(showRaw ? raw : output) ||
-                "Run the request to see the model response."}
-            </div>
+            {responseTab === "convert" ? (
+              <div className="output convert-tab">
+                <ConversionTools
+                  chatModeActive={mode === "chat"}
+                  disabled={running || readingFiles}
+                  onInsertText={insertTextIntoChat}
+                  onAttach={attachToChat}
+                />
+              </div>
+            ) : (
+              <div
+                role="region" aria-label="Response output" tabIndex={0} aria-busy={running}
+                className={`output ${(showRaw ? raw : output) ? "" : "empty"}`}
+              >
+                {(showRaw ? raw : output) ||
+                  "Run the request to see the model response."}
+                {/* Text mode only (not raw JSON): the raw tab is meant to show the
+                    literal wire response, not a rendering of it. */}
+                {responseTab === "output" && output && <InlineMediaPreview text={output} />}
+              </div>
+            )}
           </section>
           <aside className="settings-panel">
             <h2>Configuration</h2>

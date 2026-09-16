@@ -1,4 +1,6 @@
 import { registerInsightRoutes } from "./insights.js";
+import { registerDecoderChallengeRoutes } from "./decoder-challenges.js";
+import { registerConversionRoutes } from "./conversion-routes.js";
 import { uploadMimeType } from "./upload-mime.js";
 import { registerAssetContentRoute } from "./asset-content.js";
 import { apiError, recordFailure } from "./api-errors.js";
@@ -525,6 +527,8 @@ app.post("/api/chat", async (req, reply) => {
 await registerOpenAiRoutes(app);
 await registerAssetContentRoute(app);
 await registerInsightRoutes(app);
+registerDecoderChallengeRoutes(app, () => JSON.stringify([accountKey(), getSessionRevision()]));
+registerConversionRoutes(app);
 
 // OpenAPI: generated from the same Zod schemas the routes validate against
 // (see openapi-document.ts) rather than a hand-maintained JSON file. `mode:

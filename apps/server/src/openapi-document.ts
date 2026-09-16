@@ -1,4 +1,5 @@
 import { ResponsesBody } from "./responses.js";
+import { ChallengeBody, ChallengeParams, ChallengeAnswer, ChallengeKitBody } from "./decoder-challenges.js";
 import "./zod-openapi-init.js";
 import { createDocument, type oas31, type ZodOpenApiPathsObject } from "zod-openapi";
 import { z } from "zod";
@@ -552,6 +553,47 @@ const nativeApiPaths: ZodOpenApiPathsObject = {
           content: { "application/json": { schema: ErrorResponse } },
         },
         "404": { description: "Not found", content: { "application/json": { schema: ErrorResponse } } },
+      },
+    },
+  },
+  "/api/decoder-challenges": {
+    post: {
+      summary: "Generate a decoder challenge for the relayed official UI",
+      description: "Creates an ephemeral, session-scoped answer key valid for 24 hours or until restart/session change. The prompt carries base64(gzip(artifact)) and an optional format guide, never the answer key. Limited to 20 generations per minute and 64 active challenges.",
+      tags: ["Mirror"],
+      requestBody: { content: { "application/json": { schema: ChallengeBody } } },
+      responses: {
+        "200": { description: "Challenge prompt and downloadable artifact metadata", content: { "application/json": { schema: z.object({
+          id: z.string().uuid(), format: ChallengeBody.shape.format, label: z.string(), guidance: ChallengeBody.shape.guidance,
+          payload: ChallengeBody.shape.payload, filename: z.string(), artifactBytes: z.number().int(), prompt: z.string(), expiresAt: z.number(),
+        }) } } },
+        "400": { description: "Invalid options" }, "429": { description: "Generation limit or shelf capacity reached" },
+      },
+    },
+  },
+  "/api/decoder-challenges/kit": {
+    post: {
+      summary: "Download one to four challenge kits as a tar.gz archive",
+      description: "Each kit contains the encoded artifact, matching prompt, optional format guide, and instructions. No answer key is included.",
+      tags: ["Mirror"], requestBody: { content: { "application/json": { schema: ChallengeKitBody } } },
+      responses: { "200": { description: "Gzip-compressed tar archive", content: { "application/gzip": { schema: z.string().openapi({ format: "binary" }) } } }, "400": { description: "Invalid challenge IDs" }, "404": { description: "An included challenge expired or is unavailable" } },
+    },
+  },
+  "/api/decoder-challenges/{id}/artifact": {
+    get: {
+      summary: "Download the original encoded challenge artifact",
+      tags: ["Mirror"], requestParams: { path: ChallengeParams },
+      responses: { "200": { description: "LoaF text, PNG, or GIF attachment", content: { "application/octet-stream": { schema: z.string().openapi({ format: "binary" }) } } }, "404": { description: "Expired or unavailable challenge" } },
+    },
+  },
+  "/api/decoder-challenges/{id}/verify": {
+    post: {
+      summary: "Compare recovered payload bytes with the challenge answer key",
+      tags: ["Mirror"], requestParams: { path: ChallengeParams },
+      requestBody: { content: { "application/json": { schema: ChallengeAnswer } } },
+      responses: {
+        "200": { description: "Exact equality or positional byte comparison; no answer bytes are returned", content: { "application/json": { schema: z.object({ verdict: z.enum(["exact", "partial", "mismatch"]), matchingBytes: z.number().int(), expectedBytes: z.number().int(), actualBytes: z.number().int() }) } } },
+        "400": { description: "Invalid hexadecimal answer" }, "404": { description: "Expired or unavailable challenge" },
       },
     },
   },

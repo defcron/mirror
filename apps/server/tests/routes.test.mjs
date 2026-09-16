@@ -31,6 +31,18 @@ const egress = await import("../dist/egress.js");
 const { buildApp } = await import("../dist/index.js");
 const app = await buildApp();
 test.describe("server / routes", () => {
+test("decoder challenges use the control gate, validate requests, and invalidate on session change", async () => {
+  const create = headers => app.inject({ method: "POST", url: "/api/decoder-challenges", headers, payload: { format: "loaf" } });
+  assert.equal((await create({ host: "localhost" })).statusCode, 401);
+  assert.equal((await create({ ...AUTH, origin: "https://evil.example" })).statusCode, 403);
+  const generated = await create(AUTH);
+  assert.equal(generated.statusCode, 200);
+  const { id } = generated.json();
+  assert.equal((await app.inject({ url: `/api/decoder-challenges/${id}/artifact`, headers: { host: "localhost" } })).statusCode, 401);
+  assert.equal((await app.inject({ method: "POST", url: `/api/decoder-challenges/${id}/verify`, headers: AUTH, payload: { hex: "odd" } })).statusCode, 400);
+  useSession("decoder-other-session");
+  assert.equal((await app.inject({ url: `/api/decoder-challenges/${id}/artifact`, headers: AUTH })).statusCode, 404);
+});
 test.after(async () => {
   await app.close();
   rmSync(dir, { recursive: true, force: true });

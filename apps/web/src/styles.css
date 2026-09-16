@@ -604,3 +604,154 @@ a {
   justify-content: flex-end;
   margin-top: 8px;
 }
+
+/* Inline media detection (App.tsx's message boxes and the Output tab). */
+.inline-media-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+}
+.output .inline-media-preview {
+  padding: 16px 0 0;
+}
+.inline-media-thumb {
+  display: block;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  overflow: hidden;
+  line-height: 0;
+}
+.inline-media-thumb img {
+  display: block;
+  width: 96px;
+  height: 96px;
+  object-fit: cover;
+}
+.inline-media-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 11px;
+  text-decoration: none;
+  color: #333;
+  background: #fafafa;
+  align-self: flex-start;
+}
+.inline-media-thumb:hover,
+.inline-media-file:hover {
+  border-color: #999;
+}
+
+/* Convert tab (ConversionTools.tsx), hosted inside the response-panel's
+   .output area, so it needs to opt back out of .output's monospace/pre-wrap
+   defaults and look like an ordinary form instead. */
+.output.convert-tab {
+  font: 13px/1.5 Inter, sans-serif;
+  white-space: normal;
+  padding: 20px 24px;
+}
+.conversion-tools label {
+  display: block;
+  margin-bottom: 14px;
+}
+.conversion-tools label > span {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #777;
+  margin-bottom: 5px;
+}
+.conversion-tools select,
+.conversion-tools textarea {
+  width: 100%;
+  border: 1px solid #d7d7d7;
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px 9px;
+  font-size: 12px;
+  outline: none;
+}
+.conversion-tools select {
+  height: 34px;
+}
+.conversion-tools textarea {
+  min-height: 84px;
+  resize: vertical;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.conversion-tools hr {
+  border: 0;
+  border-top: 1px solid #eee;
+  margin: 18px 0;
+}
+.conversion-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.conversion-actions button,
+.conversion-result-actions button,
+.conversion-result-actions a {
+  border: 1px solid #d7d7d7;
+  border-radius: 6px;
+  background: #fff;
+  padding: 7px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+}
+.conversion-actions button:hover,
+.conversion-result-actions button:hover,
+.conversion-result-actions a:hover {
+  background: #f5f5f5;
+}
+.conversion-actions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.conversion-result {
+  margin: 10px 0 18px;
+  padding: 14px;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  background: #fafafa;
+}
+.conversion-result p {
+  margin: 0 0 10px;
+  font-size: 12px;
+}
+.conversion-result pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+.conversion-preview-image {
+  display: block;
+  max-width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  margin-bottom: 10px;
+  /* These formats hide data in real but often tiny/low-res pixel grids --
+     pixelated scaling keeps that structure visible instead of blurring it
+     away, which is also just a nice "yes, this is really a grid of bytes"
+     visual tell. */
+  image-rendering: pixelated;
+}
+.conversion-result-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.conversion-tools p[role="status"] {
+  font-size: 11px;
+  color: #555;
+  margin: 0 0 12px;
+}

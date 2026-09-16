@@ -1,4 +1,6 @@
-export const injectionCss = `
+import { decoderChallengeCss, decoderChallengeJs } from "./decoder-challenge-ui.js";
+
+export const injectionCss = decoderChallengeCss + `
 #mirror-launcher{font:13px/1.4 ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#ececec;width:100%;position:relative;z-index:2147483647;pointer-events:auto}
 #mirror-launcher *{box-sizing:border-box}
 #mirror-launcher button{font:inherit}
@@ -39,13 +41,17 @@ export const injectionCss = `
  * Also forces the sidebar open once per page load (leaving the user's
  * normal manual collapse/expand alone afterward).
  */
-export const injectionJs = `(()=>{
+export const injectionJs = decoderChallengeJs + `\n(()=>{
 var widgetRoot=null;
 function buildWidget(){
   var root=document.createElement('div');
   root.id='mirror-launcher';
   root.innerHTML='<button type="button" class="mirror-row"><span class="mirror-dot"></span><span>Mirror controls</span></button>'
     +'<div class="mirror-panel"><strong>Mirror controls</strong><p>Connect with a sessionToken. The credential stays encrypted on this server and is never inserted into ChatGPT page scripts.</p><label>sessionToken</label><textarea autocomplete="off" spellcheck="false" placeholder="Paste sessionToken"></textarea><div class="mirror-actions"><button class="mirror-save">Save &amp; reload</button><a class="mirror-play" href="/mirror/playground" target="_blank" rel="noopener noreferrer">API tester</a><a class="mirror-docs" href="/mirror/api-docs" target="_blank" rel="noopener noreferrer">API docs</a></div><div class="mirror-status"></div><div class="mirror-egress">Egress: checking…</div></div>';
+  var decoder=document.createElement('button');
+  decoder.type='button';decoder.className='mirror-docs';decoder.textContent='Decoder challenges';
+  decoder.onclick=function(){root.querySelector('.mirror-panel').classList.remove('open');window.dispatchEvent(new Event('mirror:decoder-open'));};
+  root.querySelector('.mirror-actions').appendChild(decoder);
   return root;
 }
 function getWidget(){if(!widgetRoot)widgetRoot=buildWidget();return widgetRoot;}
@@ -73,7 +79,7 @@ function wireWidget(root){
   };
   window.addEventListener('resize',function(){if(panel.classList.contains('open'))positionPanel(row,panel);});
   window.addEventListener('scroll',function(){if(panel.classList.contains('open'))positionPanel(row,panel);},true);
-  var apiLinks=root.querySelectorAll('.mirror-play,.mirror-docs');
+  var apiLinks=root.querySelectorAll('a.mirror-play,a.mirror-docs');
   for(var li=0;li<apiLinks.length;li++)(function(link){
     link.addEventListener('click',function(e){
       e.preventDefault();
