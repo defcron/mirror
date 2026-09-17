@@ -36,6 +36,7 @@ jobs:
         with:
           files: ./coverage/lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
+          cleanup: true
           fail_ci_if_error: true
       - run: npm run build
       - name: Verify isolated backup and restore in both key modes
