@@ -16,7 +16,11 @@
   "LICENSE": "6664fc812841d6d2f3ff737265aac53fafe9a96928b198ab5c931359b4505e89",
   "NEXT-STEPS.md": "01155784acf046c6bd588a14e496d8138645e46fbce776f6f072988f16039088",
   "PROTOCOL.md": "54efd828cb092e44d4d6205a824d3da1aac712634abe63ac32cde772ac5cef57",
+<<<<<<< HEAD
   "README.md": "fa869049409182bbb235f27b816c322a30e74891b4db02896b832f83619f428b",
+=======
+  "README.md": "f1cf5ece8f2c34647410073c9c96be78acfc232ca97c56b2a8e6a7cee0a05dc9",
+>>>>>>> e70c4fb (Rewrite README to clarify setup, features, and API usage)
   "RELEASE-RECOVERY.md": "351e5bfd66a26af48427d86a4400bd120b1488b60b6d6e089ab9d9d85e915e1c",
   "TODO.md": "71d73b03835da84a9b8ecff802d872b2a0703416ae43972951ef1d48d8bdbd40",
   "UPDATED-SNAPSHOT.md": "6a3d42314c969ed016e0d5e3b76303d517fd60336bc65dfb360d89997f6ac56a",
@@ -43,7 +47,7 @@
   "apps/server/src/index.ts": "5daf038392d14eb12830677e0acca00a18d405edc3fdb7bf7b8a7b8a8bac7d0d",
   "apps/server/src/insights.ts": "0b8bd8e7e3bd4f95d0fa7e71ab35f718b5e65efa4a6606b86cc7add9404922cf",
   "apps/server/src/loaf.ts": "e2c85948ffd62a06b70d1af3131972c1d391eb4526d2a4f8ce291d001bece995",
-  "apps/server/src/mirror-controls.ts": "05b67c67d924f8126f706d16daffa2c5bb3f0cd02a30c4059daa7102f820bd96",
+  "apps/server/src/mirror-controls.ts": "feef244f6ea9800d0f793ed5bf92bfd6de46fd197d5fc1a15b7f6751dfe9b6e3",
   "apps/server/src/openai.ts": "c4e60cc12f0426b2ec187a874bde1a0f1d40e980ebe50a50a44f4c24eefce481",
   "apps/server/src/openapi-document.ts": "6603293f04cfc5b2feba29886e2781bdf1904ac325c9794a6520cbe77387278f",
   "apps/server/src/pngspeak.ts": "8bf9317f0d804a865d1341753650d4c1433d1c1751f0fb0a216ea7137519f338",
@@ -80,7 +84,7 @@
   "apps/server/tests/proxy-http.test.mjs": "1012597b175933a3b87687fdba0324f65abe15c6387e0b74b694e30965c6608a",
   "apps/server/tests/proxy-stream.test.mjs": "4df55b57dc354cdb3d7a70d73951b754d9877778dd5b2faaa7b3cd6b40b3f320",
   "apps/server/tests/proxy-websocket.test.mjs": "3550d17624374f12e92951c0e9b5def51541698ac8c2622a3d5c4d44d8b87a30",
-  "apps/server/tests/reliability.test.mjs": "5eb6d635162bb12ba0bebec34d737737b21212b5220755f6daaa7715318e9657",
+  "apps/server/tests/reliability.test.mjs": "d8dcb6f40e0f50ebcd6e3f7df3be1292f1bd8dc4132e3ebe4e8a5f7b3e59adc2",
   "apps/server/tests/responses.test.mjs": "4a9aa8223ce01650b4c3d4dbed2e60f098612e910ce996e66d780b6ce84c5692",
   "apps/server/tests/rich-output-routes.test.mjs": "69999b36ece256e9d0a85c72488b73cf23a0a523596de9140a3be82fb270c282",
   "apps/server/tests/rich-output.test.mjs": "e4c6acd07dab6ab5e47779e89d60fd9a2e2be9fc7213190de5f62e675c83ff38",

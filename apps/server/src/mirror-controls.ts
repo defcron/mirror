@@ -15,6 +15,7 @@ export const injectionCss = decoderChallengeCss + `
 #mirror-launcher .mirror-panel.open{display:block}
 #mirror-launcher .mirror-panel strong,#mirror-launcher .mirror-panel label{display:block;margin-bottom:7px}
 #mirror-launcher .mirror-panel p{color:#aaa;font-size:11px}
+#mirror-launcher .mirror-panel p a{color:#ececec;text-decoration:underline;text-underline-offset:2px}
 #mirror-launcher .mirror-panel textarea{width:100%;height:64px;resize:vertical;border:1px solid #444;border-radius:8px;background:#111;color:#eee;padding:8px;font:11px monospace}
 #mirror-launcher .mirror-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}
 #mirror-launcher .mirror-actions button,#mirror-launcher .mirror-actions a{flex:1 1 auto;min-width:72px;border:0;border-radius:8px;padding:8px;text-align:center;text-decoration:none;cursor:pointer}
@@ -47,7 +48,7 @@ function buildWidget(){
   var root=document.createElement('div');
   root.id='mirror-launcher';
   root.innerHTML='<button type="button" class="mirror-row"><span class="mirror-dot"></span><span>Mirror controls</span></button>'
-    +'<div class="mirror-panel"><strong>Mirror controls</strong><p>Connect with a sessionToken. The credential stays encrypted on this server and is never inserted into ChatGPT page scripts.</p><label>sessionToken</label><textarea autocomplete="off" spellcheck="false" placeholder="Paste sessionToken"></textarea><div class="mirror-actions"><button class="mirror-save">Save &amp; reload</button><a class="mirror-play" href="/mirror/playground" target="_blank" rel="noopener noreferrer">API tester</a><a class="mirror-docs" href="/mirror/api-docs" target="_blank" rel="noopener noreferrer">API docs</a></div><div class="mirror-status"></div><div class="mirror-egress">Egress: checking…</div></div>';
+    +'<div class="mirror-panel"><strong>Mirror controls</strong><p>Connect with a sessionToken. <a class="mirror-session-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">Get it from ChatGPT</a>. The credential stays encrypted on this server and is never inserted into ChatGPT page scripts.</p><label>sessionToken</label><textarea autocomplete="off" spellcheck="false" placeholder="Paste sessionToken"></textarea><div class="mirror-actions"><button class="mirror-save">Save &amp; reload</button><a class="mirror-play" href="/mirror/playground" target="_blank" rel="noopener noreferrer">API tester</a><a class="mirror-docs" href="/mirror/api-docs" target="_blank" rel="noopener noreferrer">API docs</a></div><div class="mirror-status"></div><div class="mirror-egress">Egress: checking…</div></div>';
   var decoder=document.createElement('button');
   decoder.type='button';decoder.className='mirror-docs';decoder.textContent='Decoder challenges';
   decoder.onclick=function(){root.querySelector('.mirror-panel').classList.remove('open');window.dispatchEvent(new Event('mirror:decoder-open'));};

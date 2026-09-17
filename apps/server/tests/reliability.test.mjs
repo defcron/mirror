@@ -52,6 +52,7 @@ test("browser session and complete origins gate control access", () => {
 test("event streams are never text-rewritten and browser assets parse without telemetry init", () => {
  assert.equal(isRewritableContentType("text/event-stream; charset=utf-8"),false);
  new Function(injectionJs);
+ assert.match(injectionJs,/href="https:\/\/chatgpt\.com\/api\/auth\/session" target="_blank" rel="noopener noreferrer"/);
  new Function(EARLY_PATCH.replace(/^<script>/, "").replace(/<\/script>$/, ""));
  assert.equal(EARLY_PATCH.includes("dd.init("),false);
 });
