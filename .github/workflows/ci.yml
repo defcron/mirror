@@ -31,6 +31,12 @@ jobs:
       # branches, functions, and lines, enforced separately for every file.
       - name: Enforce 100% coverage across all measures
         run: npm run coverage
+      - name: Upload coverage report to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          files: ./coverage/lcov.info
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: true
       - run: npm run build
       - name: Verify isolated backup and restore in both key modes
         run: npm run storage:drill
