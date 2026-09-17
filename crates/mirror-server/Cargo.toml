@@ -4,6 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 
+[lib]
+name = "mirror_server"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mirror-server"
 path = "src/main.rs"
@@ -12,3 +16,8 @@ path = "src/main.rs"
 mirror-store = { workspace = true }
 mirror-protocol = { workspace = true }
 mirror-formats = { workspace = true }
+
+base64 = { workspace = true }
+rand = { workspace = true }
+subtle = "2.6"
+url = "2.5"
