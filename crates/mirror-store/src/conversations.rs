@@ -197,7 +197,7 @@ impl Store {
                     "SELECT * FROM conversations WHERE account_id = ?1 ORDER BY updated_at DESC",
                 )?;
                 let rows = stmt
-                    .query_map([account_id], |row| map_conversation(row))?
+                    .query_map([account_id], map_conversation)?
                     .collect::<rusqlite::Result<Vec<_>>>()?;
                 Ok(rows)
             }
@@ -274,6 +274,7 @@ impl Store {
     }
 
     /// Mirrors `addMessage`.
+    #[allow(clippy::too_many_arguments)] // matches addMessage's own many-field input shape
     pub fn add_message(
         &self,
         conversation_id: &str,
@@ -350,7 +351,7 @@ impl Store {
                 "SELECT * FROM messages WHERE conversation_id = ?1 ORDER BY created_at, rowid",
             )?;
             let rows = stmt
-                .query_map([conversation_id], |row| map_message(row))?
+                .query_map([conversation_id], map_message)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
@@ -625,7 +626,7 @@ impl Store {
                  ORDER BY updated_at DESC LIMIT 100",
             )?;
             let rows = stmt
-                .query_map(params![account_id, query], |row| map_conversation(row))?
+                .query_map(params![account_id, query], map_conversation)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
@@ -643,7 +644,7 @@ impl Store {
                 "SELECT * FROM conversations WHERE account_id = ?1 AND upstream_id = ?2 ORDER BY updated_at DESC",
             )?;
             let rows = stmt
-                .query_map(params![account_id, upstream_id], |row| map_conversation(row))?
+                .query_map(params![account_id, upstream_id], map_conversation)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })

@@ -210,12 +210,12 @@ pub fn map_conversation_summary(item: &Value, now_iso: &str) -> Option<RemoteCon
     let id = item.get("id").and_then(Value::as_str)?.to_string();
     let create_time = item
         .get("create_time")
-        .map(|v| coerce_to_string(v))
+        .map(coerce_to_string)
         .unwrap_or_else(|| now_iso.to_string());
     let update_time = item
         .get("update_time")
-        .map(|v| coerce_to_string(v))
-        .or_else(|| item.get("create_time").map(|v| coerce_to_string(v)))
+        .map(coerce_to_string)
+        .or_else(|| item.get("create_time").map(coerce_to_string))
         .unwrap_or_else(|| now_iso.to_string());
     Some(RemoteConversationSummary {
         id,
@@ -1116,6 +1116,7 @@ pub struct SendMessageOptions<'a> {
     pub history_and_training_disabled: bool,
     /// Optional Cloudflare Turnstile token override for sentinel requirements.
     pub turnstile_token: Option<&'a str>,
+    #[allow(clippy::type_complexity)] // callback shape matches SendMessageOptions.onDelta
     pub on_delta: Option<&'a dyn Fn(&str, &str)>,
     pub on_event: Option<&'a dyn Fn(&NormalizedConversationEvent)>,
 }
@@ -1160,7 +1161,7 @@ impl<'a> ChatGptConversationSession<'a> {
         Ok(init)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub async fn send(
         &mut self,
         prompt: &str,

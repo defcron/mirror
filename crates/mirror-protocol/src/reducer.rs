@@ -550,11 +550,9 @@ impl ConversationStreamReducer {
                 .and_then(|m| role_of(m))
                 == Some("assistant");
             if status == "finished_successfully" && is_assistant && self.current_message_id.is_some()
-            {
-                if self.final_assistant_id.is_none() {
+                && self.final_assistant_id.is_none() {
                     self.final_assistant_id = self.current_message_id.clone();
                 }
-            }
         }
     }
 

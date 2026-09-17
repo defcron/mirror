@@ -184,7 +184,7 @@ static CONTROL_SECRET: LazyLock<String> = LazyLock::new(|| {
 pub fn control_cookie() -> String {
     format!(
         "{CONTROL_COOKIE_NAME}={}; Path=/; HttpOnly; SameSite=Strict",
-        &*CONTROL_SECRET
+        *CONTROL_SECRET
     )
 }
 
