@@ -41,41 +41,7 @@ The conversion API exposes LoaF, PngSpeak, gptgif, and gptgif v4 under `/api/con
 
 ## OpenAI-compatible API
 
-<<<<<<< HEAD
-## Decoder challenges in the ChatGPT UI
-
-Open **Format Lab** beside the normal ChatGPT composer in the relayed official interface. The existing Mirror controls panel stays dedicated to connection settings. Choose **LoaF**, **PngSpeak**, **Original gptgif**, or **gptgif v4**, then generate a challenge. You can give GPT a format guide or let it investigate, and choose a UTF-8 note or random binary as the hidden payload. The v4 challenges randomize their alphabet and palette.
-
-**Insert into chat** prepares a draft in the normal composer; send it when ready. An existing draft is preserved. **Copy prompt** is available if the upstream composer changes. The prompt carries the exact encoded artifact as `base64(gzip(file bytes))`, so GPT can reconstruct it with code execution without accessing your localhost. GPT must decode the named format after unpacking that transport. For larger prompts, especially v4, use **Download prompt**, attach the `.txt` file in ChatGPT, and ask GPT to solve the challenge described inside it. Code execution must be available in the selected ChatGPT conversation; Mirror does not add execution tools to the upstream model.
-
-When GPT finishes, reopen Format Lab and click **Check latest GPT reply**, or paste its recovered hexadecimal bytes / marked answer line. Mirror compares the bytes against its server-held answer key and reports **Exact match**, **Partial match**, or **Mismatch**. Partial matches count bytes at the same offsets; extra or missing bytes never pass as exact. Reply markers contain a unique challenge ID to avoid grading another challenge's answer.
-
-The **GPT workshop** in Format Lab uses Mirror's conversion API to build format-specific prompts for three collaborative actions: build an artifact from a creative brief, remix a format, or explain a format with a tiny example. The prompt asks GPT to produce real bytes or a reproducible script, maintain a manifest, and leave a change log for the next iteration. This is deliberately a GPT-facing workflow rather than a user-only export tool.
-
-The optional **Download this kit** action bundles the encoded file, matching `prompt.txt`, separate `format-guide.txt`, and instructions in a standard `.tar.gz` archive. Expand **Optional: get files and prompts → Get all four kits** to generate and download one kit for each format in a single archive. The separate guide is an optional hint for the user, including when the prompt uses independent mode. No kit contains an answer key. **Recent challenges** lets you select the challenge you want to check; the last 16 generated prompts are retained in this tab's session storage across reloads.
-
-Answer keys are ephemeral: they expire after 24 hours, a Mirror restart, or a saved-session change. Downloaded files remain usable for independent decoding after that, but Mirror can no longer grade them. The server bounds active challenges to 64 and generation to 20 per minute. The challenge, download, kit, and verification routes use Mirror's existing local control authentication and origin protections; see the generated API docs for `/api/decoder-challenges`.
-
-## The Playground
-
-Besides the proxied ChatGPT interface, Mirror ships a second page — the **Playground** — for exercising its OpenAI-compatible API directly, without needing to write any code. Reach it either from the **Mirror controls** panel's "API tester" link, or directly at:
-
-```
-http://127.0.0.1:8799/mirror/playground
-```
-
-The Playground offers **Chat** (`/v1/chat/completions`) and **Responses** (`/v1/responses`) modes. Pick a live model, send text messages, and inspect streamed or JSON output in either API format. Switching modes keeps your transcript and Mirror conversation ID. User turns remain editable; assistant replies remain read-only. Both modes use the same conversation engine and can load and continue saved Mirror conversations.
-
-Responses supports text input, instructions, named streaming events, and one-shot requests. Continue using `metadata.conversation_id` or full input history. This is a documented subset: tools, image/file input, `previous_response_id`, response retrieval, and background mode are not supported.
-
-By default the Playground keeps its bearer token in memory only and doesn't persist message history; there's a "Remember prompt history on this device" toggle if you want it to keep your working history in the browser's `localStorage` between visits — flip it back off to clear it. The System box is different: it's always saved server-side, account-wide (`GET`/`PUT /api/settings/default-system-instructions`), not to `localStorage` — whatever you leave in it becomes the default a *new* conversation starts from, on any browser or device signed in to this Mirror instance, independent of the "remember prompt history" toggle above.
-
-## Using the OpenAI-compatible API
-
-Point any OpenAI SDK at Mirror instead of `api.openai.com`:
-=======
 Set an OpenAI SDK's base URL to `http://127.0.0.1:8799/v1`. For example:
->>>>>>> e70c4fb (Rewrite README to clarify setup, features, and API usage)
 
 ```python
 from openai import OpenAI
