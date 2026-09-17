@@ -4,4 +4,4 @@ pub mod store;
 
 pub use crypto::{CryptoError, EncryptionKey};
 pub use schema::{MigrationError, database_schema_version, migrate_database};
-pub use store::{Store, StoreError, StoredSession};
+pub use store::{AssetTicket, Store, StoreError, StoredSession};
