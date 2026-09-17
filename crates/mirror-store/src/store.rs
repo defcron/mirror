@@ -145,14 +145,17 @@ impl Store {
         })
     }
 
-    fn with_connection<T>(&self, f: impl FnOnce(&Connection) -> Result<T, StoreError>) -> Result<T, StoreError> {
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, StoreError>,
+    ) -> Result<T, StoreError> {
         let guard = self.connection.lock().expect("store connection mutex");
         f(&guard)
     }
 
     /// Mirrors `databaseHealthy`.
     pub fn database_healthy(&self) -> bool {
-        self.with_connection(|db| {
+        self.with_conn(|db| {
             let ok: i64 = db.query_row("SELECT 1 AS ok", [], |row| row.get(0))?;
             Ok(ok == 1)
         })
@@ -162,7 +165,7 @@ impl Store {
     // ---- settings KV -----------------------------------------------------
 
     fn read_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
-        self.with_connection(|db| {
+        self.with_conn(|db| {
             Ok(db
                 .query_row(
                     "SELECT value FROM settings WHERE key = ?1",
@@ -175,7 +178,7 @@ impl Store {
 
     fn write_setting(&self, key: &str, value: &str) -> Result<(), StoreError> {
         let updated_at = now_iso8601();
-        self.with_connection(|db| {
+        self.with_conn(|db| {
             db.execute(
                 "INSERT INTO settings(key, value, updated_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -233,7 +236,7 @@ impl Store {
     /// in-flight mint for the old session is rejected.
     pub fn clear_session(&self) -> Result<(), StoreError> {
         self.changed_session();
-        self.with_connection(|db| {
+        self.with_conn(|db| {
             db.execute("DELETE FROM settings WHERE key = 'session'", [])?;
             Ok(())
         })
@@ -391,7 +394,7 @@ impl Store {
     /// Mirrors `claimDefaultAccountData`: attaches data written by earlier
     /// builds (before account keying) to the verified account.
     pub fn claim_default_account_data(&self, account_id: &str) -> Result<(), StoreError> {
-        self.with_connection(|db| {
+        self.with_conn(|db| {
             db.execute(
                 "UPDATE conversations SET account_id = ?1 WHERE account_id = 'default'",
                 [account_id],
@@ -523,18 +526,18 @@ impl Store {
     }
 }
 
-fn now_epoch_millis() -> i64 {
+pub(crate) fn now_epoch_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
 }
 
-fn new_uuid() -> String {
+pub(crate) fn new_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     // Matches `new Date().toISOString()`.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -701,7 +704,7 @@ mod tests {
         s.set_default_system_instructions("acct-1", "second").unwrap();
         assert_eq!(s.default_system_instructions("acct-1").unwrap(), "second");
         let count: i64 = s
-            .with_connection(|db| Ok(db.query_row("SELECT count(*) FROM settings", [], |r| r.get(0))?))
+            .with_conn(|db| Ok(db.query_row("SELECT count(*) FROM settings", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -768,7 +771,7 @@ mod tests {
 
         {
             let s = Store::open(&path, key()).unwrap();
-            s.with_connection(|db| {
+            s.with_conn(|db| {
                 db.execute(
                     "INSERT INTO conversations (id, current_node_id, model, title, created_at, updated_at) VALUES ('c1','n1','gpt','t','now','now')",
                     [],
@@ -784,7 +787,7 @@ mod tests {
 
         let reopened = Store::open(&path, key()).unwrap();
         let status: String = reopened
-            .with_connection(|db| {
+            .with_conn(|db| {
                 Ok(db.query_row("SELECT status FROM messages WHERE id = 'm1'", [], |r| r.get(0))?)
             })
             .unwrap();
@@ -935,7 +938,7 @@ mod tests {
     fn setting_the_account_id_claims_pre_account_keyed_data() {
         let s = store();
         s.save_verified_session("tok-1", None, None, None).unwrap();
-        s.with_connection(|db| {
+        s.with_conn(|db| {
             db.execute(
                 "INSERT INTO conversations (id, current_node_id, model, title, created_at, updated_at) VALUES ('c1','n1','gpt','t','now','now')",
                 [],
@@ -951,7 +954,7 @@ mod tests {
         s.set_session_account_id("acct-9").unwrap();
 
         let (conversations, files): (i64, i64) = s
-            .with_connection(|db| {
+            .with_conn(|db| {
                 Ok((
                     db.query_row(
                         "SELECT count(*) FROM conversations WHERE account_id = 'acct-9'",
