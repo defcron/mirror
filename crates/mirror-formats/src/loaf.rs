@@ -210,6 +210,11 @@ mod tests {
                 is_dir: true,
             },
             LoafEntry {
+                name: "dir_with_slash/".into(),
+                content: Vec::new(),
+                is_dir: true,
+            },
+            LoafEntry {
                 name: "folder/file.txt".into(),
                 content: b"inner".to_vec(),
                 is_dir: false,
@@ -217,10 +222,11 @@ mod tests {
         ];
         let loaf = pack_loaf(&entries).unwrap();
         let extracted = unpack_loaf(&loaf).unwrap();
-        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted.len(), 3);
         assert!(extracted[0].is_dir);
-        assert_eq!(extracted[1].name, "folder/file.txt");
-        assert_eq!(extracted[1].content, b"inner");
+        assert!(extracted[1].is_dir);
+        assert_eq!(extracted[2].name, "folder/file.txt");
+        assert_eq!(extracted[2].content, b"inner");
     }
 
     #[test]

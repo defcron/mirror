@@ -1222,7 +1222,9 @@ dependencies = [
 name = "mirror-formats"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "flate2",
+ "rand 0.8.8",
  "sha2",
  "tar",
  "thiserror",

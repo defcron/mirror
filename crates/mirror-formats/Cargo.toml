@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+crc32fast = "1"
 flate2 = "1"
-tar = "0.4"
+rand = { workspace = true }
 sha2 = "0.10"
+tar = "0.4"
 thiserror = { workspace = true }
