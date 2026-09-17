@@ -1,0 +1,17 @@
+[package]
+name = "mirror-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aes-gcm = { workspace = true }
+base64 = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rand = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
