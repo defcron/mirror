@@ -1,6 +1,7 @@
 //! Port of `packages/protocol/` — the ChatGPT wire-protocol client.
 //! See the migration plan for remaining modules.
 
+pub mod client;
 pub mod events;
 pub mod http;
 pub mod patch;
@@ -9,8 +10,11 @@ pub mod reducer;
 pub mod scan;
 pub mod session;
 pub mod sse;
+pub mod types;
 
+pub use client::{ChatGptBackendClient, ChatGptConversationSession, SendMessageOptions};
 pub use events::NormalizedConversationEvent;
+pub use types::{BackendApiError, ConversationInitResult, ConversationSessionState, RemoteConversationSummary, SendMessageResult, SessionCredentials, UploadedFile, UseCase};
 pub use patch::{PatchOutcome, apply_message_patch};
 pub use reducer::{ConversationStreamReducer, ReducerOptions};
 pub use proof::{

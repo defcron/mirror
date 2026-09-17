@@ -13,8 +13,12 @@ rand = { workspace = true }
 sha3 = "0.10"
 regex = "1.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-wreq = "0.16"
+wreq = { version = "0.16", features = ["json", "stream"] }
 wreq-util = "0.2"
+uuid = { version = "1", features = ["v4"] }
+url = "2.5"
+tokio = { version = "1", features = ["rt"] }
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
