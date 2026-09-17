@@ -2,3 +2,4 @@
 //! See the migration plan for remaining modules.
 
 pub mod security;
+pub mod url_rewrite;

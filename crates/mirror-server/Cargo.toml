@@ -21,3 +21,4 @@ base64 = { workspace = true }
 rand = { workspace = true }
 subtle = "2.6"
 url = "2.5"
+regex = "1.11"
