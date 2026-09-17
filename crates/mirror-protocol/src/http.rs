@@ -44,12 +44,19 @@ pub fn user_agent() -> String {
     )
 }
 
-/// The `sec-ch-ua` client hint consistent with [`EMULATED_CHROME`].
+/// The `sec-ch-ua` client hint consistent with [`EMULATED_CHROME`]. Brand
+/// order and the GREASE brand spelling match what `proxy.ts` sent, with only
+/// the version substituted.
 pub fn sec_ch_ua() -> String {
     format!(
-        r#""Chromium";v="{EMULATED_CHROME_MAJOR}", "Google Chrome";v="{EMULATED_CHROME_MAJOR}", "Not=A?Brand";v="24""#
+        r#""Chromium";v="{EMULATED_CHROME_MAJOR}", "Not?A_Brand";v="24", "Google Chrome";v="{EMULATED_CHROME_MAJOR}""#
     )
 }
+
+/// The `sec-ch-ua-platform` fallback, matching the UA's claimed platform.
+pub const SEC_CH_UA_PLATFORM: &str = "\"macOS\"";
+/// The `sec-ch-ua-mobile` fallback.
+pub const SEC_CH_UA_MOBILE: &str = "?0";
 
 /// Builds the shared client. All upstream traffic (proxy forwarding,
 /// protocol calls, session minting) must go through one of these so every

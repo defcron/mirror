@@ -3,5 +3,6 @@
 
 pub mod egress;
 pub mod preflight;
+pub mod proxy_headers;
 pub mod security;
 pub mod url_rewrite;
