@@ -19,11 +19,15 @@ mirror-formats = { workspace = true }
 
 base64 = { workspace = true }
 rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 subtle = "2.6"
 url = "2.5"
+uuid = { version = "1", features = ["v4"] }
 regex = "1.11"
 thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

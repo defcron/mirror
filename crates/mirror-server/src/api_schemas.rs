@@ -1,0 +1,136 @@
+//! Request and response schemas for Mirror's native `/api/*` and `/v1/*` routes.
+//! Port of `apps/server/src/api-schemas.ts`.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetSessionBody {
+    #[serde(rename = "sessionToken")]
+    pub session_token: String,
+    #[serde(rename = "turnstileToken", skip_serializing_if = "Option::is_none")]
+    pub turnstile_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationIdParam {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelUpdateBody {
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchBody {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+fn default_auto_model() -> String {
+    "auto".to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewConversationBody {
+    #[serde(default = "default_auto_model")]
+    pub model: String,
+    #[serde(rename = "gizmoId", skip_serializing_if = "Option::is_none")]
+    pub gizmo_id: Option<String>,
+}
+
+fn default_limit() -> usize {
+    50
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationsQuery {
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+    #[serde(default)]
+    pub offset: usize,
+    #[serde(default = "default_true")]
+    pub sync: bool,
+    #[serde(default)]
+    pub resync: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetsQuery {
+    pub pointer: String,
+    #[serde(rename = "upstreamConversationId", skip_serializing_if = "Option::is_none")]
+    pub upstream_conversation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatAttachment {
+    #[serde(rename = "fileId")]
+    pub file_id: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    #[serde(rename = "fileSize")]
+    pub file_size: u64,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    #[serde(rename = "useCase")]
+    pub use_case: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default)]
+    pub raw: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChatBody {
+    pub prompt: String,
+    #[serde(default = "default_auto_model")]
+    pub model: String,
+    #[serde(rename = "conversationId", skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    #[serde(rename = "gizmoId", skip_serializing_if = "Option::is_none")]
+    pub gizmo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+    #[serde(rename = "timezoneOffsetMin", skip_serializing_if = "Option::is_none")]
+    pub timezone_offset_min: Option<i32>,
+    #[serde(default)]
+    pub attachments: Vec<ChatAttachment>,
+    #[serde(rename = "turnstileToken", skip_serializing_if = "Option::is_none")]
+    pub turnstile_token: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn chat_body_deserializes_with_defaults() {
+        let raw = json!({ "prompt": "hello world" });
+        let body: ChatBody = serde_json::from_value(raw).unwrap();
+        assert_eq!(body.prompt, "hello world");
+        assert_eq!(body.model, "auto");
+        assert!(body.attachments.is_empty());
+        assert_eq!(body.conversation_id, None);
+    }
+
+    #[test]
+    fn set_session_body_round_trips() {
+        let raw = json!({
+            "sessionToken": "test-session-token-12345",
+            "turnstileToken": "cf-token"
+        });
+        let body: SetSessionBody = serde_json::from_value(raw).unwrap();
+        assert_eq!(body.session_token, "test-session-token-12345");
+        assert_eq!(body.turnstile_token.as_deref(), Some("cf-token"));
+    }
+}

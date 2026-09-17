@@ -1139,10 +1139,13 @@ dependencies = [
  "mirror-store",
  "rand 0.8.8",
  "regex",
+ "serde",
+ "serde_json",
  "subtle",
  "thiserror",
  "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]
