@@ -21,9 +21,9 @@ export const ChallengeAnswer = z.object({
 
 const formats = {
   loaf: { label: "LoaF", extension: "loaf", mime: "text/plain", encode: (bytes: Buffer) => Buffer.from(makeLoaf([{ name: "payload.bin", content: bytes, mtime: new Date(0) }])) },
-  pngspeak: { label: "PngSpeak", extension: "png", mime: "image/png", encode: (bytes: Buffer) => encodePngSpeak(bytes) },
-  gptgif: { label: "Original gptgif", extension: "gif", mime: "image/gif", encode: (bytes: Buffer) => encodeGptgif([bytes]) },
-  "gptgif-v4": { label: "gptgif v4", extension: "gif", mime: "image/gif", encode: (bytes: Buffer) => encodeGptgifV4([bytes], { fontSeed: randomBytes(4).readUInt32LE(), paletteSeed: randomBytes(4).readUInt32LE() }) },
+  pngspeak: { label: "PngSpeak", extension: "pngspk.png", mime: "image/png", encode: (bytes: Buffer) => encodePngSpeak(bytes) },
+  gptgif: { label: "Original gptgif", extension: "gptgif.gif", mime: "image/gif", encode: (bytes: Buffer) => encodeGptgif([bytes]) },
+  "gptgif-v4": { label: "gptgif v4", extension: "gptgif-v4.gif", mime: "image/gif", encode: (bytes: Buffer) => encodeGptgifV4([bytes], { fontSeed: randomBytes(4).readUInt32LE(), paletteSeed: randomBytes(4).readUInt32LE() }) },
 };
 
 // Per-app, bounded, ephemeral answer keys. Session changes invalidate access.

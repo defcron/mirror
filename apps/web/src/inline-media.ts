@@ -16,7 +16,7 @@ const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|svg|bmp|avif)(?:[?#]|$)/i;
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\((\S+?)\)/g;
 const MARKDOWN_LINK = /(?<!!)\[([^\]]*)\]\((\S+?)\)/g;
 const BARE_DATA_URI = /data:[a-z0-9.+-]+\/[a-z0-9.+-]+;base64,[a-zA-Z0-9+/=]+/g;
-const BARE_FILE_URL = /https?:\/\/\S+\.(?:png|jpe?g|gif|webp|svg|bmp|avif|pdf|loaf|zip|gz|json|txt)(?:[?#]\S*)?/gi;
+const BARE_FILE_URL = /https?:\/\/[^\s<>()]+\.(?:png|jpe?g|gif|webp|svg|bmp|avif|pdf|loaf|zip|gz|json|txt)(?:[?#][^\s<>()]*)?/gi;
 
 function isImageUrl(url: string): boolean {
   return url.startsWith("data:image/") || IMAGE_EXTENSIONS.test(url);

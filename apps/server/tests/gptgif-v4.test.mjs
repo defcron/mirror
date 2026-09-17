@@ -6,6 +6,10 @@ import {
   decodeGptgifV4,
   defaultPalette,
   encodeGptgifV4,
+  fontFromBytes,
+  fontToBytes,
+  paletteFromBytes,
+  paletteToBytes,
   randomFont,
   randomPalette,
   validateFont,
@@ -63,6 +67,15 @@ function findPaletteSeedNeedingAReroll() {
 }
 
 test.describe("server / gptgif-v4", () => {
+
+test("custom font and palette files round-trip and reject incorrect lengths", () => {
+  const font = randomFont(123);
+  assert.deepEqual(fontFromBytes(fontToBytes(font)), font);
+  assert.throws(() => fontFromBytes(Buffer.alloc(127)), /exactly 128 bytes/);
+  const palette = defaultPalette();
+  assert.deepEqual(paletteFromBytes(paletteToBytes(palette)), palette);
+  assert.throws(() => paletteFromBytes(Buffer.alloc(767)), /exactly 768 bytes/);
+});
 
 test("round-trips a multi-frame payload end to end with the default font and palette", () => {
   const input = Buffer.from("The quick brown fox jumps over the lazy dog. ".repeat(60), "utf8"); // several payload frames

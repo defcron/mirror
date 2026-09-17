@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { gzipSync } from "node:zlib";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { makeLoaf, verifyLoaf, extractLoaf, type LoafEntry } from "./loaf.js";
+import { makeLoaf, verifyLoaf, extractLoaf, type LoafEntry, type LoafExtractedEntry } from "./loaf.js";
 import { encodePngSpeak, decodePngSpeak } from "./pngspeak.js";
 import { encodeGptgif, decodeGptgif, calibrateGptgif, gunzipGptgifOutput, FONT as GPTGIF_FONT } from "./gptgif.js";
 import {
@@ -56,14 +56,14 @@ type FormatName = (typeof FORMATS)[number];
 
 const FORMAT_INFO: Record<FormatName, { label: string; extension: string; mime: string; roundTrips: boolean; blurb: string }> = {
   loaf: { label: "LoaF", extension: "loaf", mime: "text/plain", roundTrips: true, blurb: "A tar+gzip archive hex-encoded onto a single checksummed line." },
-  pngspeak: { label: "PngSpeak", extension: "png", mime: "image/png", roundTrips: true, blurb: "Raw bytes stored one-to-one as RGBA pixels in an uncompressed-scanline PNG." },
+  pngspeak: { label: "PngSpeak", extension: "pngspk.png", mime: "image/png", roundTrips: true, blurb: "Raw bytes stored one-to-one as RGBA pixels in an uncompressed-scanline PNG." },
   // Not self-round-trippable through this API without help: gptgif clusters
   // glyph tiles with k-means, and cluster label order is not deterministic
   // (see gptgif.ts/calibrateGptgif's own doc comment) -- decoding for real
   // needs a clusterMap derived from /api/convert/gptgif/calibrate plus a
   // human or GPT reading the rendered glyphs, exactly like decoder-challenges.
-  gptgif: { label: "gptgif (original)", extension: "gif", mime: "image/gif", roundTrips: false, blurb: "Bytes rendered as a grid of glyph tiles in an animated GIF; decoding needs a calibrated cluster map (see /calibrate)." },
-  "gptgif-v4": { label: "gptgif v4", extension: "gif", mime: "image/gif", roundTrips: true, blurb: "gptgif with a randomizable glyph font and color palette (seed-reproducible)." },
+  gptgif: { label: "gptgif (original)", extension: "gptgif.gif", mime: "image/gif", roundTrips: false, blurb: "Bytes rendered as a grid of glyph tiles in an animated GIF; decoding needs a calibrated cluster map (see /calibrate)." },
+  "gptgif-v4": { label: "gptgif v4", extension: "gptgif-v4.gif", mime: "image/gif", roundTrips: true, blurb: "gptgif with a randomizable glyph font and color palette (seed-reproducible)." },
 };
 
 function encodeWithFormat(format: FormatName, data: Buffer, opts: { fontSeed?: number; paletteSeed?: number } = {}): Buffer {
@@ -91,6 +91,34 @@ function decodeWithFormat(format: FormatName, artifact: Buffer): Buffer {
     // helper get the true original bytes back, matching every other format.
     case "gptgif": return gunzipGptgifOutput(decodeGptgif(artifact));
     case "gptgif-v4": return decodeGptgifV4(artifact);
+  }
+}
+
+/** @internal Maps older LoaF entry shapes into the stable HTTP response shape. */
+export function serializeLoafEntry(e: LoafExtractedEntry) {
+  return {
+    name: e.name,
+    isDirectory: e.isDirectory,
+    isSymlink: e.isSymlink ?? false,
+    linkTarget: e.linkTarget,
+    bytes: e.content.length,
+    contentBase64: e.content.toString("base64"),
+  };
+}
+
+/** @internal Runs one gauntlet leg independently so a broken codec cannot stop the rest. */
+export function runGauntletFormat(
+  format: FormatName,
+  original: Buffer,
+  encode: typeof encodeWithFormat = encodeWithFormat,
+  decode: typeof decodeWithFormat = decodeWithFormat,
+) {
+  try {
+    const artifact = encode(format, original);
+    const recovered = decode(format, artifact);
+    return { format, ok: original.equals(recovered), artifactBytes: artifact.length };
+  } catch (err) {
+    return { format, ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -328,7 +356,7 @@ const PromptOptsQuery = IoQuery.extend({
 const PromptBody = z.object({
   dataBase64: b64,
   format: z.enum(FORMATS),
-  filename: z.string().min(1).max(256).default("payload.bin"),
+  filename: z.string().max(256).default("payload.bin"),
   note: z.string().max(2000).optional(),
 }).strict();
 
@@ -396,14 +424,7 @@ export function registerConversionRoutes(app: FastifyInstance) {
     }
     reply.header("cache-control", "no-store");
     return {
-      entries: entries.map((e) => ({
-        name: e.name,
-        isDirectory: e.isDirectory,
-        isSymlink: e.isSymlink ?? false,
-        linkTarget: e.linkTarget,
-        bytes: e.content.length,
-        contentBase64: e.content.toString("base64"),
-      })),
+      entries: entries.map(serializeLoafEntry),
     };
   });
   app.post("/api/convert/loaf/verify", async (req, reply) => {
@@ -723,15 +744,7 @@ export function registerConversionRoutes(app: FastifyInstance) {
     const original = io.raw_in ? rawBody(req) : bytesOf(DataBody.parse(req.body).dataBase64);
     reply.header("cache-control", "no-store");
     return {
-      results: FORMATS.map((format) => {
-        try {
-          const artifact = encodeWithFormat(format, original);
-          const recovered = decodeWithFormat(format, artifact);
-          return { format, ok: original.equals(recovered), artifactBytes: artifact.length };
-        } catch (err) {
-          return { format, ok: false, error: err instanceof Error ? err.message : String(err) };
-        }
-      }),
+      results: FORMATS.map((format) => runGauntletFormat(format, original)),
     };
   });
 }

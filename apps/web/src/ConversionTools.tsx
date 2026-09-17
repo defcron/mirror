@@ -10,6 +10,13 @@ const FORMAT_LABELS: Record<FormatId, string> = {
   "gptgif-v4": "gptgif v4 (real GIF, self-calibrating)",
 };
 
+const FORMAT_EXTENSIONS: Record<FormatId, string> = {
+  loaf: "loaf",
+  pngspeak: "pngspk.png",
+  gptgif: "gptgif.gif",
+  "gptgif-v4": "gptgif-v4.gif",
+};
+
 interface Artifact {
   format: FormatId;
   bytes: number;
@@ -25,6 +32,12 @@ interface Artifact {
   extension: string;
   /** Set for image-producing formats (pngspeak/gptgif/gptgif-v4) -- these are genuinely valid images despite hiding data inside. */
   isImage: boolean;
+}
+
+/** @internal Skips prompt building when the source payload is unknown to the client. */
+export function withPromptSource<T>(sourceDataBase64: string | undefined, build: () => T): T | undefined {
+  if (sourceDataBase64 === undefined) return undefined;
+  return build();
 }
 
 function toBase64(text: string): string {
@@ -74,10 +87,10 @@ export function ConversionTools({
 
   function normalizeEncodeResult(res: any, sourceDataBase64: string): Artifact {
     if (format === "loaf") {
-      return { format, bytes: res.bytes, dataBase64: toBase64(res.loaf), sourceDataBase64, mime: "text/plain", extension: "loaf", isImage: false };
+      return { format, bytes: res.bytes, dataBase64: toBase64(res.loaf), sourceDataBase64, mime: "text/plain", extension: FORMAT_EXTENSIONS[format], isImage: false };
     }
     const mime = format === "pngspeak" ? "image/png" : "image/gif";
-    const extension = format === "pngspeak" ? "png" : "gif";
+    const extension = FORMAT_EXTENSIONS[format];
     return { format, bytes: res.bytes, dataBase64: res.dataBase64, sourceDataBase64, mime, extension, isImage: true };
   }
 
@@ -148,7 +161,7 @@ export function ConversionTools({
             dataBase64: res.dataBase64,
             sourceDataBase64: toBase64(sourceText),
             mime,
-            extension: res.format === "loaf" ? "loaf" : mime === "image/png" ? "png" : "gif",
+            extension: FORMAT_EXTENSIONS[res.format as FormatId],
             isImage: mime.startsWith("image/"),
           },
         });
@@ -160,7 +173,7 @@ export function ConversionTools({
         // No sourceDataBase64 here: the fortune text is a server-side random
         // pick that's never sent back to the client, so there's nothing to
         // rebuild a decode-prompt from -- the prompt button stays disabled.
-        setFunResult({ label: "Your fortune, hidden inside a PngSpeak PNG:", artifact: { format: "pngspeak", bytes: buffer.byteLength, dataBase64: btoa(binary), mime: "image/png", extension: "png", isImage: true } });
+        setFunResult({ label: "Your fortune, hidden inside a PngSpeak PNG:", artifact: { format: "pngspeak", bytes: buffer.byteLength, dataBase64: btoa(binary), mime: "image/png", extension: FORMAT_EXTENSIONS.pngspeak, isImage: true } });
       }
       setStatus("Ready");
     } catch (error) {
@@ -171,22 +184,23 @@ export function ConversionTools({
   }
 
   async function buildChatPrompt(art: Artifact) {
-    if (art.sourceDataBase64 === undefined) return;
-    setBusy(true);
-    setStatus("Building a chat prompt…");
-    try {
-      const res = await postJson("/api/convert/gpt-prompt", {
-        dataBase64: art.sourceDataBase64,
-        format: art.format,
-        filename: `message.${art.extension}`,
-      });
-      onInsertText(res.prompt);
-      setStatus("Prompt inserted into the current chat message below.");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not build a prompt");
-    } finally {
-      setBusy(false);
-    }
+    return withPromptSource(art.sourceDataBase64, async () => {
+      setBusy(true);
+      setStatus("Building a chat prompt…");
+      try {
+        const res = await postJson("/api/convert/gpt-prompt", {
+          dataBase64: art.sourceDataBase64,
+          format: art.format,
+          filename: `message.${art.extension}`,
+        });
+        onInsertText(res.prompt);
+        setStatus("Prompt inserted into the current chat message below.");
+      } catch (error) {
+        setStatus(error instanceof Error ? error.message : "Could not build a prompt");
+      } finally {
+        setBusy(false);
+      }
+    });
   }
 
   function attach(art: Artifact) {

@@ -10,6 +10,14 @@ import { extractLoaf, makeLoaf, verifyLoaf } from "../dist/loaf.js";
 
 test.describe("server / loaf", () => {
 
+test("long symlink targets use a GNU longlink record and round-trip", () => {
+  const target = `target/${"x".repeat(140)}`;
+  const entries = extractLoaf(makeLoaf([{ name: "link", linkTarget: target }]));
+  assert.equal(entries[0].name, "link");
+  assert.equal(entries[0].isSymlink, true);
+  assert.equal(entries[0].linkTarget, target);
+});
+
 test("bakes a single file and round-trips it", () => {
   const loaf = makeLoaf([{ name: "hello.txt", content: Buffer.from("hi there\n") }]);
   assert.match(loaf, /^SHA256\(-\)=[0-9a-f]{64} [0-9a-f]+$/);

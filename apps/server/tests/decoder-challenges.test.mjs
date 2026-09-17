@@ -49,10 +49,13 @@ test.describe("server / decoder challenges", () => {
       assert.equal(res.statusCode, 200);
       assert.equal(res.headers["cache-control"], "no-store");
       const challenge = res.json();
+      const extension = { loaf: "loaf", pngspeak: "pngspk.png", gptgif: "gptgif.gif", "gptgif-v4": "gptgif-v4.gif" }[format];
+      assert.ok(challenge.filename.endsWith(`.${extension}`));
       assert.deepEqual(Object.keys(challenge).sort(), ["artifactBytes", "expiresAt", "filename", "format", "guidance", "id", "label", "payload", "prompt"].sort());
       const download = await f.artifact(challenge.id);
       assert.equal(download.statusCode, 200);
       assert.match(download.headers["content-disposition"], /attachment/);
+      assert.match(download.headers["content-disposition"], new RegExp(`decoder-${challenge.id}\\.${extension}`));
       assert.equal(download.headers["cache-control"], "no-store");
       const encoded = challenge.prompt.split("BEGIN_GZIP_BASE64\n")[1].split("\nEND_GZIP_BASE64")[0];
       const bytes = gunzipSync(Buffer.from(encoded, "base64"));

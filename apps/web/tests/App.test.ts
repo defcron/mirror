@@ -95,6 +95,98 @@ test("renders the platform header, sidebar, and default two-message transcript",
   assert.equal(screen.getByText("Ready").className, "run-status ready");
 });
 
+test("Convert actions insert prompts and attachments into the correct chat turn", async () => {
+  await renderApp([
+    [/^\/api\/convert\/pngspeak\/encode$/, () => jsonResponse({ bytes: 3, dataBase64: "AQID" })],
+    [/^\/api\/convert\/gpt-prompt$/, () => jsonResponse({ prompt: "decode this artifact" })],
+    [/^\/v1\/chat\/completions$/, () => jsonResponse({ choices: [{ message: { content: "![result](https://cdn.test/result.png)" } }] })],
+  ]);
+
+  // Make the last turn an assistant reply first. The conversion callbacks
+  // must append a fresh user draft instead of rewriting the assistant row.
+  fireEvent.click(screen.getByRole("button", { name: "Output" }));
+  fireEvent.click(screen.getByLabelText("Stream response"));
+  fireEvent.click(runButton());
+  await screen.findAllByText(/result\.png/);
+  assert.ok(screen.getAllByRole("img", { name: "result" }).length >= 1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+  fireEvent.click(screen.getByRole("button", { name: "Encode" }));
+  await screen.findByAltText(/Encoded PngSpeak/);
+  fireEvent.click(screen.getByRole("button", { name: /Insert decode-prompt into chat/ }));
+  await screen.findByText("Prompt inserted into the current chat message below.");
+  assert.ok(screen.getByDisplayValue("decode this artifact"));
+
+  // A later insertion appends to that user draft, and attachment insertion
+  // augments it. Running again makes the latest row an assistant turn so the
+  // attachment callback also exercises its fresh-user-message path.
+  fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+  await screen.findByText("Attached to the current chat message below.");
+  fireEvent.click(screen.getByRole("button", { name: /Insert decode-prompt into chat/ }));
+  await screen.findByText(/Prompt inserted into the current chat message below\./);
+  fireEvent.click(screen.getByRole("button", { name: "Output" }));
+  fireEvent.click(runButton());
+  await screen.findAllByText(/result\.png/);
+  fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+  fireEvent.click(screen.getByRole("button", { name: "Encode" }));
+  await screen.findByAltText(/Encoded PngSpeak/);
+  fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+  await screen.findByText("Attached to the current chat message below.");
+});
+
+test("conversion callbacks cannot mutate the transcript once a run is starting", async () => {
+  const gate = deferred<Response>();
+  await renderApp([
+    [/^\/api\/convert\/pngspeak\/encode$/, () => jsonResponse({ bytes: 3, dataBase64: "AQID" })],
+    [/^\/api\/convert\/gpt-prompt$/, () => jsonResponse({ prompt: "should not land during run" })],
+    [/^\/v1\/chat\/completions$/, () => gate.promise],
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+  fireEvent.click(screen.getByRole("button", { name: "Encode" }));
+  await screen.findByAltText(/Encoded PngSpeak/);
+  const originalDraft = lastUserTextarea().value;
+
+  // React has not committed the disabled state yet inside this synchronous
+  // event batch, but run() has already raised its ref guard before awaiting
+  // the network. This reproduces a fast user double-action on the same turn.
+  act(() => {
+    fireEvent.click(runButton());
+    fireEvent.click(screen.getByRole("button", { name: /Insert decode-prompt into chat/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+  });
+  assert.equal(lastUserTextarea().value, originalDraft);
+  assert.equal(screen.queryByText("should not land during run"), null);
+  assert.equal(screen.queryByText(/mirror-convert\.pngspk\.png/), null);
+  await act(async () => { gate.resolve(jsonResponse({ choices: [{ message: { content: "finished" } }] })); });
+});
+
+test("conversion tools create a fresh user row when the transcript has no user draft", async () => {
+  await renderApp([
+    [/^\/api\/convert\/pngspeak\/encode$/, () => jsonResponse({ bytes: 3, dataBase64: "AQID" })],
+    [/^\/api\/convert\/gpt-prompt$/, () => jsonResponse({ prompt: "fresh prompt row" })],
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: /Add message/ }));
+  fireEvent.change(screen.getByLabelText("Message 3 role"), { target: { value: "assistant" } });
+  fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+  fireEvent.click(screen.getByRole("button", { name: "Encode" }));
+  await screen.findByAltText(/Encoded PngSpeak/);
+  fireEvent.click(screen.getByRole("button", { name: /Insert decode-prompt into chat/ }));
+  await screen.findByDisplayValue("fresh prompt row");
+  fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+  await screen.findByText(/mirror-convert\.pngspk\.png/);
+});
+
+test("conversion attachment creates a fresh draft after an assistant-only final turn", async () => {
+  await renderApp([[/^\/api\/convert\/pngspeak\/encode$/, () => jsonResponse({ bytes: 3, dataBase64: "AQID" })]]);
+  fireEvent.click(screen.getByRole("button", { name: /Add message/ }));
+  fireEvent.change(screen.getByLabelText("Message 3 role"), { target: { value: "assistant" } });
+  fireEvent.click(screen.getByRole("button", { name: "Convert" }));
+  fireEvent.click(screen.getByRole("button", { name: "Encode" }));
+  await screen.findByAltText(/Encoded PngSpeak/);
+  fireEvent.click(screen.getByRole("button", { name: /Attach to chat/ }));
+  assert.ok(await screen.findByText("mirror-convert.pngspk.png"));
+});
+
 test("Run is blocked with an explanatory reason when the last row isn't a fillable user message", async () => {
   await renderApp();
   // Default last row IS a filled user row - clear it first.
