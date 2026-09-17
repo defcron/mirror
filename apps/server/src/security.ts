@@ -94,6 +94,8 @@ export function authorizedLocalRequest(headers: { authorization?: string; cookie
   return tokenMatches(cookie, [controlSecret]);
 }
 export function mayBootstrapBrowser(method: string, url: string, headers: Record<string, unknown>): boolean {
-  return method === "GET" && (url === "/" || url === "/mirror/playground") &&
+  const pathname = url.split("?", 1)[0];
+  const isBrowserPage = pathname === "/" || pathname === "/mirror/playground" || /^\/c\/[a-z0-9:_-]+$/i.test(pathname);
+  return method === "GET" && isBrowserPage &&
     String(headers.accept ?? "").includes("text/html") && headers["sec-fetch-site"] !== "cross-site";
 }

@@ -121,7 +121,9 @@ function safeRequestHeaders(req: FastifyRequest): Headers {
     else if (Array.isArray(rawValue)) headers.set(name, rawValue.join(", "));
   }
   headers.set("user-agent", USER_AGENT);
+  // Set origin, host, and referer to match chatgpt.com for proper SSL/TLS origin verification
   headers.set("origin", UPSTREAM);
+  headers.set("host", new URL(UPSTREAM).host);
   // A real browser sends a deep, page-specific referer (e.g.
   // https://chatgpt.com/c/<conversation-id>) for API calls made from that
   // conversation's page, not a flat "https://chatgpt.com/" for every single
@@ -133,8 +135,10 @@ function safeRequestHeaders(req: FastifyRequest): Headers {
   if (typeof clientReferer === "string") {
     try {
       const rewritten = new URL(clientReferer);
-      rewritten.protocol = "https:";
-      rewritten.host = new URL(UPSTREAM).host;
+      const upstreamUrl = new URL(UPSTREAM);
+      rewritten.protocol = upstreamUrl.protocol;
+      rewritten.hostname = upstreamUrl.hostname;
+      rewritten.port = upstreamUrl.port;
       headers.set("referer", rewritten.href);
     } catch {
       headers.set("referer", `${UPSTREAM}/`);
@@ -292,6 +296,7 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
   if (req.url.startsWith("/api/auth/session")) return mirrorAuthSession(reply);
 
   const headers = safeRequestHeaders(req);
+
   const wantsHtml = (req.headers.accept ?? "").includes("text/html");
   let htmlAccessToken: string | null = null;
   const session = getSession();
@@ -299,24 +304,37 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
     headers.set("cookie", `__Secure-next-auth.session-token=${session.sessionToken}`);
     if (wantsHtml) htmlAccessToken = (await getValidCredentials()).accessToken;
   }
-  if (req.url.startsWith("/backend-api/")) {
+
+  // Determine which paths need authentication headers
+  const needsAuthHeaders =
+    req.url.startsWith("/backend-api/") ||
+    req.url.startsWith("/ces/") ||           // Observation/telemetry endpoints
+    req.url.startsWith("/api/") ||           // API endpoints (excluding /api/auth/session which is special-cased)
+    req.url.startsWith("/realtime/");        // Real-time/Work Mode endpoints
+  // Note: /sentinel/* endpoints don't need auth headers (real ChatGPT doesn't send them)
+
+  if (needsAuthHeaders) {
     const credentials = await getValidCredentials();
     headers.set("authorization", `Bearer ${credentials.accessToken}`);
     headers.set("oai-device-id", credentials.deviceId);
-    headers.set("x-openai-target-path", req.url.split("?")[0]!);
-    headers.set("x-openai-target-route", req.url.split("?")[0]!);
-    // The real frontend already sends its own chatgpt-account-id header
-    // (safeRequestHeaders forwards it via the "chatgpt-" prefix allowlist)
-    // reflecting whatever workspace/org it currently has selected in its own
-    // UI state -- unconditionally overwriting that with our once-cached
-    // resolveAccountId() value forces every request onto a single account
-    // regardless of what the picker/workspace switcher actually shows,
-    // which can silently reroute to a different plan/entitlement (and thus a
-    // different available model) than the one the UI displays. Only fall
-    // back to our resolved id when the frontend didn't send one at all.
-    if (!headers.has("chatgpt-account-id")) {
-      const accountId = await resolveAccountId(credentials);
-      if (accountId) headers.set("chatgpt-account-id", accountId);
+
+    // Backend-API specific headers
+    if (req.url.startsWith("/backend-api/")) {
+      headers.set("x-openai-target-path", req.url.split("?")[0]!);
+      headers.set("x-openai-target-route", req.url.split("?")[0]!);
+      // The real frontend already sends its own chatgpt-account-id header
+      // (safeRequestHeaders forwards it via the "chatgpt-" prefix allowlist)
+      // reflecting whatever workspace/org it currently has selected in its own
+      // UI state -- unconditionally overwriting that with our once-cached
+      // resolveAccountId() value forces every request onto a single account
+      // regardless of what the picker/workspace switcher actually shows,
+      // which can silently reroute to a different plan/entitlement (and thus a
+      // different available model) than the one the UI displays. Only fall
+      // back to our resolved id when the frontend didn't send one at all.
+      if (!headers.has("chatgpt-account-id")) {
+        const accountId = await resolveAccountId(credentials);
+        if (accountId) headers.set("chatgpt-account-id", accountId);
+      }
     }
   }
 
@@ -325,6 +343,7 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
   const abortUpstream = () => controller.abort(new DOMException("Proxy client disconnected", "AbortError"));
   req.raw.once("aborted", abortUpstream);
   reply.raw.once("close", () => { if (!reply.raw.writableEnded) abortUpstream(); });
+
   try {
     upstream = await fetch(`${UPSTREAM}${req.url}`, {
       method: req.method, headers, body: requestBody(req), redirect: "manual", signal: controller.signal,
