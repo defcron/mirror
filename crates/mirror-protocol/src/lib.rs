@@ -2,6 +2,7 @@
 //! See the migration plan for remaining modules.
 
 pub mod events;
+pub mod http;
 pub mod patch;
 pub mod proof;
 pub mod scan;
