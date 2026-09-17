@@ -170,11 +170,9 @@ app.addHook("onRequest", async (req, reply) => {
     return;
   }
   if (req.url === "/api/health" || req.url.startsWith("/mirror/assets/")) return;
-  // Proxy routes (/backend-api, /ces, /realtime, /cdn) are forwarded to upstream by proxyChatGpt,
-  // which adds real auth headers. Browser may send BROWSER_TOKEN (not a valid API key) in auth,
-  // but that's OK - proxy.ts replaces it with real token. Don't reject based on BROWSER_TOKEN.
-  if (req.url.startsWith("/backend-api/") || req.url.startsWith("/ces/") || req.url.startsWith("/realtime/") || req.url.startsWith("/cdn/")) return;
-  if (!authorizedLocalRequest(req.headers)) return reply.code(401).send({ error: { message: "Open Mirror in your browser or supply a configured Mirror API key", type: "authentication_error" } });
+  if (!authorizedLocalRequest(req.headers)) {
+    return reply.code(401).send({ error: { message: "Open Mirror in your browser or supply a configured Mirror API key", type: "authentication_error" } });
+  }
 });
 
 app.addHook("onSend", async (req, reply, payload) => {
