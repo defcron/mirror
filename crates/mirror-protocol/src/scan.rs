@@ -41,12 +41,14 @@ pub fn scan_specials(value: &Value, out: &mut Vec<NormalizedConversationEvent>) 
                         asset_pointer: pointer,
                         title: None,
                         raw,
+                        display_hidden: None,
                     }
                 } else {
                     NormalizedConversationEvent::File {
                         asset_pointer: pointer,
                         title: None,
                         raw,
+                        display_hidden: None,
                     }
                 });
             }
@@ -76,12 +78,14 @@ pub fn scan_specials(value: &Value, out: &mut Vec<NormalizedConversationEvent>) 
                         asset_pointer: pointer,
                         title,
                         raw,
+                        display_hidden: None,
                     }
                 } else {
                     NormalizedConversationEvent::File {
                         asset_pointer: pointer,
                         title,
                         raw,
+                        display_hidden: None,
                     }
                 });
             }
@@ -107,6 +111,7 @@ pub fn scan_specials(value: &Value, out: &mut Vec<NormalizedConversationEvent>) 
                     file_id,
                     title,
                     raw: value.clone(),
+                    display_hidden: None,
                 });
             }
 
