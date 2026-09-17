@@ -133,4 +133,75 @@ mod tests {
         assert_eq!(body.session_token, "test-session-token-12345");
         assert_eq!(body.turnstile_token.as_deref(), Some("cf-token"));
     }
+
+    #[test]
+    fn conversation_param_and_model_update_round_trip() {
+        let id_raw = json!({ "id": "conv-123" });
+        let id_param: ConversationIdParam = serde_json::from_value(id_raw).unwrap();
+        assert_eq!(id_param.id, "conv-123");
+
+        let model_raw = json!({ "model": "gpt-4o" });
+        let model_body: ModelUpdateBody = serde_json::from_value(model_raw).unwrap();
+        assert_eq!(model_body.model, "gpt-4o");
+    }
+
+    #[test]
+    fn branch_and_new_conversation_schemas() {
+        let branch_raw = json!({
+            "messageId": "msg-123",
+            "title": "Branch Title"
+        });
+        let branch: BranchBody = serde_json::from_value(branch_raw).unwrap();
+        assert_eq!(branch.message_id, "msg-123");
+        assert_eq!(branch.title.as_deref(), Some("Branch Title"));
+
+        let new_conv_raw = json!({ "gizmoId": "g-abc" });
+        let new_conv: NewConversationBody = serde_json::from_value(new_conv_raw).unwrap();
+        assert_eq!(new_conv.model, "auto");
+        assert_eq!(new_conv.gizmo_id.as_deref(), Some("g-abc"));
+    }
+
+    #[test]
+    fn conversations_and_assets_query_schemas() {
+        let query_raw = json!({
+            "limit": 25,
+            "offset": 50,
+            "sync": false,
+            "resync": true
+        });
+        let query: ConversationsQuery = serde_json::from_value(query_raw).unwrap();
+        assert_eq!(query.limit, 25);
+        assert_eq!(query.offset, 50);
+        assert!(!query.sync);
+        assert!(query.resync);
+
+        let asset_raw = json!({
+            "pointer": "file-service://file-1",
+            "upstreamConversationId": "up-conv-2"
+        });
+        let asset: AssetsQuery = serde_json::from_value(asset_raw).unwrap();
+        assert_eq!(asset.pointer, "file-service://file-1");
+        assert_eq!(asset.upstream_conversation_id.as_deref(), Some("up-conv-2"));
+    }
+
+    #[test]
+    fn chat_attachment_schema() {
+        let attach_raw = json!({
+            "fileId": "f-123",
+            "fileName": "photo.png",
+            "fileSize": 1024,
+            "mimeType": "image/png",
+            "useCase": "multimodal",
+            "width": 100,
+            "height": 200
+        });
+        let attach: ChatAttachment = serde_json::from_value(attach_raw).unwrap();
+        assert_eq!(attach.file_id, "f-123");
+        assert_eq!(attach.file_name, "photo.png");
+        assert_eq!(attach.file_size, 1024);
+        assert_eq!(attach.mime_type, "image/png");
+        assert_eq!(attach.use_case, "multimodal");
+        assert_eq!(attach.width, Some(100));
+        assert_eq!(attach.height, Some(200));
+    }
 }

@@ -28,6 +28,7 @@ regex = "1.11"
 thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio-util = "0.7"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

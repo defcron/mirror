@@ -36,7 +36,7 @@ pub enum UseCase {
     MyFiles,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UploadedFile {
     pub file_id: String,
     pub file_name: String,

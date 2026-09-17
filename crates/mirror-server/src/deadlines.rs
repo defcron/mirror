@@ -117,4 +117,17 @@ mod tests {
         assert_eq!(deadline_ms(Some("abc"), 1000), 1000);
         assert_eq!(deadline_ms(None, 1000), 1000);
     }
+
+    #[tokio::test]
+    async fn turn_deadline_touch_and_close() {
+        let called = Arc::new(AtomicBool::new(false));
+        let called_clone = called.clone();
+        let deadline = TurnDeadline::new(move || {
+            called_clone.store(true, Ordering::SeqCst);
+        });
+        deadline.touch();
+        deadline.close();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!called.load(Ordering::SeqCst));
+    }
 }

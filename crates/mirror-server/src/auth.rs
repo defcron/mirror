@@ -115,3 +115,39 @@ pub async fn verify_candidate_session_token(
         turnstile_token,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mirror_store::crypto::EncryptionKey;
+
+    fn test_store() -> Store {
+        Store::open_in_memory(EncryptionKey::decode_configured(&"ab".repeat(32)).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_valid_credentials_fails_with_no_session() {
+        let store = test_store();
+        assert!(matches!(
+            get_valid_credentials(&store).await,
+            Err(AuthError::NoSession)
+        ));
+    }
+
+    #[tokio::test]
+    async fn get_valid_credentials_returns_cached_token_when_valid() {
+        let store = test_store();
+        let far_future = chrono::Utc::now().timestamp_millis() + 3_600_000;
+        store
+            .save_verified_session("test-sess", Some("acct-1"), Some("dev-123"), None)
+            .unwrap();
+        store
+            .update_minted_token("cached-tok", far_future, None)
+            .unwrap();
+
+        let creds = get_valid_credentials(&store).await.unwrap();
+        assert_eq!(creds.access_token, "cached-tok");
+        assert_eq!(creds.device_id, "dev-123");
+        assert_eq!(creds.session_token.as_deref(), Some("test-sess"));
+    }
+}

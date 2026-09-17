@@ -127,6 +127,36 @@ mod tests {
     }
 
     #[test]
+    fn format_status_all_categories() {
+        let cases = [
+            (403, "permission_error", "request_forbidden"),
+            (404, "invalid_request_error", "not_found"),
+            (409, "invalid_request_error", "conversation_conflict"),
+            (428, "challenge_required_error", "challenge_required"),
+            (429, "rate_limit_error", "rate_limit_exceeded"),
+            (504, "timeout_error", "deadline_exceeded"),
+            (500, "server_error", "upstream_failure"),
+            (502, "server_error", "upstream_failure"),
+        ];
+
+        for (status, expected_type, expected_code) in cases {
+            let err = api_error(status, "msg", "req-test");
+            assert_eq!(err["error"]["type"], expected_type);
+            assert_eq!(err["error"]["code"], expected_code);
+            assert_eq!(err["error"]["request_id"], "req-test");
+        }
+    }
+
+    #[test]
+    fn recent_failures_records_protocol_category() {
+        record_failure("test_code", "req_cat", Some("auth-challenge"));
+        let list = recent_failures();
+        let item = list.iter().find(|r| r.request_id == "req_cat").unwrap();
+        assert_eq!(item.code, "test_code");
+        assert_eq!(item.protocol_category.as_deref(), Some("auth-challenge"));
+    }
+
+    #[test]
     fn recent_failures_ring_buffer_caps_at_twenty() {
         for i in 0..25 {
             record_failure(&format!("code_{i}"), &format!("req_{i}"), None);

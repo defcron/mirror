@@ -200,4 +200,45 @@ mod tests {
             Err(LoafError::ChecksumMismatch { .. })
         ));
     }
+
+    #[test]
+    fn loaf_with_directory_entry() {
+        let entries = vec![
+            LoafEntry {
+                name: "folder".into(),
+                content: Vec::new(),
+                is_dir: true,
+            },
+            LoafEntry {
+                name: "folder/file.txt".into(),
+                content: b"inner".to_vec(),
+                is_dir: false,
+            },
+        ];
+        let loaf = pack_loaf(&entries).unwrap();
+        let extracted = unpack_loaf(&loaf).unwrap();
+        assert_eq!(extracted.len(), 2);
+        assert!(extracted[0].is_dir);
+        assert_eq!(extracted[1].name, "folder/file.txt");
+        assert_eq!(extracted[1].content, b"inner");
+    }
+
+    #[test]
+    fn loaf_rejects_malformed_inputs() {
+        assert!(matches!(unpack_loaf("not-a-loaf"), Err(LoafError::MalformedHeader)));
+        assert!(matches!(unpack_loaf("SHA256(-)=123 short"), Err(LoafError::MalformedHeader)));
+        assert!(matches!(unpack_loaf("SHA256(-)=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz nonhex"), Err(LoafError::MalformedHeader)));
+        assert!(matches!(unpack_loaf("SHA256(-)=0000000000000000000000000000000000000000000000000000000000000000 nothex!"), Err(LoafError::MalformedHeader)));
+
+        // Non-gzip data whose checksum matches
+        let payload = "123456";
+        let mut hasher = Sha256::new();
+        hasher.update(payload.as_bytes());
+        let hash = to_hex_lower(&hasher.finalize());
+        let loaf = format!("SHA256(-)={hash} {payload}");
+        assert!(matches!(unpack_loaf(&loaf), Err(LoafError::DecompressionFailed(_))));
+
+        // Odd length hex
+        assert!(matches!(from_hex("123"), Err(LoafError::InvalidHex(_))));
+    }
 }
