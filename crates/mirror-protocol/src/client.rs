@@ -1128,8 +1128,8 @@ pub struct SendMessageOptions<'a> {
     /// Optional Cloudflare Turnstile token override for sentinel requirements.
     pub turnstile_token: Option<&'a str>,
     #[allow(clippy::type_complexity)] // callback shape matches SendMessageOptions.onDelta
-    pub on_delta: Option<&'a dyn Fn(&str, &str)>,
-    pub on_event: Option<&'a dyn Fn(&NormalizedConversationEvent)>,
+    pub on_delta: Option<&'a (dyn Fn(&str, &str) + Send + Sync)>,
+    pub on_event: Option<&'a (dyn Fn(&NormalizedConversationEvent) + Send + Sync)>,
 }
 
 /// A stateful convenience wrapper. Server-side persistence can serialize
@@ -1181,8 +1181,8 @@ impl<'a> ChatGptConversationSession<'a> {
         attachments: &[UploadedFile],
         history_and_training_disabled: bool,
         turnstile_token: Option<&str>,
-        on_delta: Option<&dyn Fn(&str, &str)>,
-        on_event: Option<&dyn Fn(&NormalizedConversationEvent)>,
+        on_delta: Option<&(dyn Fn(&str, &str) + Send + Sync)>,
+        on_event: Option<&(dyn Fn(&NormalizedConversationEvent) + Send + Sync)>,
     ) -> Result<SendMessageResult, BackendApiError> {
         if !self.state.initialized {
             self.initialize(timezone.unwrap_or("UTC"), timezone_offset_min.unwrap_or(0)).await?;

@@ -11,11 +11,13 @@
 //! logic is testable without network access, and so the real implementation
 //! can share the impersonating HTTP client used for upstream calls.
 
+use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 const CLOUDFLARE_TRACE_URL: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum EgressMode {
     Direct,
     Warp,
@@ -31,12 +33,14 @@ impl EgressMode {
 }
 
 /// Mirrors the `EgressStatus` shape surfaced by `GET /api/health`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EgressStatus {
     pub mode: EgressMode,
     pub required: bool,
     pub verified: bool,
+    #[serde(rename = "checkedAt", skip_serializing_if = "Option::is_none")]
     pub checked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

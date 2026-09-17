@@ -47,7 +47,7 @@ fn to_hex_lower(bytes: &[u8]) -> String {
 }
 
 fn from_hex(hex: &str) -> Result<Vec<u8>, LoafError> {
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err(LoafError::InvalidHex("odd length".into()));
     }
     let mut bytes = Vec::with_capacity(hex.len() / 2);

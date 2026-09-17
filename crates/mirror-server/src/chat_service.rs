@@ -192,7 +192,7 @@ pub async fn run_chat(
         assistant_msg.id
     };
 
-    let mut full_text = String::new();
+    let full_text = String::new();
     let _events: Arc<Mutex<Vec<NormalizedConversationEvent>>> = Arc::new(Mutex::new(Vec::new()));
 
     let creds = match get_valid_credentials(store).await {
@@ -245,13 +245,12 @@ pub async fn run_chat(
             )
             .await
         {
-            if conversation.model == "auto" {
-                if let Some(slug) = init_res
+            if conversation.model == "auto"
+                && let Some(slug) = init_res
                     .default_model_slug
                     .or(init_res.intended_default_model_slug)
-                {
-                    conversation.model = slug;
-                }
+            {
+                conversation.model = slug;
             }
             conversation.initialized = true;
             if !transient {
@@ -260,8 +259,14 @@ pub async fn run_chat(
         }
     }
 
-    let on_delta_binding = opts.on_delta.as_deref().map(|f| f as &dyn Fn(&str, &str));
-    let on_event_binding = opts.on_event.as_deref().map(|f| f as &dyn Fn(&NormalizedConversationEvent));
+    let on_delta_binding = opts
+        .on_delta
+        .as_deref()
+        .map(|f| f as &(dyn Fn(&str, &str) + Send + Sync));
+    let on_event_binding = opts
+        .on_event
+        .as_deref()
+        .map(|f| f as &(dyn Fn(&NormalizedConversationEvent) + Send + Sync));
 
     let send_opts = SendMessageOptions {
         prompt: &opts.prompt,

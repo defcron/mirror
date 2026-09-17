@@ -51,18 +51,18 @@ impl TurnDeadline {
 
                 tokio::select! {
                     _ = &mut total_sleep => {
-                        if !closed_clone.load(Ordering::SeqCst) {
-                            if let Some(cb) = callback.take() {
-                                cb();
-                            }
+                        if !closed_clone.load(Ordering::SeqCst)
+                            && let Some(cb) = callback.take()
+                        {
+                            cb();
                         }
                         break;
                     }
                     _ = &mut idle_sleep => {
-                        if !closed_clone.load(Ordering::SeqCst) {
-                            if let Some(cb) = callback.take() {
-                                cb();
-                            }
+                        if !closed_clone.load(Ordering::SeqCst)
+                            && let Some(cb) = callback.take()
+                        {
+                            cb();
                         }
                         break;
                     }

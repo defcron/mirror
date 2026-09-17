@@ -1,4 +1,4 @@
-//! Mirror server — port of `apps/server/` in progress.
+//! Mirror server — port of `apps/server/`.
 
 pub mod api_errors;
 pub mod api_schemas;
@@ -10,6 +10,7 @@ pub mod egress;
 pub mod preflight;
 pub mod proxy_headers;
 pub mod response_transform;
+pub mod router;
 pub mod security;
 pub mod url_rewrite;
 
@@ -22,3 +23,4 @@ pub use auth::{get_valid_credentials, verify_candidate_session_token};
 pub use chat_service::{RunChatOptions, RunChatOutcome, run_chat, stop_conversation, title_from_prompt};
 pub use conversation_sync::{has_remote_history, sync_conversation_page};
 pub use deadlines::{TurnDeadline, deadline_ms};
+pub use router::{AppState, create_router};
