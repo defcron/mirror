@@ -56,14 +56,19 @@ impl EncryptionKey {
         Ok(Self(bytes))
     }
 
-    /// Load the key the same way `loadEncryptionKey` does: prefer
-    /// `MIRROR_STORE_KEY`, else read-or-generate `<data_dir>/master.key`
-    /// (base64, chmod 0600 like the TS version).
-    pub fn load(data_dir: &Path) -> Result<Self, CryptoError> {
-        if let Ok(configured) = std::env::var("MIRROR_STORE_KEY")
+    /// Load the key the same way `loadEncryptionKey` does: prefer the
+    /// configured key (`MIRROR_STORE_KEY`), else read-or-generate
+    /// `<data_dir>/master.key` (base64, chmod 0600 like the TS version).
+    ///
+    /// Takes the configured key as a parameter rather than reading the
+    /// environment directly, so callers and tests are not coupled to
+    /// process-global state; [`EncryptionKey::load`] is the env-reading
+    /// wrapper.
+    pub fn load_with(data_dir: &Path, configured_key: Option<&str>) -> Result<Self, CryptoError> {
+        if let Some(configured) = configured_key
             && !configured.is_empty()
         {
-            return Self::decode_configured(&configured);
+            return Self::decode_configured(configured);
         }
 
         let key_file = data_dir.join("master.key");
@@ -87,6 +92,14 @@ impl EncryptionKey {
             fs::set_permissions(&key_file, fs::Permissions::from_mode(0o600))?;
         }
         Ok(Self(key))
+    }
+
+    /// Env-reading wrapper over [`EncryptionKey::load_with`].
+    pub fn load(data_dir: &Path) -> Result<Self, CryptoError> {
+        Self::load_with(
+            data_dir,
+            std::env::var("MIRROR_STORE_KEY").ok().as_deref(),
+        )
     }
 
     fn cipher(&self) -> Aes256Gcm {
@@ -267,34 +280,37 @@ mod tests {
     #[test]
     fn load_generates_and_persists_key_file() {
         let dir = tempfile::tempdir().unwrap();
-        let k1 = EncryptionKey::load(dir.path()).unwrap();
+        let k1 = EncryptionKey::load_with(dir.path(), None).unwrap();
         assert!(dir.path().join("master.key").exists());
         // A second load must read back the same persisted key, not
         // regenerate, so previously-encrypted values keep decrypting.
-        let k2 = EncryptionKey::load(dir.path()).unwrap();
+        let k2 = EncryptionKey::load_with(dir.path(), None).unwrap();
         let ct = k1.encrypt("stable across reloads");
         assert_eq!(k2.decrypt(&ct).unwrap(), "stable across reloads");
     }
 
     #[test]
-    fn load_prefers_env_var_over_key_file() {
+    fn load_prefers_a_configured_key_over_the_key_file() {
         let dir = tempfile::tempdir().unwrap();
         // Seed a key file with one key...
-        EncryptionKey::load(dir.path()).unwrap();
-        // ...then override with an env-configured key and confirm THAT one
-        // is used instead of the file, matching loadEncryptionKey's
-        // precedence order exactly.
+        EncryptionKey::load_with(dir.path(), None).unwrap();
+        // ...then pass a configured key and confirm THAT one is used instead
+        // of the file, matching loadEncryptionKey's precedence order.
         let override_key = base64::engine::general_purpose::STANDARD.encode([3u8; KEY_LEN]);
-        // SAFETY: test runs single-threaded within this process for this var.
-        unsafe {
-            std::env::set_var("MIRROR_STORE_KEY", &override_key);
-        }
-        let loaded = EncryptionKey::load(dir.path()).unwrap();
-        unsafe {
-            std::env::remove_var("MIRROR_STORE_KEY");
-        }
+        let loaded = EncryptionKey::load_with(dir.path(), Some(&override_key)).unwrap();
         let expected = EncryptionKey::decode_configured(&override_key).unwrap();
         let ct = expected.encrypt("probe");
         assert_eq!(loaded.decrypt(&ct).unwrap(), "probe");
+    }
+
+    #[test]
+    fn an_empty_configured_key_falls_back_to_the_key_file() {
+        // Matches the TS `if (process.env.MIRROR_STORE_KEY)` truthiness
+        // check: an empty value is ignored rather than being a decode error.
+        let dir = tempfile::tempdir().unwrap();
+        let k = EncryptionKey::load_with(dir.path(), Some("")).unwrap();
+        assert!(dir.path().join("master.key").exists());
+        let ct = k.encrypt("x");
+        assert_eq!(k.decrypt(&ct).unwrap(), "x");
     }
 }
