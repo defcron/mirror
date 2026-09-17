@@ -3,6 +3,7 @@
 pub mod api_errors;
 pub mod api_schemas;
 pub mod auth;
+pub mod conversation_sync;
 pub mod deadlines;
 pub mod egress;
 pub mod preflight;
@@ -17,4 +18,5 @@ pub use api_schemas::{
     ModelUpdateBody, NewConversationBody, SetSessionBody,
 };
 pub use auth::{get_valid_credentials, verify_candidate_session_token};
+pub use conversation_sync::{has_remote_history, sync_conversation_page};
 pub use deadlines::{TurnDeadline, deadline_ms};

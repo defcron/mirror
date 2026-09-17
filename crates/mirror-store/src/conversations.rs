@@ -649,6 +649,84 @@ impl Store {
             Ok(rows)
         })
     }
+
+    /// Syncs remote conversation summaries from the upstream sidebar into local storage.
+    pub fn sync_remote_conversations(
+        &self,
+        items: &[RemoteConversationSummary],
+        account_id: &str,
+    ) -> Result<(), StoreError> {
+        self.with_conn(|db| {
+            db.execute("BEGIN", [])?;
+            let res = (|| -> Result<(), StoreError> {
+                let mut find = db.prepare_cached(
+                    "SELECT id FROM conversations WHERE account_id=?1 AND upstream_id=?2 AND is_branch=0 ORDER BY created_at LIMIT 1",
+                )?;
+                let mut update = db.prepare_cached(
+                    "UPDATE conversations SET title=?1, gizmo_id=COALESCE(?2, gizmo_id), \
+                     current_node_id=CASE WHEN NOT EXISTS \
+                       (SELECT 1 FROM messages WHERE conversation_id=conversations.id) \
+                       THEN COALESCE(?3, current_node_id) ELSE current_node_id END, \
+                     updated_at=?4 WHERE id=?5",
+                )?;
+                let mut insert = db.prepare_cached(
+                    "INSERT INTO conversations \
+                     (id, account_id, upstream_id, current_node_id, model, gizmo_id, title, initialized, created_at, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, 'auto', ?5, ?6, 1, ?7, ?8)",
+                )?;
+
+                for item in items {
+                    let existing: Option<String> = find
+                        .query_row(params![account_id, item.id], |row| row.get(0))
+                        .optional()?;
+
+                    if let Some(row_id) = existing {
+                        update.execute(params![
+                            item.title,
+                            item.gizmo_id,
+                            item.current_node_id,
+                            item.update_time,
+                            row_id,
+                        ])?;
+                    } else {
+                        let new_id = crate::store::new_uuid();
+                        let current_node = item
+                            .current_node_id
+                            .as_deref()
+                            .unwrap_or(CLIENT_CREATED_ROOT);
+                        insert.execute(params![
+                            new_id,
+                            account_id,
+                            item.id,
+                            current_node,
+                            item.gizmo_id,
+                            item.title,
+                            item.create_time,
+                            item.update_time,
+                        ])?;
+                    }
+                }
+                Ok(())
+            })();
+            if res.is_ok() {
+                db.execute("COMMIT", [])?;
+            } else {
+                let _ = db.execute("ROLLBACK", []);
+            }
+            res
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteConversationSummary {
+    pub id: String,
+    pub title: String,
+    pub create_time: String,
+    pub update_time: String,
+    pub current_node_id: Option<String>,
+    pub gizmo_id: Option<String>,
+    pub is_archived: bool,
 }
 
 #[cfg(test)]
