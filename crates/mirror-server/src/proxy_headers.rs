@@ -8,7 +8,6 @@
 //! restrictive drops a header ChatGPT requires and breaks the request. The
 //! plan ranks it risk item #4.
 
-use mirror_protocol::http;
 use std::collections::BTreeMap;
 
 pub const UPSTREAM: &str = "https://chatgpt.com";
@@ -16,12 +15,19 @@ pub const UPSTREAM_HOST: &str = "chatgpt.com";
 
 /// Headers forwarded when named exactly, lowercased for comparison.
 ///
-/// The client-hint and fetch-metadata entries are forwarded from the *real*
-/// requesting browser rather than synthesized, so upstream's view stays
-/// self-consistent instead of mixing our guesses with the browser's truth.
+/// The fetch-metadata entries are forwarded from the *real* requesting
+/// browser because they describe that specific request (a navigation vs an
+/// XHR vs a subresource), which the emulation profile's navigation defaults
+/// would get wrong.
+///
+/// The `sec-ch-ua` family is deliberately absent: those state the browser's
+/// *version*, and the emulation profile emits values matching the TLS
+/// handshake. Forwarding the real browser's (Chrome 152 here) over a
+/// Chrome 149 handshake would reintroduce exactly the mismatch this rewrite
+/// removes.
 /// `accept-encoding` is forwarded because Chrome advertises `zstd` and the
 /// HTTP client's own default is narrower.
-const EXACT_ALLOWLIST: [&str; 18] = [
+const EXACT_ALLOWLIST: [&str; 15] = [
     "accept",
     "accept-language",
     "baggage",
@@ -32,9 +38,6 @@ const EXACT_ALLOWLIST: [&str; 18] = [
     "range",
     "sentry-trace",
     "dnt",
-    "sec-ch-ua",
-    "sec-ch-ua-mobile",
-    "sec-ch-ua-platform",
     "sec-fetch-dest",
     "sec-fetch-mode",
     "sec-fetch-site",
@@ -110,26 +113,15 @@ where
         }
     }
 
-    // Identity and origin are always ours, never the client's.
-    headers.insert("user-agent".to_string(), http::user_agent());
+    // Origin and host are always ours, never the client's. `user-agent` and
+    // the `sec-ch-ua` family are intentionally NOT set: the emulation
+    // profile supplies them so they always agree with the handshake.
     headers.insert("origin".to_string(), UPSTREAM.to_string());
     headers.insert("host".to_string(), UPSTREAM_HOST.to_string());
     headers.insert(
         "referer".to_string(),
         rewrite_referer(client_referer.as_deref()),
     );
-
-    // Fall back to our own client hints only when the browser genuinely sent
-    // none; a forwarded real value always wins.
-    headers
-        .entry("sec-ch-ua".to_string())
-        .or_insert_with(http::sec_ch_ua);
-    headers
-        .entry("sec-ch-ua-mobile".to_string())
-        .or_insert_with(|| http::SEC_CH_UA_MOBILE.to_string());
-    headers
-        .entry("sec-ch-ua-platform".to_string())
-        .or_insert_with(|| http::SEC_CH_UA_PLATFORM.to_string());
 
     headers
 }
@@ -228,23 +220,63 @@ mod tests {
     }
 
     #[test]
-    fn identity_and_origin_are_always_ours() {
+    fn origin_and_host_are_always_ours() {
         // Even when the client supplies its own, these are overridden.
         let headers = build(&[
-            ("user-agent", "curl/8.0"),
             ("origin", "http://localhost:8787"),
             ("host", "localhost:8787"),
         ]);
-        assert_eq!(headers.get("user-agent"), Some(&http::user_agent()));
         assert_eq!(headers.get("origin").map(String::as_str), Some(UPSTREAM));
         assert_eq!(headers.get("host").map(String::as_str), Some(UPSTREAM_HOST));
     }
 
     #[test]
-    fn the_user_agent_matches_the_emulated_tls_profile() {
-        let headers = build(&[]);
-        let ua = headers.get("user-agent").unwrap();
-        assert!(ua.contains(&format!("Chrome/{}.0.0.0", http::EMULATED_CHROME_MAJOR)));
+    fn identity_headers_are_left_to_the_emulation_profile() {
+        // Neither the client's values nor any of ours may appear here: the
+        // emulation profile emits user-agent and the sec-ch-ua family so
+        // they always match the TLS handshake. Setting them here would
+        // override the profile's correct, version-accurate values.
+        let headers = build(&[
+            ("user-agent", "curl/8.0"),
+            ("sec-ch-ua", r#""Chromium";v="152""#),
+            ("sec-ch-ua-mobile", "?0"),
+            ("sec-ch-ua-platform", "\"Windows\""),
+        ]);
+        for name in [
+            "user-agent",
+            "sec-ch-ua",
+            "sec-ch-ua-mobile",
+            "sec-ch-ua-platform",
+        ] {
+            assert!(
+                !headers.contains_key(name),
+                "{name} must be left to the emulation profile, got {:?}",
+                headers.get(name)
+            );
+        }
+    }
+
+    #[test]
+    fn per_request_fetch_metadata_is_still_forwarded() {
+        // These describe the specific request rather than the browser's
+        // identity, and the profile's defaults assume a top-level
+        // navigation, which is wrong for an XHR or subresource.
+        let headers = build(&[
+            ("sec-fetch-dest", "empty"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-site", "same-origin"),
+            ("accept", "application/json"),
+        ]);
+        assert_eq!(headers.get("sec-fetch-dest").map(String::as_str), Some("empty"));
+        assert_eq!(headers.get("sec-fetch-mode").map(String::as_str), Some("cors"));
+        assert_eq!(
+            headers.get("sec-fetch-site").map(String::as_str),
+            Some("same-origin")
+        );
+        assert_eq!(
+            headers.get("accept").map(String::as_str),
+            Some("application/json")
+        );
     }
 
     #[test]
@@ -280,36 +312,6 @@ mod tests {
         assert_eq!(
             headers.get("referer").map(String::as_str),
             Some("https://chatgpt.com/c/abc")
-        );
-    }
-
-    #[test]
-    fn client_hints_fall_back_only_when_the_browser_sent_none() {
-        let without = build(&[]);
-        assert_eq!(without.get("sec-ch-ua"), Some(&http::sec_ch_ua()));
-        assert_eq!(
-            without.get("sec-ch-ua-mobile").map(String::as_str),
-            Some(http::SEC_CH_UA_MOBILE)
-        );
-        assert_eq!(
-            without.get("sec-ch-ua-platform").map(String::as_str),
-            Some(http::SEC_CH_UA_PLATFORM)
-        );
-
-        // A real browser's own values win over the fallbacks.
-        let with = build(&[
-            ("sec-ch-ua", r#""Chromium";v="999""#),
-            ("sec-ch-ua-mobile", "?1"),
-            ("sec-ch-ua-platform", "\"Linux\""),
-        ]);
-        assert_eq!(
-            with.get("sec-ch-ua").map(String::as_str),
-            Some(r#""Chromium";v="999""#)
-        );
-        assert_eq!(with.get("sec-ch-ua-mobile").map(String::as_str), Some("?1"));
-        assert_eq!(
-            with.get("sec-ch-ua-platform").map(String::as_str),
-            Some("\"Linux\"")
         );
     }
 

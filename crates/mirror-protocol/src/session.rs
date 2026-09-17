@@ -10,11 +10,11 @@
 //!
 //! One deliberate improvement over the TS version: it hardcoded its own
 //! Chrome 128 User-Agent here while `proxy.ts` separately hardcoded Chrome
-//! 152, so Mirror presented two different browser identities depending on
-//! which code path made the call. Both now come from [`crate::http`], which
-//! also keeps them consistent with the emulated TLS fingerprint.
+//! 152, so the same account presented two different browsers to chatgpt.com
+//! depending on which code path made the call. No User-Agent is set here at
+//! all now — the emulation profile in [`crate::http`] emits it, consistent
+//! with the TLS handshake it performs.
 
-use crate::http;
 use serde_json::Value;
 
 const SESSION_URL: &str = "https://chatgpt.com/api/auth/session";
@@ -99,7 +99,6 @@ pub async fn mint_access_token(
         .get(SESSION_URL)
         .header("cookie", format!("{SESSION_COOKIE_NAME}={session_token}"))
         .header("accept", "application/json")
-        .header("user-agent", http::user_agent())
         .send()
         .await
         .map_err(|e| SessionError::Transport(e.to_string()))?;

@@ -22,13 +22,12 @@ use mirror_protocol::http;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = http::build_client()?;
 
-    println!("emulating Chrome {}", http::EMULATED_CHROME_MAJOR);
-    println!("user-agent: {}", http::user_agent());
-    println!("sec-ch-ua:  {}\n", http::sec_ch_ua());
+    // Identity headers come from the emulation profile, not from us — see
+    // examples/header_probe.rs to print the ones it actually sends.
+    println!("emulating Chrome {}\n", http::EMULATED_CHROME_MAJOR);
 
     let response = client
         .get("https://tls.peet.ws/api/all")
-        .header("user-agent", http::user_agent())
         .send()
         .await?;
 
