@@ -1,2 +1,5 @@
-//! Port of the loaf/pngspeak/gptgif/gif89a/decoder-challenge codecs — deferred,
-//! see the migration plan. Not yet implemented.
+//! Encoders and decoders for LoaF, PNGSpeak, and GPTGIF formats.
+
+pub mod loaf;
+
+pub use loaf::{LoafEntry, LoafError, LoafExtractedEntry, pack_loaf, unpack_loaf};
