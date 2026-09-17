@@ -410,6 +410,246 @@ impl Store {
     }
 }
 
+/// Mirrors `ConversationSyncCursor` — where an account's incremental
+/// remote-sidebar sync last left off. Every field defaults, so a partial or
+/// older-shaped stored cursor merges over the defaults exactly as upstream's
+/// `{ ...DEFAULT_SYNC_CURSOR, ...JSON.parse(raw) }` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ConversationSyncCursor {
+    #[serde(rename = "activeOffset", default)]
+    pub active_offset: i64,
+    #[serde(rename = "activeDone", default)]
+    pub active_done: bool,
+    #[serde(rename = "archivedOffset", default)]
+    pub archived_offset: i64,
+    #[serde(rename = "archivedDone", default)]
+    pub archived_done: bool,
+}
+
+/// Mirrors `fingerprintValue`: sha256 of the value's compact JSON encoding,
+/// hex-encoded. Used to recognize a caller's resent transcript.
+pub fn fingerprint_value(value: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let json = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
+    let digest = Sha256::digest(json.as_bytes());
+    digest.iter().fold(String::with_capacity(64), |mut out, b| {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{b:02x}");
+        out
+    })
+}
+
+impl Store {
+    fn sync_cursor_key(account_id: &str) -> String {
+        format!("conversation_sync_cursor:{account_id}")
+    }
+
+    /// Mirrors `getConversationSyncCursor`, degrading to defaults on a
+    /// malformed payload rather than erroring.
+    pub fn conversation_sync_cursor(
+        &self,
+        account_id: &str,
+    ) -> Result<ConversationSyncCursor, StoreError> {
+        let Some(raw) = self.read_setting_pub(&Self::sync_cursor_key(account_id))? else {
+            return Ok(ConversationSyncCursor::default());
+        };
+        // Only a JSON *object* may override the defaults. Upstream spreads
+        // the parsed value over DEFAULT_SYNC_CURSOR, and spreading an array,
+        // string, number or null in JS adds only index/no keys — it never
+        // touches the named fields. serde would otherwise happily deserialize
+        // this struct positionally from an array, so `[1]` would wrongly set
+        // activeOffset.
+        match serde_json::from_str::<Value>(&raw) {
+            Ok(Value::Object(_)) => Ok(serde_json::from_str(&raw).unwrap_or_default()),
+            _ => Ok(ConversationSyncCursor::default()),
+        }
+    }
+
+    pub fn set_conversation_sync_cursor(
+        &self,
+        account_id: &str,
+        cursor: &ConversationSyncCursor,
+    ) -> Result<(), StoreError> {
+        let json = serde_json::to_string(cursor).unwrap_or_else(|_| "{}".to_string());
+        self.write_setting_pub(&Self::sync_cursor_key(account_id), &json)
+    }
+
+    /// Mirrors `saveOpenAiContext` / `getOpenAiContext` — the instructions
+    /// fingerprint used to notice a caller changed their system prompt.
+    pub fn save_openai_context(
+        &self,
+        conversation_id: &str,
+        instructions_hash: &str,
+    ) -> Result<(), StoreError> {
+        let now = crate::store::now_iso8601();
+        self.with_conn(|db| {
+            db.execute(
+                "INSERT INTO openai_contexts(conversation_id, instructions_hash, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(conversation_id) DO UPDATE SET instructions_hash=excluded.instructions_hash, updated_at=excluded.updated_at",
+                params![conversation_id, instructions_hash, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn openai_context(&self, conversation_id: &str) -> Result<Option<String>, StoreError> {
+        self.with_conn(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT instructions_hash FROM openai_contexts WHERE conversation_id = ?1",
+                    [conversation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })
+    }
+
+    /// Mirrors `saveOpenAiTranscript` — the fingerprint of the full transcript
+    /// a stateless caller would resend next turn, which is what lets a client
+    /// with no conversation id be matched back to its existing thread.
+    pub fn save_openai_transcript(
+        &self,
+        conversation_id: &str,
+        account_id: &str,
+        transcript_hash: &str,
+    ) -> Result<(), StoreError> {
+        let now = crate::store::now_iso8601();
+        self.with_conn(|db| {
+            db.execute(
+                "INSERT INTO openai_transcripts(conversation_id, account_id, transcript_hash, updated_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(conversation_id) DO UPDATE SET transcript_hash=excluded.transcript_hash, updated_at=excluded.updated_at",
+                params![conversation_id, account_id, transcript_hash, now],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn openai_transcript(&self, conversation_id: &str) -> Result<Option<String>, StoreError> {
+        self.with_conn(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT transcript_hash FROM openai_transcripts WHERE conversation_id = ?1",
+                    [conversation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })
+    }
+
+    /// Mirrors `findConversationByTranscript`, most-recently-updated first.
+    pub fn find_conversation_by_transcript(
+        &self,
+        account_id: &str,
+        transcript_hash: &str,
+    ) -> Result<Option<StoredConversation>, StoreError> {
+        let found: Option<String> = self.with_conn(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT conversation_id FROM openai_transcripts
+                     WHERE account_id = ?1 AND transcript_hash = ?2 ORDER BY updated_at DESC LIMIT 1",
+                    params![account_id, transcript_hash],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })?;
+        match found {
+            Some(id) => self.conversation(&id),
+            None => Ok(None),
+        }
+    }
+
+    /// Mirrors `saveInstructions`: only system/developer messages are kept,
+    /// since those are the instruction slots — the rest of the transcript
+    /// lives in `messages`.
+    pub fn save_instructions(
+        &self,
+        conversation_id: &str,
+        messages: &[(String, String)],
+    ) -> Result<(), StoreError> {
+        let filtered: Vec<Value> = messages
+            .iter()
+            .filter(|(role, _)| role == "system" || role == "developer")
+            .map(|(role, content)| serde_json::json!({"role": role, "content": content}))
+            .collect();
+        let json = serde_json::to_string(&filtered).unwrap_or_else(|_| "[]".to_string());
+        self.with_conn(|db| {
+            db.execute(
+                "INSERT INTO conversation_instructions VALUES (?1, ?2)
+                 ON CONFLICT(conversation_id) DO UPDATE SET messages_json=excluded.messages_json",
+                params![conversation_id, json],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Mirrors `getInstructions`, returning an empty list when unset.
+    pub fn instructions(&self, conversation_id: &str) -> Result<Vec<(String, String)>, StoreError> {
+        let raw: Option<String> = self.with_conn(|db| {
+            Ok(db
+                .query_row(
+                    "SELECT messages_json FROM conversation_instructions WHERE conversation_id=?1",
+                    [conversation_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?)
+        })?;
+        let Some(raw) = raw else {
+            return Ok(Vec::new());
+        };
+        let Ok(Value::Array(items)) = serde_json::from_str::<Value>(&raw) else {
+            return Ok(Vec::new());
+        };
+        Ok(items
+            .into_iter()
+            .filter_map(|item| {
+                let role = item.get("role")?.as_str()?.to_string();
+                let content = item.get("content")?.as_str()?.to_string();
+                Some((role, content))
+            })
+            .collect())
+    }
+
+    /// Mirrors `searchConversations`: local history only, never initiating an
+    /// upstream sync. Matches a case-insensitive substring in the title or in
+    /// any message body.
+    pub fn search_conversations(
+        &self,
+        account_id: &str,
+        query: &str,
+    ) -> Result<Vec<StoredConversation>, StoreError> {
+        self.with_conn(|db| {
+            let mut stmt = db.prepare(
+                "SELECT c.* FROM conversations c WHERE account_id = ?1 AND
+                 (instr(lower(title), lower(?2)) > 0 OR EXISTS
+                   (SELECT 1 FROM messages m WHERE m.conversation_id = c.id AND instr(lower(m.content), lower(?2)) > 0))
+                 ORDER BY updated_at DESC LIMIT 100",
+            )?;
+            let rows = stmt
+                .query_map(params![account_id, query], |row| map_conversation(row))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+
+    /// Mirrors `relatedConversations` — every local conversation sharing an
+    /// upstream thread, which is how branches are surfaced together.
+    pub fn related_conversations(
+        &self,
+        account_id: &str,
+        upstream_id: &str,
+    ) -> Result<Vec<StoredConversation>, StoreError> {
+        self.with_conn(|db| {
+            let mut stmt = db.prepare(
+                "SELECT * FROM conversations WHERE account_id = ?1 AND upstream_id = ?2 ORDER BY updated_at DESC",
+            )?;
+            let rows = stmt
+                .query_map(params![account_id, upstream_id], |row| map_conversation(row))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -715,6 +955,260 @@ mod tests {
             .with_conn(|db| Ok(db.query_row("SELECT count(*) FROM files", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn sync_cursors_default_and_round_trip_per_account() {
+        let s = store();
+        assert_eq!(
+            s.conversation_sync_cursor("acct-1").unwrap(),
+            ConversationSyncCursor::default()
+        );
+
+        let cursor = ConversationSyncCursor {
+            active_offset: 56,
+            active_done: true,
+            archived_offset: 28,
+            archived_done: false,
+        };
+        s.set_conversation_sync_cursor("acct-1", &cursor).unwrap();
+        assert_eq!(s.conversation_sync_cursor("acct-1").unwrap(), cursor);
+        // Another account keeps its own cursor.
+        assert_eq!(
+            s.conversation_sync_cursor("acct-2").unwrap(),
+            ConversationSyncCursor::default()
+        );
+    }
+
+    #[test]
+    fn a_partial_or_malformed_sync_cursor_merges_over_the_defaults() {
+        // Matches upstream's { ...DEFAULT, ...JSON.parse(raw) } so a cursor
+        // written by an older build still loads.
+        let s = store();
+        s.write_setting_pub("conversation_sync_cursor:acct-1", r#"{"activeOffset":7}"#)
+            .unwrap();
+        let cursor = s.conversation_sync_cursor("acct-1").unwrap();
+        assert_eq!(cursor.active_offset, 7);
+        assert!(!cursor.active_done);
+        assert_eq!(cursor.archived_offset, 0);
+
+        // Verified against Node: spreading a non-object over the defaults
+        // leaves every named field untouched, so each of these yields
+        // defaults rather than a positionally-deserialized cursor.
+        for raw in ["not json", "[1]", "null", "\"str\"", "5"] {
+            s.write_setting_pub("conversation_sync_cursor:acct-2", raw).unwrap();
+            assert_eq!(
+                s.conversation_sync_cursor("acct-2").unwrap(),
+                ConversationSyncCursor::default(),
+                "{raw} should degrade to defaults"
+            );
+        }
+    }
+
+    #[test]
+    fn fingerprints_are_stable_sha256_hex_of_the_compact_json() {
+        // Cross-checked against Node:
+        // createHash("sha256").update(JSON.stringify([{role:"user",content:"hi"}])).digest("hex")
+        let value = json!([{"role": "user", "content": "hi"}]);
+        let fingerprint = fingerprint_value(&value);
+        assert_eq!(fingerprint.len(), 64);
+        assert!(fingerprint.bytes().all(|b| b.is_ascii_hexdigit()));
+        // Stable across calls, and sensitive to content.
+        assert_eq!(fingerprint, fingerprint_value(&value));
+        assert_ne!(
+            fingerprint,
+            fingerprint_value(&json!([{"role": "user", "content": "hi!"}]))
+        );
+    }
+
+    #[test]
+    fn openai_context_and_transcript_hashes_upsert_and_read_back() {
+        let s = store();
+        let c = s.create_conversation(new_conversation("gpt-5")).unwrap();
+
+        assert_eq!(s.openai_context(&c.id).unwrap(), None);
+        s.save_openai_context(&c.id, "hash-1").unwrap();
+        assert_eq!(s.openai_context(&c.id).unwrap().as_deref(), Some("hash-1"));
+        // Upsert rather than insert-conflict.
+        s.save_openai_context(&c.id, "hash-2").unwrap();
+        assert_eq!(s.openai_context(&c.id).unwrap().as_deref(), Some("hash-2"));
+
+        assert_eq!(s.openai_transcript(&c.id).unwrap(), None);
+        s.save_openai_transcript(&c.id, "acct-1", "t-1").unwrap();
+        assert_eq!(s.openai_transcript(&c.id).unwrap().as_deref(), Some("t-1"));
+        s.save_openai_transcript(&c.id, "acct-1", "t-2").unwrap();
+        assert_eq!(s.openai_transcript(&c.id).unwrap().as_deref(), Some("t-2"));
+    }
+
+    #[test]
+    fn a_stateless_caller_is_matched_back_by_its_resent_transcript() {
+        // This is what stops a plain OpenAI client that manages its own
+        // history from spawning a fresh upstream thread on every message.
+        let s = store();
+        let c = s
+            .create_conversation(NewConversation {
+                model: "gpt-5".to_string(),
+                account_id: Some("acct-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        s.save_openai_transcript(&c.id, "acct-1", "transcript-hash")
+            .unwrap();
+
+        let found = s
+            .find_conversation_by_transcript("acct-1", "transcript-hash")
+            .unwrap()
+            .expect("should match");
+        assert_eq!(found.id, c.id);
+
+        // Scoped by account, and unknown hashes do not match.
+        assert_eq!(
+            s.find_conversation_by_transcript("acct-2", "transcript-hash")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            s.find_conversation_by_transcript("acct-1", "other").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn instructions_keep_only_system_and_developer_roles() {
+        let s = store();
+        let c = s.create_conversation(new_conversation("gpt-5")).unwrap();
+        assert!(s.instructions(&c.id).unwrap().is_empty());
+
+        s.save_instructions(
+            &c.id,
+            &[
+                ("system".to_string(), "be terse".to_string()),
+                ("user".to_string(), "hello".to_string()),
+                ("developer".to_string(), "use rust".to_string()),
+                ("assistant".to_string(), "hi".to_string()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            s.instructions(&c.id).unwrap(),
+            vec![
+                ("system".to_string(), "be terse".to_string()),
+                ("developer".to_string(), "use rust".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn saving_instructions_replaces_rather_than_appends() {
+        let s = store();
+        let c = s.create_conversation(new_conversation("gpt-5")).unwrap();
+        s.save_instructions(&c.id, &[("system".to_string(), "first".to_string())])
+            .unwrap();
+        s.save_instructions(&c.id, &[("system".to_string(), "second".to_string())])
+            .unwrap();
+        assert_eq!(
+            s.instructions(&c.id).unwrap(),
+            vec![("system".to_string(), "second".to_string())]
+        );
+    }
+
+    #[test]
+    fn search_matches_titles_and_message_bodies_case_insensitively() {
+        let s = store();
+        let titled = s
+            .create_conversation(NewConversation {
+                id: Some("titled".to_string()),
+                model: "gpt-5".to_string(),
+                title: Some("Rust Rewrite Plan".to_string()),
+                account_id: Some("acct-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        let bodied = s
+            .create_conversation(NewConversation {
+                id: Some("bodied".to_string()),
+                model: "gpt-5".to_string(),
+                title: Some("Unrelated".to_string()),
+                account_id: Some("acct-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        s.add_message(
+            &bodied.id,
+            None,
+            "user",
+            "tell me about BORINGSSL",
+            "done",
+            &json!([]),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let by_title: Vec<String> = s
+            .search_conversations("acct-1", "rust")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(by_title, vec![titled.id.clone()]);
+
+        let by_body: Vec<String> = s
+            .search_conversations("acct-1", "boringssl")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(by_body, vec![bodied.id]);
+
+        assert!(s.search_conversations("acct-1", "nothing here").unwrap().is_empty());
+        // Never crosses account boundaries.
+        assert!(s.search_conversations("acct-2", "rust").unwrap().is_empty());
+    }
+
+    #[test]
+    fn related_conversations_group_branches_sharing_one_upstream_thread() {
+        let s = store();
+        let mut ids = Vec::new();
+        for id in ["a", "b"] {
+            let c = s
+                .create_conversation(NewConversation {
+                    id: Some(id.to_string()),
+                    model: "gpt-5".to_string(),
+                    account_id: Some("acct-1".to_string()),
+                    ..Default::default()
+                })
+                .unwrap();
+            s.update_conversation(&StoredConversation {
+                conversation_id: Some("upstream-1".to_string()),
+                ..c
+            })
+            .unwrap();
+            ids.push(id.to_string());
+        }
+        // An unrelated conversation on another upstream thread.
+        let other = s
+            .create_conversation(NewConversation {
+                id: Some("c".to_string()),
+                model: "gpt-5".to_string(),
+                account_id: Some("acct-1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        s.update_conversation(&StoredConversation {
+            conversation_id: Some("upstream-2".to_string()),
+            ..other
+        })
+        .unwrap();
+
+        let related = s.related_conversations("acct-1", "upstream-1").unwrap();
+        assert_eq!(related.len(), 2);
+        let mut related_ids: Vec<String> = related.into_iter().map(|c| c.id).collect();
+        related_ids.sort();
+        assert_eq!(related_ids, ids);
+
+        assert!(s.related_conversations("acct-2", "upstream-1").unwrap().is_empty());
     }
 
     #[test]

@@ -164,6 +164,14 @@ impl Store {
 
     // ---- settings KV -----------------------------------------------------
 
+    pub(crate) fn read_setting_pub(&self, key: &str) -> Result<Option<String>, StoreError> {
+        self.read_setting(key)
+    }
+
+    pub(crate) fn write_setting_pub(&self, key: &str, value: &str) -> Result<(), StoreError> {
+        self.write_setting(key, value)
+    }
+
     fn read_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
         self.with_conn(|db| {
             Ok(db
