@@ -116,3 +116,33 @@ impl BackendApiError {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GizmoSummary {
+    pub id: String,
+    #[serde(rename = "shortUrl", skip_serializing_if = "Option::is_none")]
+    pub short_url: Option<String>,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "iconUrl", skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
+    #[serde(rename = "filesCount", skip_serializing_if = "Option::is_none")]
+    pub files_count: Option<usize>,
+    pub raw: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelDescriptor {
+    pub id: String,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "maxTokens", skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<Value>,
+    #[serde(rename = "enabledTools", skip_serializing_if = "Option::is_none")]
+    pub enabled_tools: Option<Value>,
+    pub raw: Value,
+}

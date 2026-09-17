@@ -664,20 +664,31 @@ impl ChatGptBackendClient {
         // overrideToken: "x"})` returns null, not "x". Both sources are
         // therefore gated on `turnstile_required` here, not only the
         // credential one.
-        //
-        // Currently resolved only via an explicit override or the cached
-        // credential token when required; the headless-browser solver is a
-        // separate, not-yet-ported piece (see the migration plan's
-        // Turnstile decision).
         let turnstile_token = if turnstile_required {
             let credential_turnstile = self.creds.lock().expect("creds mutex").turnstile_token.take();
-            turnstile_override.map(str::to_string).or(credential_turnstile).unwrap_or_default()
+            let session_token = self.creds.lock().expect("creds mutex").session_token.clone();
+            let device_id = self.device_id();
+            let turnstile_dx = turnstile.and_then(|t| t.get("dx")).and_then(Value::as_str);
+            let resolve_opts = crate::turnstile::ResolveTurnstileOptions {
+                required: turnstile_required,
+                dx: turnstile_dx,
+                frame_url: None,
+                override_token: turnstile_override,
+                credentials_token: credential_turnstile.as_deref(),
+                session_token: session_token.as_deref(),
+                device_id: Some(&device_id),
+                solver: None,
+                browser_solver: None,
+            };
+            crate::turnstile::resolve_turnstile_token(resolve_opts)
+                .map_err(BackendApiError::new)?
+                .unwrap_or_default()
         } else {
             String::new()
         };
         if turnstile_required && turnstile_token.is_empty() {
             return Err(BackendApiError::new(
-                "Turnstile challenge required but no token was available (headless solving not yet ported)",
+                "Turnstile challenge required but no token was available",
             ));
         }
 
