@@ -535,6 +535,7 @@ dependencies = [
  "base64",
  "chrono",
  "rand",
+ "regex",
  "serde",
  "serde_json",
  "sha3",
