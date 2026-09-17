@@ -68,19 +68,25 @@ test("a name requiring the ustar prefix field round-trips correctly", () => {
   assert.equal(entries[0].content.toString(), "deep\n");
 });
 
-test("a filename segment too long for the 100-byte name field throws", () => {
+test("a filename segment too long for the 100-byte name field uses a GNU longname and round-trips", () => {
   const name = `dir/${"z".repeat(150)}`;
-  assert.throws(() => makeLoaf([{ name, content: Buffer.from("x") }]), /entry name too long/);
+  const entries = extractLoaf(makeLoaf([{ name, content: Buffer.from("x") }]));
+  assert.equal(entries[0].name, name);
+  assert.equal(entries[0].content.toString(), "x");
 });
 
-test("a name with no slash at all, too long for the plain name field, throws", () => {
+test("a name with no slash at all, too long for the plain name field, uses a GNU longname and round-trips", () => {
   const name = "n".repeat(150);
-  assert.throws(() => makeLoaf([{ name, content: Buffer.from("x") }]), /entry name too long/);
+  const entries = extractLoaf(makeLoaf([{ name, content: Buffer.from("x") }]));
+  assert.equal(entries[0].name, name);
+  assert.equal(entries[0].content.toString(), "x");
 });
 
-test("a prefix segment too long for the 155-byte prefix field throws", () => {
+test("a prefix segment too long for the 155-byte prefix field uses a GNU longname and round-trips", () => {
   const name = `${"p".repeat(200)}/file.txt`;
-  assert.throws(() => makeLoaf([{ name, content: Buffer.from("x") }]), /entry name too long/);
+  const entries = extractLoaf(makeLoaf([{ name, content: Buffer.from("x") }]));
+  assert.equal(entries[0].name, name);
+  assert.equal(entries[0].content.toString(), "x");
 });
 
 test("verifyLoaf reports a mismatch without throwing", () => {
@@ -102,14 +108,15 @@ function tamperHash(loaf) {
   return `SHA256(-)=${hash.slice(0, -1)}${flipped} ${hex}`;
 }
 
-test("extractLoaf throws on a checksum mismatch by default", () => {
+test("extractLoaf allows reference-compatible extraction unless explicit verification is requested", () => {
   const loaf = makeLoaf([{ name: "a.txt", content: Buffer.from("a") }]);
-  assert.throws(() => extractLoaf(tamperHash(loaf)), /checksum mismatch/);
+  assert.equal(extractLoaf(tamperHash(loaf))[0].content.toString(), "a");
+  assert.throws(() => extractLoaf(tamperHash(loaf), { verify: true }), /checksum mismatch/);
 });
 
-test("extractLoaf can skip verification and still read an archive whose header hash was tampered with", () => {
+test("extractLoaf reads an archive whose header hash was tampered with when verification is omitted", () => {
   const loaf = makeLoaf([{ name: "a.txt", content: Buffer.from("a") }]);
-  const entries = extractLoaf(tamperHash(loaf), { skipVerify: true });
+  const entries = extractLoaf(tamperHash(loaf));
   assert.equal(entries[0].content.toString(), "a");
 });
 

@@ -1,6 +1,9 @@
 // Runs inside the relayed official UI, using public DOM events only. As with
 // mirror-controls, browser behavior is exercised separately by Playwright.
 export const decoderChallengeCss = `
+#mirror-format-lab-launcher{position:relative;z-index:20;display:inline-flex;align-items:center;gap:6px;margin:0 8px 8px auto;border:1px solid #485462;border-radius:999px;background:#20262e;color:#d9e7f4;padding:7px 12px;font:12px/1 ui-sans-serif,system-ui,sans-serif;cursor:pointer;box-shadow:0 3px 12px #0003}
+#mirror-format-lab-launcher:hover{background:#2b3541;border-color:#7acdb4;color:#fff}
+#mirror-format-lab-launcher .mfl-spark{color:#91e8c9;font-size:14px}
 #mirror-decoder{color-scheme:dark;color:#eee;background:#181b20;border:1px solid #424953;border-radius:18px;width:min(720px,calc(100vw - 24px));max-height:calc(100dvh - 32px);padding:24px;box-shadow:0 24px 90px #0009;font:14px/1.5 ui-sans-serif,system-ui,sans-serif}
 #mirror-decoder::backdrop{background:#0009}
 #mirror-decoder *{box-sizing:border-box}
@@ -115,15 +118,16 @@ function insertPrompt(){
   }
   var value=el.tagName==='TEXTAREA'?el.value:el.innerText;
   if(value.replace(/\r\n/g,'\n')!==active.prompt){dialog.showModal();throw Error('ChatGPT did not accept the complete prompt. Use Copy prompt, and replace any partial draft before sending.');}
-  status('Challenge inserted. Send it in ChatGPT, then reopen Decoder challenges to check the reply.');
+  status('Challenge inserted. Send it in ChatGPT, then reopen Format Lab to check the reply.');
 }
 function build(){
   dialog=document.createElement('dialog');dialog.id='mirror-decoder';
   dialog.setAttribute('aria-labelledby','mirror-decoder-title');
-  dialog.innerHTML='<button class="md-close" aria-label="Close decoder challenges">×</button><div class="md-eyebrow">Mirror lab</div><h2 id="mirror-decoder-title">Decoder challenges</h2><p>Give GPT an encoded mystery. Let it write a decoder, then check whether it recovered every byte.</p>'
+  dialog.innerHTML='<button class="md-close" aria-label="Close decoder challenges">×</button><div class="md-eyebrow">Mirror lab · GPT co-creation</div><h2 id="mirror-decoder-title">Format Lab</h2><p>Give GPT an encoded mystery, or ask it to build and transform a tiny artifact with one of Mirror’s four unusual formats.</p>'
     +'<div class="md-options"><label>Format<select data-md="format"><option value="loaf">LoaF</option><option value="pngspeak" selected>PngSpeak</option><option value="gptgif">Original gptgif</option><option value="gptgif-v4">gptgif v4</option></select></label><label>Guidance<select data-md="guidance"><option value="guided">Include format guide</option><option value="independent">Let GPT investigate</option></select></label><label>Hidden payload<select data-md="payload"><option value="text">UTF-8 note</option><option value="binary">Random binary</option></select></label></div>'
     +'<div class="md-actions"><button class="md-primary" data-md="generate">Generate challenge</button></div><details><summary>Optional: get files and prompts</summary><p>Take a challenge kit with you: encoded artifact, matching GPT prompt, separate format guide, and instructions. The answer key stays here.</p><div class="md-actions"><button data-md="all-kits">Get all four kits</button></div><p>Uses your selected guidance and payload type. Downloads one .tar.gz archive you can open on your computer.</p></details><div class="md-result" data-md="status" role="status" aria-live="polite"></div><label data-md="recent-label" hidden>Recent challenges<select data-md="recent"></select></label>'
-    +'<section class="md-card" data-md="challenge" hidden><strong>1. Challenge GPT</strong><div class="md-meta" data-md="meta"></div><div class="md-actions"><button class="md-primary" data-md="insert">Insert into chat</button><button data-md="copy">Copy prompt</button><a data-md="download">Download artifact</a><button data-md="packet">Download prompt</button><button data-md="kit">Download this kit</button></div>'
+    +'<section class="md-card" data-md="workshop"><strong>GPT workshop</strong><p>Describe something for GPT to make, remix, or explain. Mirror gives it an exact format-aware brief that asks for a useful artifact and a compact change log.</p><label>Creative brief<textarea data-md="brief" rows="3" placeholder="Make a tiny choose-your-own-adventure with three rooms and a secret ending."></textarea></label><div class="md-actions"><button class="md-primary" data-md="build">Ask GPT to build it</button><button data-md="remix">Ask GPT to remix this format</button><button data-md="explain">Ask GPT to explain a format</button></div></section>'
+    +'<section class="md-card" data-md="challenge" hidden><strong>Decoder challenge</strong><div class="md-meta" data-md="meta"></div><div class="md-actions"><button class="md-primary" data-md="insert">Insert into chat</button><button data-md="copy">Copy prompt</button><a data-md="download">Download artifact</a><button data-md="packet">Download prompt</button><button data-md="kit">Download this kit</button></div>'
     +'<p data-md="size-note"></p>'
     +'<details><summary>Inspect challenge prompt</summary><textarea data-md="prompt" aria-label="Challenge prompt" rows="7" readonly></textarea></details>'
     +'<div class="md-card"><strong>2. Check the recovered bytes</strong><div class="md-actions"><button data-md="latest">Check latest GPT reply</button></div><label>Or paste recovered hex / the marked answer line<textarea data-md="answer" rows="3" maxlength="8192" spellcheck="false" placeholder="Paste GPT’s hexadecimal answer here"></textarea></label><div class="md-actions"><button data-md="verify">Check pasted answer</button></div><div class="md-meta" data-md="expiry"></div></div></section>';
@@ -135,6 +139,24 @@ function build(){
     remember(next);
     status('Ready. Insert the challenge into ChatGPT. The answer key stays on Mirror’s server.');
   });};
+  function briefBase64(text){
+    var bytes=new TextEncoder().encode(text),binary='';
+    for(var i=0;i<bytes.length;i++)binary+=String.fromCharCode(bytes[i]);
+    return btoa(binary);
+  }
+  async function workshopPrompt(kind){
+    var format=field('format').value, brief=field('brief').value.trim()||'a tiny interactive story with a surprising ending';
+    var lead=kind==='build'?'Create':kind==='remix'?'Remix':'Explain';
+    var note=kind==='explain'?'Explain how the format represents bytes, then demonstrate with a tiny valid example. If code execution is available, generate and inspect the exact bytes.':'Produce the actual artifact bytes or a complete reproducible script that creates them. Keep a manifest of files/bytes, describe format-specific tradeoffs, and end with a short CHANGELOG for the next iteration. Do not pretend an image is ordinary visual art if it is carrying data.';
+    var response=await fetch('/api/convert/gpt-prompt',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({dataBase64:briefBase64(brief),format:format,filename:'format-lab-brief.txt',note:note})});
+    var data=await response.json();
+    if(!response.ok)throw Error(data.error||'The conversion API could not build this format prompt.');
+    return data.prompt+'\n\nYou are collaborating with Mirror Format Lab. '+lead+' a '+format+' artifact for this brief: '+brief+'\nUse the format exactly as described above, preserve Unicode and binary bytes, and clearly label anything that is a lossy visual experiment. Mirror will display the resulting file and can feed a later remix back to you.';
+  }
+  async function putWorkshopPrompt(kind){var text=await workshopPrompt(kind);field('prompt').value=text;field('prompt').closest('details').open=true;status('Workshop brief ready. Insert it into the chat or copy it for GPT.');}
+  field('build').onclick=function(){run(async function(){await putWorkshopPrompt('build');});};
+  field('remix').onclick=function(){run(async function(){await putWorkshopPrompt('remix');});};
+  field('explain').onclick=function(){run(async function(){await putWorkshopPrompt('explain');});};
   field('recent').onchange=function(){active=history.find(function(item){return item.id===field('recent').value;});save();render();field('answer').value='';status('Selected challenge. Check its matching GPT answer below.');};
   field('kit').onclick=function(){run(async function(){await downloadKit([active.id]);status('Kit downloaded: artifact, prompt, optional guide, and instructions.');});};
   field('all-kits').onclick=function(){run(async function(){
@@ -176,4 +198,20 @@ window.addEventListener('mirror:decoder-open',function(){
   if(!dialog.isConnected)document.body.appendChild(dialog);
   if(!dialog.open)dialog.showModal();
 });
+function findComposerAnchor(){
+  var candidates=Array.from(document.querySelectorAll('#prompt-textarea,[data-testid="prompt-textarea"],textarea[placeholder*="Message"],textarea[placeholder*="Send"]'));
+  return candidates.find(function(el){return el.getClientRects().length>0;});
+}
+function mountFormatLauncher(){
+  if(document.getElementById('mirror-format-lab-launcher'))return true;
+  var composer=findComposerAnchor();if(!composer)return false;
+  var host=composer.closest('form')||composer.parentElement;
+  if(!host||!host.parentElement)return false;
+  var button=document.createElement('button');button.id='mirror-format-lab-launcher';button.type='button';button.innerHTML='<span class="mfl-spark">✦</span><span>Format Lab</span>';
+  button.title='Open Mirror’s GPT format workshop';button.onclick=function(){window.dispatchEvent(new Event('mirror:decoder-open'));};
+  host.parentElement.insertBefore(button,host);
+  return true;
+}
+mountFormatLauncher();
+var launchTimer=setInterval(function(){if(mountFormatLauncher())clearInterval(launchTimer);},500);
 })();`;
