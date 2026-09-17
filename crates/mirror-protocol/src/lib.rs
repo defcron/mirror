@@ -5,12 +5,14 @@ pub mod events;
 pub mod http;
 pub mod patch;
 pub mod proof;
+pub mod reducer;
 pub mod scan;
 pub mod session;
 pub mod sse;
 
 pub use events::NormalizedConversationEvent;
 pub use patch::{PatchOutcome, apply_message_patch};
+pub use reducer::{ConversationStreamReducer, ReducerOptions};
 pub use proof::{
     DEFAULT_MAX_ATTEMPTS, GenerateProofOptions, ProofConfig, ProofError, decode_proof_config,
     generate_proof_token,
