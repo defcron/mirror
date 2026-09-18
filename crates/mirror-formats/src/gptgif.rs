@@ -276,7 +276,7 @@ pub fn decode_gptgif(gif_bytes: &[u8], cluster_map: Option<&str>) -> Result<Vec<
         }
     }
 
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         hex.pop();
     }
 

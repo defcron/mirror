@@ -382,9 +382,9 @@ fn build_payload_frame(bytes: &[u8], frame: usize, font: &GlyphFont) -> Vec<u8> 
         nibbles[2 * i + 1] = byte >> 4;
     }
 
-    let mut seed_perm = (0xc0ffee00u32
+    let mut seed_perm = 0xc0ffee00u32
         .wrapping_add((frame as u32).wrapping_mul(0x9e3779b1))
-        .wrapping_add(0xdefc0ffe)) as u32;
+        .wrapping_add(0xdefc0ffe);
     let mut seed_glyph = seed_perm ^ 0x12345678;
     let mut seed_noise = seed_perm ^ 0xa5a5a5a5;
 
@@ -582,7 +582,7 @@ fn learn_templates(canonical: &[u64]) -> Result<(Vec<Vec<u64>>, Vec<usize>), Gpt
                         variants.push(mask);
                     }
                     let distinct: HashSet<u64> = variants.iter().copied().collect();
-                    if variants.iter().any(|&m| m == 0) || distinct.len() != 16 {
+                    if variants.contains(&0) || distinct.len() != 16 {
                         return Err(GptgifV4Error::Decode(
                             "learned alphabet has empty or ambiguous transformed glyphs".into(),
                         ));
@@ -665,9 +665,9 @@ fn frame_layout(
     style_by_seed: &[usize],
     boustrophedon: &[u16; FRAME_CHARS],
 ) -> (Vec<usize>, Vec<usize>) {
-    let initial = (0xc0ffee00u32
+    let initial = 0xc0ffee00u32
         .wrapping_add((frame_index as u32).wrapping_mul(0x9e3779b1))
-        .wrapping_add(0xdefc0ffe)) as u32;
+        .wrapping_add(0xdefc0ffe);
     let mut state = initial;
     let mut permutation = vec![0i32; FRAME_CHARS];
     for i in 0..FRAME_CHARS {

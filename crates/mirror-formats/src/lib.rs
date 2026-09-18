@@ -1,5 +1,14 @@
 //! Encoders and decoders for LoaF, PNGSpeak, GIF89a, and GPTGIF formats.
 
+#![allow(
+    clippy::needless_range_loop,
+    clippy::too_many_arguments,
+    clippy::collapsible_if,
+    clippy::manual_div_ceil,
+    clippy::unnecessary_unwrap,
+    clippy::useless_vec
+)]
+
 pub mod gif89a;
 pub mod gptgif;
 pub mod gptgif_v4;

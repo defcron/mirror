@@ -49,6 +49,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/chat", post(chat_handler))
         .route("/v1/models", get(v1_models_handler))
         .route("/v1/chat/completions", post(v1_chat_completions_handler))
+        .merge(crate::conversion_routes::conversion_routes())
         .with_state(state)
 }
 

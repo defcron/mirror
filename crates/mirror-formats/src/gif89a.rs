@@ -188,11 +188,7 @@ fn lzw_decode(
     reset_dict(&mut dict, &mut code_size, &mut next_code);
     let mut previous: Option<Vec<u8>> = None;
 
-    loop {
-        let code = match reader.read_code(code_size) {
-            Some(c) => c,
-            None => break,
-        };
+    while let Some(code) = reader.read_code(code_size) {
         if code == end_code {
             break;
         }
