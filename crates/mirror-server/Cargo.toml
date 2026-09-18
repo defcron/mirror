@@ -27,9 +27,10 @@ uuid = { version = "1", features = ["v4"] }
 regex = "1.11"
 thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
-tokio = { version = "1", features = ["rt", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 tokio-util = "0.7"
 axum = "0.8.9"
+wreq = { version = "0.16", features = ["json", "stream"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

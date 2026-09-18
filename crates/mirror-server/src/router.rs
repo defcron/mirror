@@ -1,12 +1,14 @@
 //! Axum HTTP application router for Mirror.
 //! Implements `/api/*`, `/v1/*`, and `/mirror/*` routes.
 
+#![allow(clippy::collapsible_if)]
+
 use crate::api_errors::{api_error, recent_failures, record_failure};
 use crate::api_schemas::{
-    BranchBody, ChatBody, ConversationsQuery, ModelUpdateBody, NewConversationBody,
+    AssetsQuery, BranchBody, ChatBody, ConversationsQuery, ModelUpdateBody, NewConversationBody,
     SetSessionBody,
 };
-use crate::auth::verify_candidate_session_token;
+use crate::auth::{get_valid_credentials, verify_candidate_session_token};
 use crate::chat_service::{RunChatOptions, run_chat, stop_conversation};
 use crate::egress::EgressMonitor;
 use axum::extract::{Path, Query, State};
@@ -22,6 +24,14 @@ use std::sync::Arc;
 pub struct AppState {
     pub store: Arc<Store>,
     pub egress: Arc<EgressMonitor>,
+    pub http: wreq::Client,
+}
+
+impl AppState {
+    pub fn new(store: Arc<Store>, egress: Arc<EgressMonitor>) -> Self {
+        let http = mirror_protocol::http::build_client().unwrap_or_default();
+        Self { store, egress, http }
+    }
 }
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -47,9 +57,15 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/conversations/{id}/stop", post(stop_conversation_handler))
         .route("/api/conversations/{id}/branch", post(branch_conversation_handler))
         .route("/api/chat", post(chat_handler))
+        .route("/api/models", get(api_models_handler))
+        .route("/api/gpts", get(api_gpts_handler))
+        .route("/api/assets", get(api_assets_handler))
+        .route("/mirror/inject.css", get(inject_css_handler))
+        .route("/mirror/inject.js", get(inject_js_handler))
         .route("/v1/models", get(v1_models_handler))
         .route("/v1/chat/completions", post(v1_chat_completions_handler))
         .merge(crate::conversion_routes::conversion_routes())
+        .fallback(crate::proxy::proxy_chatgpt)
         .with_state(state)
 }
 
@@ -491,6 +507,174 @@ async fn v1_chat_completions_handler(
     }
 }
 
+async fn inject_css_handler() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        crate::mirror_controls::INJECTION_CSS,
+    )
+        .into_response()
+}
+
+async fn inject_js_handler() -> Response {
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        crate::mirror_controls::INJECTION_JS,
+    )
+        .into_response()
+}
+
+async fn api_models_handler(State(state): State<Arc<AppState>>) -> Response {
+    let creds = match get_valid_credentials(&state.store).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(api_error(401, &e.to_string(), "api-models")),
+            )
+                .into_response();
+        }
+    };
+
+    let client = mirror_protocol::client::ChatGptBackendClient::new(state.http.clone(), creds);
+    match client.fetch_models().await {
+        Ok(raw) => {
+            let normalized = mirror_protocol::models::normalize_models(&raw);
+            let mut list = Vec::new();
+            for m in normalized {
+                list.push(json!({
+                    "id": m.id,
+                    "title": m.title,
+                    "description": m.description,
+                    "maxTokens": m.max_tokens,
+                    "capabilities": m.capabilities,
+                    "enabledTools": m.enabled_tools,
+                }));
+            }
+            Json(list).into_response()
+        }
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(api_error(502, &e.to_string(), "api-models")),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_gpts_handler(State(state): State<Arc<AppState>>) -> Response {
+    let creds = match get_valid_credentials(&state.store).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(api_error(401, &e.to_string(), "api-gpts")),
+            )
+                .into_response();
+        }
+    };
+
+    let client = mirror_protocol::client::ChatGptBackendClient::new(state.http.clone(), creds);
+    let (sidebar_res, bootstrap_res) = tokio::join!(
+        client.fetch_gizmo_sidebar(Some(50), Some(false), Some(0)),
+        client.fetch_gizmo_bootstrap(Some(20))
+    );
+
+    let sidebar = sidebar_res.unwrap_or(Value::Null);
+    let bootstrap = bootstrap_res.unwrap_or(Value::Null);
+
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+
+    for g in mirror_protocol::models::normalize_gizmos(&bootstrap)
+        .into_iter()
+        .chain(mirror_protocol::models::normalize_gizmos(&sidebar))
+    {
+        if seen.insert(g.id.clone()) {
+            result.push(json!({
+                "id": g.id,
+                "name": g.name,
+                "description": g.description,
+                "shortUrl": g.short_url,
+                "iconUrl": g.icon_url,
+                "filesCount": g.files_count,
+            }));
+        }
+    }
+
+    Json(result).into_response()
+}
+
+async fn api_assets_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<AssetsQuery>,
+) -> Response {
+    let pointer = &query.pointer;
+    if !pointer.starts_with("file-service://") && !pointer.starts_with("sediment://") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(api_error(400, "Unsupported asset pointer", "assets")),
+        )
+            .into_response();
+    }
+
+    let account_id = state
+        .store
+        .session()
+        .ok()
+        .flatten()
+        .and_then(|s| s.account_id)
+        .unwrap_or_else(|| "default".to_string());
+    if let Some(file_id) = pointer.strip_prefix("file-service://") {
+        if !state.store.owns_file(file_id, &account_id).unwrap_or(false) {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(api_error(404, "File not found", "assets")),
+            )
+                .into_response();
+        }
+    }
+
+    if pointer.starts_with("sediment://") {
+        match &query.upstream_conversation_id {
+            Some(conv_id)
+                if state
+                    .store
+                    .owns_upstream_conversation(conv_id, &account_id)
+                    .unwrap_or(false) => {}
+            _ => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(api_error(404, "Conversation asset not found", "assets")),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    let creds = match get_valid_credentials(&state.store).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(api_error(401, &e.to_string(), "assets")),
+            )
+                .into_response();
+        }
+    };
+
+    let client = mirror_protocol::client::ChatGptBackendClient::new(state.http.clone(), creds);
+    match client
+        .resolve_asset_download(pointer, query.upstream_conversation_id.as_deref())
+        .await
+    {
+        Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(api_error(502, &e.to_string(), "assets")),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -505,7 +689,7 @@ mod tests {
                 .unwrap(),
         );
         let egress = Arc::new(EgressMonitor::new());
-        Arc::new(AppState { store, egress })
+        Arc::new(AppState::new(store, egress))
     }
 
     #[tokio::test]
@@ -646,5 +830,83 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn inject_css_and_js_routes_respond() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        let req_css = Request::builder()
+            .uri("/mirror/inject.css")
+            .body(Body::empty())
+            .unwrap();
+        let resp_css = app.clone().oneshot(req_css).await.unwrap();
+        assert_eq!(resp_css.status(), StatusCode::OK);
+        assert_eq!(
+            resp_css.headers().get("content-type").unwrap(),
+            "text/css; charset=utf-8"
+        );
+
+        let req_js = Request::builder()
+            .uri("/mirror/inject.js")
+            .body(Body::empty())
+            .unwrap();
+        let resp_js = app.oneshot(req_js).await.unwrap();
+        assert_eq!(resp_js.status(), StatusCode::OK);
+        assert_eq!(
+            resp_js.headers().get("content-type").unwrap(),
+            "application/javascript; charset=utf-8"
+        );
+    }
+
+    #[tokio::test]
+    async fn api_models_and_gpts_unauthorized_when_no_session() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        let req = Request::builder()
+            .uri("/api/models")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        let req2 = Request::builder()
+            .uri("/api/gpts")
+            .body(Body::empty())
+            .unwrap();
+        let resp2 = app.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn api_assets_validation() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        // Invalid pointer scheme -> 400
+        let req = Request::builder()
+            .uri("/api/assets?pointer=http://example.com/asset.png")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // File service pointer for non-existent file -> 404
+        let req2 = Request::builder()
+            .uri("/api/assets?pointer=file-service://non-existent-id")
+            .body(Body::empty())
+            .unwrap();
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
+
+        // Sediment pointer without upstream conversation -> 404
+        let req3 = Request::builder()
+            .uri("/api/assets?pointer=sediment://some-pointer")
+            .body(Body::empty())
+            .unwrap();
+        let resp3 = app.oneshot(req3).await.unwrap();
+        assert_eq!(resp3.status(), StatusCode::NOT_FOUND);
     }
 }

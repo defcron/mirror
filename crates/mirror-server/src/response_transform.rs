@@ -14,6 +14,8 @@ use std::sync::LazyLock;
 pub const BROWSER_TOKEN: &str =
     "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJleHAiOjQxMDI0NDQ4MDAsInN1YiI6Im1pcnJvci11c2VyIn0.";
 
+pub use crate::browser_patch::EARLY_PATCH;
+
 /// Response headers never forwarded to the browser.
 ///
 /// `content-encoding`/`content-length`/`transfer-encoding` are dropped

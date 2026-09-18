@@ -44,10 +44,7 @@ async fn main() {
 
     let egress = Arc::new(EgressMonitor::new());
 
-    let app_state = Arc::new(AppState {
-        store,
-        egress,
-    });
+    let app_state = Arc::new(AppState::new(store, egress));
 
     let router = create_router(app_state);
 

@@ -685,4 +685,135 @@ mod tests {
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
+
+    #[tokio::test]
+    async fn gptgif_encode_calibrate_and_decode() {
+        let app = conversion_routes::<()>();
+        let payload = BASE64_STANDARD.encode(b"0123456789abcdef");
+
+        // Encode with dataBase64
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"dataBase64":"{payload}"}}"#)))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let gif_b64 = body["dataBase64"].as_str().unwrap();
+
+        // Calibrate
+        let req_cal = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif/calibrate")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"dataBase64":"{gif_b64}"}}"#)))
+            .unwrap();
+        let resp_cal = app.clone().oneshot(req_cal).await.unwrap();
+        assert_eq!(resp_cal.status(), StatusCode::OK);
+
+        // Decode
+        let req_dec = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif/decode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"dataBase64":"{gif_b64}","clusterMap":"0123456789abcdef"}}"#
+            )))
+            .unwrap();
+        let resp_dec = app.clone().oneshot(req_dec).await.unwrap();
+        assert_eq!(resp_dec.status(), StatusCode::OK);
+
+        // Test with parts
+        let req_parts = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"parts":["{payload}"]}}"#)))
+            .unwrap();
+        let resp_parts = app.oneshot(req_parts).await.unwrap();
+        assert_eq!(resp_parts.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn gptgif_v4_encode_and_decode() {
+        let app = conversion_routes::<()>();
+        let payload = BASE64_STANDARD.encode(b"v4 payload test");
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif-v4/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"dataBase64":"{payload}","fontSeed":123,"paletteSeed":456}}"#
+            )))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let gif_b64 = body["dataBase64"].as_str().unwrap();
+
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif-v4/decode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"dataBase64":"{gif_b64}"}}"#)))
+            .unwrap();
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::OK);
+
+        // Test with parts
+        let req_parts = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif-v4/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"parts":["{payload}"]}}"#)))
+            .unwrap();
+        let resp_parts = app.oneshot(req_parts).await.unwrap();
+        assert_eq!(resp_parts.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn conversion_routes_reject_malformed_inputs() {
+        let app = conversion_routes::<()>();
+
+        // Invalid base64 in pngspeak
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/convert/pngspeak/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"dataBase64":"not!valid!base64"}"#))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // gptgif with neither dataBase64 nor parts
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/convert/gptgif/encode")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{}"#))
+            .unwrap();
+        let resp2 = app.clone().oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::BAD_REQUEST);
+
+        // loaf decode with malformed loaf text
+        let req3 = Request::builder()
+            .method("POST")
+            .uri("/api/convert/loaf/decode")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"loaf":"not-a-loaf"}"#))
+            .unwrap();
+        let resp3 = app.oneshot(req3).await.unwrap();
+        assert_eq!(resp3.status(), StatusCode::BAD_REQUEST);
+    }
 }

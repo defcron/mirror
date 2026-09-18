@@ -1272,6 +1272,7 @@ dependencies = [
  "tower",
  "url",
  "uuid",
+ "wreq",
 ]
 
 [[package]]
