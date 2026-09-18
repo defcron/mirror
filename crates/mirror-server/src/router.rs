@@ -1028,4 +1028,52 @@ mod tests {
         let resp2 = app.oneshot(req2).await.unwrap();
         assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
     }
+
+    #[tokio::test]
+    async fn chat_handler_and_v1_completions_without_session_returns_error() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        let req_chat = Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"prompt":"hi","model":"auto"}"#))
+            .unwrap();
+        let resp_chat = app.clone().oneshot(req_chat).await.unwrap();
+        assert_eq!(resp_chat.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let req_v1 = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"messages":[{"role":"user","content":"hi"}]}"#))
+            .unwrap();
+        let resp_v1 = app.oneshot(req_v1).await.unwrap();
+        assert_eq!(resp_v1.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[tokio::test]
+    async fn conversation_not_found_errors() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        let req_patch = Request::builder()
+            .method("PATCH")
+            .uri("/api/conversations/non-existent-uuid")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"model":"gpt-4o"}"#))
+            .unwrap();
+        let resp_patch = app.clone().oneshot(req_patch).await.unwrap();
+        assert_eq!(resp_patch.status(), StatusCode::NOT_FOUND);
+
+        let req_branch = Request::builder()
+            .method("POST")
+            .uri("/api/conversations/non-existent-uuid/branch")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"messageId":"msg-123"}"#))
+            .unwrap();
+        let resp_branch = app.oneshot(req_branch).await.unwrap();
+        assert_eq!(resp_branch.status(), StatusCode::NOT_FOUND);
+    }
 }
