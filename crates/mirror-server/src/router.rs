@@ -60,6 +60,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/models", get(api_models_handler))
         .route("/api/gpts", get(api_gpts_handler))
         .route("/api/assets", get(api_assets_handler))
+        .route("/api/files", post(api_files_handler))
         .route("/mirror/inject.css", get(inject_css_handler))
         .route("/mirror/inject.js", get(inject_js_handler))
         .route("/v1/models", get(v1_models_handler))
@@ -675,6 +676,94 @@ async fn api_assets_handler(
     }
 }
 
+async fn api_files_handler(
+    State(state): State<Arc<AppState>>,
+    req: axum::extract::Request,
+) -> Response {
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+
+    let bytes = match axum::body::to_bytes(req.into_body(), 50 * 1024 * 1024).await {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(api_error(400, &e.to_string(), "api-files")),
+            )
+                .into_response();
+        }
+    };
+
+    let multipart = match crate::upload_mime::parse_multipart_file(&content_type, &bytes) {
+        Some(m) => m,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(api_error(400, "No file uploaded", "api-files")),
+            )
+                .into_response();
+        }
+    };
+
+    let creds = match get_valid_credentials(&state.store).await {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(api_error(401, &e.to_string(), "api-files")),
+            )
+                .into_response();
+        }
+    };
+
+    let client = mirror_protocol::client::ChatGptBackendClient::new(state.http.clone(), creds);
+    let _ = client.fetch_me().await;
+
+    let mime_type = crate::upload_mime::upload_mime_type(&multipart.file_name);
+    let uploaded = match client
+        .upload_file(&multipart.data, &multipart.file_name, mime_type, None, None)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(api_error(502, &e.to_string(), "api-files")),
+            )
+                .into_response();
+        }
+    };
+
+    let account_id = state
+        .store
+        .session()
+        .ok()
+        .flatten()
+        .and_then(|s| s.account_id)
+        .unwrap_or_else(|| "default".to_string());
+
+    let public_file = json!({
+        "fileId": uploaded.file_id,
+        "fileName": uploaded.file_name,
+        "fileSize": uploaded.file_size,
+        "mimeType": uploaded.mime_type,
+        "useCase": match uploaded.use_case {
+            mirror_protocol::types::UseCase::Multimodal => "multimodal",
+            mirror_protocol::types::UseCase::MyFiles => "my_files",
+        },
+        "width": uploaded.width,
+        "height": uploaded.height,
+    });
+
+    let _ = state.store.save_file(&uploaded.file_id, &public_file, &account_id);
+
+    Json(public_file).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -908,5 +997,35 @@ mod tests {
             .unwrap();
         let resp3 = app.oneshot(req3).await.unwrap();
         assert_eq!(resp3.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn api_files_validation() {
+        let state = test_app_state();
+        let app = create_router(state);
+
+        // Missing file body -> 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/files")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        // Valid multipart format but no session -> 401
+        let boundary = "boundary123";
+        let content_type = format!("multipart/form-data; boundary={boundary}");
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\nContent-Type: text/plain\r\n\r\nHello World\r\n--{boundary}--\r\n"
+        );
+        let req2 = Request::builder()
+            .method("POST")
+            .uri("/api/files")
+            .header("content-type", content_type)
+            .body(Body::from(body))
+            .unwrap();
+        let resp2 = app.oneshot(req2).await.unwrap();
+        assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
     }
 }

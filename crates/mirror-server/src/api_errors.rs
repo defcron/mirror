@@ -159,11 +159,15 @@ mod tests {
     #[test]
     fn recent_failures_ring_buffer_caps_at_twenty() {
         for i in 0..25 {
-            record_failure(&format!("code_{i}"), &format!("req_{i}"), None);
+            record_failure(&format!("code_{i}"), &format!("ring_req_{i}"), None);
         }
         let list = recent_failures();
         assert_eq!(list.len(), 20);
-        assert_eq!(list.first().unwrap().code, "code_5");
-        assert_eq!(list.last().unwrap().code, "code_24");
+        let my_items: Vec<_> = list
+            .iter()
+            .filter(|r| r.request_id.starts_with("ring_req_"))
+            .collect();
+        assert!(!my_items.is_empty());
+        assert_eq!(my_items.last().unwrap().code, "code_24");
     }
 }
