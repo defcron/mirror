@@ -86,8 +86,18 @@ impl ProofConfig {
             json!("en-US"),
             Value::Null,
             json!("plugins−[object PluginArray]"),
-            json!(REACT_PROPS.choose(&mut rng).copied().unwrap_or(REACT_PROPS[0])),
-            json!(DOM_EVENTS.choose(&mut rng).copied().unwrap_or(DOM_EVENTS[0])),
+            json!(
+                REACT_PROPS
+                    .choose(&mut rng)
+                    .copied()
+                    .unwrap_or(REACT_PROPS[0])
+            ),
+            json!(
+                DOM_EVENTS
+                    .choose(&mut rng)
+                    .copied()
+                    .unwrap_or(DOM_EVENTS[0])
+            ),
         ])
     }
 
@@ -204,10 +214,12 @@ pub fn generate_proof_token(opts: GenerateProofOptions<'_>) -> Result<Option<Str
 
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 #[cfg(test)]
@@ -267,7 +279,10 @@ mod tests {
 
         let mut expected_config = fixed_config();
         expected_config.set_attempt(0);
-        assert_eq!(token, format!("{TOKEN_PREFIX}{}", expected_config.to_base64()));
+        assert_eq!(
+            token,
+            format!("{TOKEN_PREFIX}{}", expected_config.to_base64())
+        );
     }
 
     #[test]
@@ -329,7 +344,10 @@ mod tests {
     fn decode_proof_config_returns_none_for_absent_or_garbage_input() {
         assert_eq!(decode_proof_config(None), None);
         assert_eq!(decode_proof_config(Some("no marker here")), None);
-        assert_eq!(decode_proof_config(Some(&format!("{MARKER}!!!not-base64"))), None);
+        assert_eq!(
+            decode_proof_config(Some(&format!("{MARKER}!!!not-base64"))),
+            None
+        );
         // Valid base64 that decodes to a JSON object rather than an array.
         let obj = BASE64_STANDARD.encode(b"{\"a\":1}");
         assert_eq!(

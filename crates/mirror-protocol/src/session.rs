@@ -177,8 +177,14 @@ mod tests {
     fn jwt_exp_is_none_for_malformed_or_non_numeric_claims() {
         // `typeof claims.exp === "number"` upstream, so a string is ignored
         // rather than parsed.
-        assert_eq!(decode_jwt_exp_seconds(&jwt_with_claims(r#"{"exp":"1800"}"#)), None);
-        assert_eq!(decode_jwt_exp_seconds(&jwt_with_claims(r#"{"sub":"x"}"#)), None);
+        assert_eq!(
+            decode_jwt_exp_seconds(&jwt_with_claims(r#"{"exp":"1800"}"#)),
+            None
+        );
+        assert_eq!(
+            decode_jwt_exp_seconds(&jwt_with_claims(r#"{"sub":"x"}"#)),
+            None
+        );
         assert_eq!(decode_jwt_exp_seconds(&jwt_with_claims("not json")), None);
         // No payload segment at all.
         assert_eq!(decode_jwt_exp_seconds("single-segment"), None);

@@ -37,12 +37,10 @@ use std::sync::LazyLock;
 /// `(?:[a-z0-9-]+\.)*chatgpt\.com|chat\.openai\.com`
 const CHATGPT_WEB_HOSTS: &str = r"(?:[a-z0-9-]+\.)*chatgpt\.com|chat\.openai\.com";
 
-static HTTPS_HOSTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!("(?i)https://{CHATGPT_WEB_HOSTS}")).expect("valid regex")
-});
-static WSS_HOSTS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(&format!("(?i)wss://{CHATGPT_WEB_HOSTS}")).expect("valid regex")
-});
+static HTTPS_HOSTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("(?i)https://{CHATGPT_WEB_HOSTS}")).expect("valid regex"));
+static WSS_HOSTS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!("(?i)wss://{CHATGPT_WEB_HOSTS}")).expect("valid regex"));
 static HTTPS_ESCAPED: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)https:(?:\\/){2}(?:(?:[a-z0-9-]+\.)*chatgpt\.com|chat\.openai\.com)")
         .expect("valid regex")
@@ -184,17 +182,29 @@ mod tests {
         // text/event-stream is explicitly excluded: rewriting a live SSE
         // body would corrupt the stream framing.
         for t in ["text/event-stream", "image/png", "application/octet-stream"] {
-            assert!(!is_rewritable_content_type(t), "{t} should not be rewritable");
+            assert!(
+                !is_rewritable_content_type(t),
+                "{t} should not be rewritable"
+            );
         }
     }
 
     #[test]
     fn request_origin_matches_upstream() {
-        assert_eq!(request_origin("https", Some("a:1")).as_deref(), Some("https://a:1"));
-        assert_eq!(request_origin("http", Some("a:1")).as_deref(), Some("http://a:1"));
+        assert_eq!(
+            request_origin("https", Some("a:1")).as_deref(),
+            Some("https://a:1")
+        );
+        assert_eq!(
+            request_origin("http", Some("a:1")).as_deref(),
+            Some("http://a:1")
+        );
         // Any non-"https" protocol falls back to http, and a missing host
         // yields None (upstream returns null).
-        assert_eq!(request_origin("ftp", Some("a:1")).as_deref(), Some("http://a:1"));
+        assert_eq!(
+            request_origin("ftp", Some("a:1")).as_deref(),
+            Some("http://a:1")
+        );
         assert_eq!(request_origin("http", None), None);
     }
 

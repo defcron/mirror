@@ -1,8 +1,8 @@
 //! Request deadlines, cancellation, and turn timeout tracking.
 //! Port of `apps/server/src/deadlines.ts`.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -30,8 +30,14 @@ impl TurnDeadline {
     where
         F: FnOnce() + Send + 'static,
     {
-        let total_ms = deadline_ms(std::env::var("MIRROR_TURN_TIMEOUT_MS").ok().as_deref(), 900_000);
-        let idle_ms = deadline_ms(std::env::var("MIRROR_IDLE_TIMEOUT_MS").ok().as_deref(), 120_000);
+        let total_ms = deadline_ms(
+            std::env::var("MIRROR_TURN_TIMEOUT_MS").ok().as_deref(),
+            900_000,
+        );
+        let idle_ms = deadline_ms(
+            std::env::var("MIRROR_IDLE_TIMEOUT_MS").ok().as_deref(),
+            120_000,
+        );
 
         let touch_notify = Arc::new(Notify::new());
         let closed = Arc::new(AtomicBool::new(false));

@@ -159,8 +159,9 @@ impl Store {
             Ok(())
         })?;
 
-        self.conversation(&id)?
-            .ok_or_else(|| StoreError::MalformedSession("conversation vanished after insert".into()))
+        self.conversation(&id)?.ok_or_else(|| {
+            StoreError::MalformedSession("conversation vanished after insert".into())
+        })
     }
 
     /// Mirrors `getConversation`.
@@ -287,7 +288,9 @@ impl Store {
         id: Option<&str>,
     ) -> Result<StoredMessage, StoreError> {
         let message = StoredMessage {
-            id: id.map(str::to_string).unwrap_or_else(crate::store::new_uuid),
+            id: id
+                .map(str::to_string)
+                .unwrap_or_else(crate::store::new_uuid),
             conversation_id: conversation_id.to_string(),
             upstream_node_id: upstream_node_id.map(str::to_string),
             role: role.to_string(),
@@ -836,7 +839,13 @@ mod tests {
             .unwrap();
         }
         let page = s
-            .list_conversations("default", Some(Page { limit: 2, offset: 1 }))
+            .list_conversations(
+                "default",
+                Some(Page {
+                    limit: 2,
+                    offset: 1,
+                }),
+            )
             .unwrap();
         assert_eq!(page.len(), 2);
     }
@@ -1075,7 +1084,8 @@ mod tests {
         // leaves every named field untouched, so each of these yields
         // defaults rather than a positionally-deserialized cursor.
         for raw in ["not json", "[1]", "null", "\"str\"", "5"] {
-            s.write_setting_pub("conversation_sync_cursor:acct-2", raw).unwrap();
+            s.write_setting_pub("conversation_sync_cursor:acct-2", raw)
+                .unwrap();
             assert_eq!(
                 s.conversation_sync_cursor("acct-2").unwrap(),
                 ConversationSyncCursor::default(),
@@ -1147,7 +1157,8 @@ mod tests {
             None
         );
         assert_eq!(
-            s.find_conversation_by_transcript("acct-1", "other").unwrap(),
+            s.find_conversation_by_transcript("acct-1", "other")
+                .unwrap(),
             None
         );
     }
@@ -1241,7 +1252,11 @@ mod tests {
             .collect();
         assert_eq!(by_body, vec![bodied.id]);
 
-        assert!(s.search_conversations("acct-1", "nothing here").unwrap().is_empty());
+        assert!(
+            s.search_conversations("acct-1", "nothing here")
+                .unwrap()
+                .is_empty()
+        );
         // Never crosses account boundaries.
         assert!(s.search_conversations("acct-2", "rust").unwrap().is_empty());
     }
@@ -1287,7 +1302,11 @@ mod tests {
         related_ids.sort();
         assert_eq!(related_ids, ids);
 
-        assert!(s.related_conversations("acct-2", "upstream-1").unwrap().is_empty());
+        assert!(
+            s.related_conversations("acct-2", "upstream-1")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1306,8 +1325,14 @@ mod tests {
         };
         s.update_conversation(&linked).unwrap();
 
-        assert!(s.owns_upstream_conversation("upstream-1", "acct-1").unwrap());
-        assert!(!s.owns_upstream_conversation("upstream-1", "acct-2").unwrap());
+        assert!(
+            s.owns_upstream_conversation("upstream-1", "acct-1")
+                .unwrap()
+        );
+        assert!(
+            !s.owns_upstream_conversation("upstream-1", "acct-2")
+                .unwrap()
+        );
         assert!(!s.owns_upstream_conversation("absent", "acct-1").unwrap());
     }
 }

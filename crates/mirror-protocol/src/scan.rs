@@ -18,9 +18,8 @@ use serde_json::Value;
 use std::sync::LazyLock;
 
 /// `/(?:file-service|sediment):\/\/[^\s"'<>]+/g`
-static ASSET_POINTER_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:file-service|sediment)://[^\s"'<>]+"#).expect("valid regex")
-});
+static ASSET_POINTER_IN_TEXT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:file-service|sediment)://[^\s"'<>]+"#).expect("valid regex"));
 
 fn as_str(value: Option<&Value>) -> Option<&str> {
     value?.as_str()
@@ -178,7 +177,9 @@ mod tests {
 
     #[test]
     fn pointers_embedded_in_free_text_are_discovered() {
-        let events = scan(&json!("see sediment://img-1 and file-service://doc-2 for detail"));
+        let events = scan(&json!(
+            "see sediment://img-1 and file-service://doc-2 for detail"
+        ));
         assert_eq!(events.len(), 2);
         assert!(matches!(
             &events[0],
@@ -230,18 +231,26 @@ mod tests {
         ));
 
         // A MIME-shaped image content type also counts.
-        let mime = scan(&json!({"asset_pointer": "file-service://f2", "content_type": "image/png"}));
-        assert!(matches!(&mime[0], NormalizedConversationEvent::Image { .. }));
+        let mime =
+            scan(&json!({"asset_pointer": "file-service://f2", "content_type": "image/png"}));
+        assert!(matches!(
+            &mime[0],
+            NormalizedConversationEvent::Image { .. }
+        ));
 
         // Anything else is a file.
-        let file = scan(&json!({"asset_pointer": "file-service://f3", "content_type": "text/plain"}));
+        let file =
+            scan(&json!({"asset_pointer": "file-service://f3", "content_type": "text/plain"}));
         assert!(matches!(&file[0], NormalizedConversationEvent::File { .. }));
     }
 
     #[test]
     fn a_sediment_pointer_is_an_image_regardless_of_content_type() {
         let events = scan(&json!({"asset_pointer": "sediment://s1", "content_type": "text/plain"}));
-        assert!(matches!(&events[0], NormalizedConversationEvent::Image { .. }));
+        assert!(matches!(
+            &events[0],
+            NormalizedConversationEvent::Image { .. }
+        ));
     }
 
     #[test]
@@ -342,8 +351,14 @@ mod tests {
             "title": "both"
         }));
         assert_eq!(events.len(), 2);
-        assert!(matches!(&events[0], NormalizedConversationEvent::File { .. }));
-        assert!(matches!(&events[1], NormalizedConversationEvent::Citation { .. }));
+        assert!(matches!(
+            &events[0],
+            NormalizedConversationEvent::File { .. }
+        ));
+        assert!(matches!(
+            &events[1],
+            NormalizedConversationEvent::Citation { .. }
+        ));
     }
 
     #[test]
@@ -367,7 +382,10 @@ mod tests {
         // A message with no content or no parts array yields "".
         assert_eq!(message_text(&json!({})), "");
         assert_eq!(message_text(&json!({"content": {}})), "");
-        assert_eq!(message_text(&json!({"content": {"parts": "not-an-array"}})), "");
+        assert_eq!(
+            message_text(&json!({"content": {"parts": "not-an-array"}})),
+            ""
+        );
     }
 
     #[test]

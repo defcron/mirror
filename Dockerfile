@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
@@ -11,6 +13,18 @@ COPY tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
 RUN npm run build
+
+FROM rustlang/rust:nightly-bookworm AS rust-build
+
+WORKDIR /app
+ENV CARGO_BUILD_JOBS=1 CMAKE_BUILD_PARALLEL_LEVEL=1
+RUN apt-get update && apt-get install -y --no-install-recommends cmake clang && rm -rf /var/lib/apt/lists/*
+COPY rust-toolchain.toml Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --locked --release --bin mirror-server && \
+    mkdir -p /build-artifacts && cp /app/target/release/mirror-server /build-artifacts/mirror-server
 # devDependencies stay in the image below rather than being pruned or
 # reinstalled fresh - both npm prune --omit=dev (bulk-delete) and a second
 # `npm ci --omit=dev` (bulk-write) hang for a very long time on this
@@ -40,7 +54,8 @@ COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/packages/protocol/package.json ./packages/protocol/package.json
 COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
 COPY scripts/storage.mjs scripts/restore-drill.mjs ./scripts/
+COPY --from=rust-build /build-artifacts/mirror-server /usr/local/bin/mirror-server
 RUN mkdir -p /home/node/.mirror && chown node:node /home/node/.mirror
 USER node
 EXPOSE 8787
-CMD ["node", "apps/server/dist/index.js"]
+CMD ["/usr/local/bin/mirror-server"]

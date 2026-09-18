@@ -5,7 +5,7 @@
 #![allow(clippy::collapsible_if)]
 
 use mirror_protocol::events::NormalizedConversationEvent;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -24,7 +24,9 @@ pub fn route_model(model: &str, metadata: Option<&HashMap<String, String>>) -> R
 
     if model.starts_with("g-") {
         RoutedModel {
-            model: override_model.cloned().unwrap_or_else(|| "auto".to_string()),
+            model: override_model
+                .cloned()
+                .unwrap_or_else(|| "auto".to_string()),
             gizmo_id: Some(model.to_string()),
             private: private_mode,
         }
@@ -65,7 +67,13 @@ pub fn build_response_metadata(
 ) -> Option<HashMap<String, String>> {
     let mut tool_events = Vec::new();
     for event in events {
-        if let NormalizedConversationEvent::Tool { name, status, display_hidden, .. } = event {
+        if let NormalizedConversationEvent::Tool {
+            name,
+            status,
+            display_hidden,
+            ..
+        } = event
+        {
             if !display_hidden.unwrap_or(false) {
                 tool_events.push(json!({
                     "name": name,
@@ -96,7 +104,10 @@ pub struct NormalizedMessage {
 /// Synthesizes an upstream prompt string from normalized conversation history.
 pub fn prompt_for(messages: &[NormalizedMessage], continuation: bool) -> String {
     if continuation {
-        return messages.last().map(|m| m.content.clone()).unwrap_or_default();
+        return messages
+            .last()
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
     }
     let system: Vec<&NormalizedMessage> = messages
         .iter()

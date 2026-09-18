@@ -268,7 +268,11 @@ mod tests {
             )))
             .await
             .expect_err("a failed fetch must not verify");
-        assert!(error.to_string().contains("Cloudflare trace returned HTTP 503"));
+        assert!(
+            error
+                .to_string()
+                .contains("Cloudflare trace returned HTTP 503")
+        );
         assert_eq!(
             monitor.status().error.as_deref(),
             Some("Cloudflare trace returned HTTP 503")

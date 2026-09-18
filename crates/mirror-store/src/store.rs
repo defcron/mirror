@@ -25,6 +25,8 @@ const SESSION_KEY: &str = "session";
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Migration(#[from] MigrationError),
@@ -48,7 +50,10 @@ pub struct StoredSession {
     pub device_id: String,
     #[serde(rename = "savedAt")]
     pub saved_at: String,
-    #[serde(rename = "assetLinkGeneration", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "assetLinkGeneration",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub asset_link_generation: Option<String>,
     #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
@@ -120,6 +125,11 @@ impl Store {
     /// `interrupted`, since no writer is still producing it.
     pub fn open(path: &Path, key: EncryptionKey) -> Result<Self, StoreError> {
         let mut connection = Connection::open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
         connection.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         migrate_database(&mut connection)?;
         connection.execute(
@@ -175,11 +185,9 @@ impl Store {
     fn read_setting(&self, key: &str) -> Result<Option<String>, StoreError> {
         self.with_conn(|db| {
             Ok(db
-                .query_row(
-                    "SELECT value FROM settings WHERE key = ?1",
-                    [key],
-                    |row| row.get::<_, String>(0),
-                )
+                .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                    row.get::<_, String>(0)
+                })
                 .optional()?)
         })
     }
@@ -435,7 +443,10 @@ impl Store {
             conversation_id: asset.conversation_id.clone(),
             message_id: asset.message_id.clone(),
             file_name: asset.file_name.clone(),
-            account_id: session.account_id.clone().unwrap_or_else(|| "default".to_string()),
+            account_id: session
+                .account_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string()),
             session_generation: session
                 .asset_link_generation
                 .clone()
@@ -460,7 +471,10 @@ impl Store {
         let sealed: SealedAssetTicket = serde_json::from_str(&plaintext).ok()?;
         let session = self.session().ok()??;
 
-        let expected_account = session.account_id.clone().unwrap_or_else(|| "default".to_string());
+        let expected_account = session
+            .account_id
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
         let expected_generation = session
             .asset_link_generation
             .clone()
@@ -488,7 +502,9 @@ impl Store {
     /// Mirrors `getDefaultSystemInstructions` — "" when unset.
     pub fn default_system_instructions(&self, account_id: &str) -> Result<String, StoreError> {
         Ok(self
-            .read_setting(&format!("{DEFAULT_SYSTEM_INSTRUCTIONS_KEY_PREFIX}{account_id}"))?
+            .read_setting(&format!(
+                "{DEFAULT_SYSTEM_INSTRUCTIONS_KEY_PREFIX}{account_id}"
+            ))?
             .unwrap_or_default())
     }
 
@@ -523,13 +539,17 @@ impl Store {
             .collect())
     }
 
-    pub fn set_hotkeys(&self, account_id: &str, hotkeys: &[(String, String)]) -> Result<(), StoreError> {
+    pub fn set_hotkeys(
+        &self,
+        account_id: &str,
+        hotkeys: &[(String, String)],
+    ) -> Result<(), StoreError> {
         let map: serde_json::Map<String, serde_json::Value> = hotkeys
             .iter()
             .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
             .collect();
-        let json = serde_json::to_string(&map)
-            .map_err(|e| StoreError::MalformedSession(e.to_string()))?;
+        let json =
+            serde_json::to_string(&map).map_err(|e| StoreError::MalformedSession(e.to_string()))?;
         self.write_setting(&format!("{HOTKEYS_KEY_PREFIX}{account_id}"), &json)
     }
 }
@@ -614,7 +634,10 @@ mod tests {
         let s = store();
         s.save_session(&session()).unwrap();
         let raw = s.read_setting(SESSION_KEY).unwrap().unwrap();
-        assert!(raw.starts_with("v1."), "expected the v1 envelope, got {raw}");
+        assert!(
+            raw.starts_with("v1."),
+            "expected the v1 envelope, got {raw}"
+        );
         assert!(
             !raw.contains("session-token-value"),
             "the session token must not be recoverable from the row"
@@ -651,11 +674,15 @@ mod tests {
         s.save_session(&session()).unwrap();
         let revision = s.session_revision();
 
-        s.update_minted_token("access-abc", 1_800_000_000_000, None).unwrap();
+        s.update_minted_token("access-abc", 1_800_000_000_000, None)
+            .unwrap();
 
         let stored = s.session().unwrap().unwrap();
         assert_eq!(stored.cached_access_token.as_deref(), Some("access-abc"));
-        assert_eq!(stored.cached_access_token_expires_at, Some(1_800_000_000_000));
+        assert_eq!(
+            stored.cached_access_token_expires_at,
+            Some(1_800_000_000_000)
+        );
         // Unchanged: refreshing a token must not invalidate concurrent work.
         assert_eq!(s.session_revision(), revision);
         // The session token itself is untouched when nothing rotated.
@@ -699,7 +726,8 @@ mod tests {
     fn default_system_instructions_are_per_account_and_default_to_empty() {
         let s = store();
         assert_eq!(s.default_system_instructions("acct-1").unwrap(), "");
-        s.set_default_system_instructions("acct-1", "be terse").unwrap();
+        s.set_default_system_instructions("acct-1", "be terse")
+            .unwrap();
         assert_eq!(s.default_system_instructions("acct-1").unwrap(), "be terse");
         // A different account is unaffected.
         assert_eq!(s.default_system_instructions("acct-2").unwrap(), "");
@@ -708,8 +736,10 @@ mod tests {
     #[test]
     fn settings_writes_upsert_rather_than_duplicating() {
         let s = store();
-        s.set_default_system_instructions("acct-1", "first").unwrap();
-        s.set_default_system_instructions("acct-1", "second").unwrap();
+        s.set_default_system_instructions("acct-1", "first")
+            .unwrap();
+        s.set_default_system_instructions("acct-1", "second")
+            .unwrap();
         assert_eq!(s.default_system_instructions("acct-1").unwrap(), "second");
         let count: i64 = s
             .with_conn(|db| Ok(db.query_row("SELECT count(*) FROM settings", [], |r| r.get(0))?))
@@ -722,11 +752,8 @@ mod tests {
         let s = store();
         assert!(s.hotkeys("acct-1").unwrap().is_empty());
 
-        s.set_hotkeys(
-            "acct-1",
-            &[("send".to_string(), "mod+enter".to_string())],
-        )
-        .unwrap();
+        s.set_hotkeys("acct-1", &[("send".to_string(), "mod+enter".to_string())])
+            .unwrap();
         assert_eq!(
             s.hotkeys("acct-1").unwrap(),
             vec![("send".to_string(), "mod+enter".to_string())]
@@ -761,10 +788,9 @@ mod tests {
         s.save_session(&session()).unwrap();
         let raw = s.read_setting(SESSION_KEY).unwrap().unwrap();
 
-        let other = Store::open_in_memory(
-            EncryptionKey::decode_configured(&"cd".repeat(32)).unwrap(),
-        )
-        .unwrap();
+        let other =
+            Store::open_in_memory(EncryptionKey::decode_configured(&"cd".repeat(32)).unwrap())
+                .unwrap();
         other.write_setting(SESSION_KEY, &raw).unwrap();
         assert!(matches!(other.session(), Err(StoreError::Crypto(_))));
     }
@@ -796,7 +822,11 @@ mod tests {
         let reopened = Store::open(&path, key()).unwrap();
         let status: String = reopened
             .with_conn(|db| {
-                Ok(db.query_row("SELECT status FROM messages WHERE id = 'm1'", [], |r| r.get(0))?)
+                Ok(
+                    db.query_row("SELECT status FROM messages WHERE id = 'm1'", [], |r| {
+                        r.get(0)
+                    })?,
+                )
             })
             .unwrap();
         assert_eq!(status, "interrupted");
@@ -854,8 +884,12 @@ mod tests {
     #[test]
     fn save_verified_session_preserves_the_device_id_for_the_same_session() {
         let s = store();
-        let first = s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
-        let second = s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        let first = s
+            .save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
+        let second = s
+            .save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         assert_eq!(first.device_id, second.device_id);
         // But the asset-link generation always rotates, invalidating old
         // tickets even across an otherwise identical re-save.
@@ -865,16 +899,24 @@ mod tests {
     #[test]
     fn save_verified_session_mints_a_new_device_id_for_a_different_session() {
         let s = store();
-        let first = s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
-        let second = s.save_verified_session("tok-2", Some("acct-1"), None, None).unwrap();
+        let first = s
+            .save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
+        let second = s
+            .save_verified_session("tok-2", Some("acct-1"), None, None)
+            .unwrap();
         assert_ne!(first.device_id, second.device_id);
     }
 
     #[test]
     fn save_verified_session_treats_a_differing_account_as_a_new_session() {
         let s = store();
-        let first = s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
-        let second = s.save_verified_session("tok-1", Some("acct-2"), None, None).unwrap();
+        let first = s
+            .save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
+        let second = s
+            .save_verified_session("tok-1", Some("acct-2"), None, None)
+            .unwrap();
         assert_ne!(first.device_id, second.device_id);
     }
 
@@ -883,10 +925,14 @@ mod tests {
         let s = store();
         s.save_verified_session("tok-1", Some("acct-1"), None, Some("ts-token"))
             .unwrap();
-        let resaved = s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        let resaved = s
+            .save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         assert_eq!(resaved.turnstile_token.as_deref(), Some("ts-token"));
         // ...but not to a different session.
-        let other = s.save_verified_session("tok-2", Some("acct-1"), None, None).unwrap();
+        let other = s
+            .save_verified_session("tok-2", Some("acct-1"), None, None)
+            .unwrap();
         assert_eq!(other.turnstile_token, None);
     }
 
@@ -921,7 +967,10 @@ mod tests {
         s.save_verified_session("tok-1", None, None, None).unwrap();
         s.set_session_turnstile_token(Some("ts-1")).unwrap();
 
-        assert_eq!(s.consume_session_turnstile_token().unwrap().as_deref(), Some("ts-1"));
+        assert_eq!(
+            s.consume_session_turnstile_token().unwrap().as_deref(),
+            Some("ts-1")
+        );
         // Gone from storage, so a second consume yields nothing.
         assert_eq!(s.consume_session_turnstile_token().unwrap(), None);
         assert_eq!(s.session().unwrap().unwrap().turnstile_token, None);
@@ -983,7 +1032,8 @@ mod tests {
     #[test]
     fn setting_an_unchanged_account_id_is_a_no_op() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let before = s.session().unwrap().unwrap();
         s.set_session_account_id("acct-1").unwrap();
         assert_eq!(s.session().unwrap().unwrap(), before);
@@ -992,7 +1042,8 @@ mod tests {
     #[test]
     fn an_asset_ticket_round_trips() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let ticket = s.seal_asset_ticket(&asset(), NOW).unwrap();
         assert_eq!(s.open_asset_ticket(&ticket, NOW).unwrap(), asset());
     }
@@ -1017,7 +1068,8 @@ mod tests {
     #[test]
     fn an_expired_asset_ticket_does_not_open() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let ticket = s.seal_asset_ticket(&asset(), NOW).unwrap();
         // Exactly at expiry is already too late (`expiresAt <= now`).
         let expiry = NOW + 7 * 24 * 60 * 60 * 1000;
@@ -1030,18 +1082,21 @@ mod tests {
         // This is the asset-link generation binding: re-saving the session
         // rotates the generation, so links from the previous session die.
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let ticket = s.seal_asset_ticket(&asset(), NOW).unwrap();
         assert!(s.open_asset_ticket(&ticket, NOW).is_some());
 
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         assert!(s.open_asset_ticket(&ticket, NOW).is_none());
     }
 
     #[test]
     fn a_ticket_from_a_different_account_does_not_open() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let ticket = s.seal_asset_ticket(&asset(), NOW).unwrap();
 
         // Move the session to another account, keeping the same generation
@@ -1055,7 +1110,8 @@ mod tests {
     #[test]
     fn a_ticket_naming_a_disallowed_pointer_scheme_does_not_open() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         for pointer in [
             "https://evil.example.com/x",
             "file:///etc/passwd",
@@ -1097,7 +1153,8 @@ mod tests {
     #[test]
     fn an_oversized_or_garbage_ticket_is_refused_without_erroring() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         assert!(s.open_asset_ticket(&"x".repeat(12_001), NOW).is_none());
         assert!(s.open_asset_ticket("not-a-ticket", NOW).is_none());
         assert!(s.open_asset_ticket("", NOW).is_none());
@@ -1109,7 +1166,8 @@ mod tests {
     #[test]
     fn a_ticket_with_null_conversation_and_message_ids_round_trips() {
         let s = store();
-        s.save_verified_session("tok-1", Some("acct-1"), None, None).unwrap();
+        s.save_verified_session("tok-1", Some("acct-1"), None, None)
+            .unwrap();
         let bare = AssetTicket {
             pointer: "sediment://x".to_string(),
             conversation_id: None,

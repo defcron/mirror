@@ -211,7 +211,10 @@ mod tests {
     fn a_dollar_prefixed_minified_identifier_still_matches_the_init_pattern() {
         // [$\w]+ exists precisely because minifiers emit $-prefixed names.
         let js = "$a.init({applicationId:1})";
-        assert_eq!(disable_datadog_init(js), "false&&$a.init({applicationId:1})");
+        assert_eq!(
+            disable_datadog_init(js),
+            "false&&$a.init({applicationId:1})"
+        );
     }
 
     #[test]
@@ -253,7 +256,10 @@ mod tests {
     fn the_html_transform_swaps_the_real_token_for_the_browser_placeholder() {
         let html = "<head></head><script>window.token=\"real-secret-token\"</script>";
         let out = transform_html(html, Some(PROXY), Some("real-secret-token"), "");
-        assert!(!out.contains("real-secret-token"), "the real token must not be served");
+        assert!(
+            !out.contains("real-secret-token"),
+            "the real token must not be served"
+        );
         assert!(out.contains(BROWSER_TOKEN));
     }
 
@@ -303,7 +309,11 @@ mod tests {
             "text/css",
         ] {
             assert_eq!(
-                cache_control("/cdn/assets/x.js", content_type, Some("public, max-age=31536000, immutable")),
+                cache_control(
+                    "/cdn/assets/x.js",
+                    content_type,
+                    Some("public, max-age=31536000, immutable")
+                ),
                 "no-store",
                 "{content_type} is rewritten and must not be cached"
             );
@@ -333,7 +343,11 @@ mod tests {
             "no-store"
         );
         assert_eq!(
-            cache_control("/backend-api/models", "application/octet-stream", Some("max-age=60")),
+            cache_control(
+                "/backend-api/models",
+                "application/octet-stream",
+                Some("max-age=60")
+            ),
             "max-age=60"
         );
     }

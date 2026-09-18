@@ -1,35 +1,50 @@
+use axum::Router;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
-use axum::Router;
 use base64::prelude::*;
 use mirror_formats::gptgif::{
     calibrate_gptgif, decode_gptgif, encode_gptgif, gunzip_gptgif_output,
 };
 use mirror_formats::gptgif_v4::{
-    decode_gptgif_v4, default_palette, encode_gptgif_v4, font_from_bytes, font_to_bytes,
-    palette_from_bytes, palette_to_bytes, random_font, random_palette, EncodeGptgifV4Options,
+    EncodeGptgifV4Options, decode_gptgif_v4, default_palette, encode_gptgif_v4, font_from_bytes,
+    font_to_bytes, palette_from_bytes, palette_to_bytes, random_font, random_palette,
 };
-use mirror_formats::loaf::{pack_loaf, unpack_loaf, LoafEntry};
+use mirror_formats::loaf::{LoafEntry, pack_loaf, unpack_loaf};
 use mirror_formats::pngspeak::{
-    decode_png_speak, encode_png_speak, PngSpeakDecodeOptions, PngSpeakEncodeOptions,
+    PngSpeakDecodeOptions, PngSpeakEncodeOptions, decode_png_speak, encode_png_speak,
 };
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub fn conversion_routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .route("/api/convert/formats", get(formats_handler))
         .route("/api/convert/loaf/encode", post(loaf_encode_handler))
         .route("/api/convert/loaf/decode", post(loaf_decode_handler))
-        .route("/api/convert/pngspeak/encode", post(pngspeak_encode_handler))
-        .route("/api/convert/pngspeak/decode", post(pngspeak_decode_handler))
+        .route(
+            "/api/convert/pngspeak/encode",
+            post(pngspeak_encode_handler),
+        )
+        .route(
+            "/api/convert/pngspeak/decode",
+            post(pngspeak_decode_handler),
+        )
         .route("/api/convert/gptgif/encode", post(gptgif_encode_handler))
         .route("/api/convert/gptgif/decode", post(gptgif_decode_handler))
-        .route("/api/convert/gptgif/calibrate", post(gptgif_calibrate_handler))
-        .route("/api/convert/gptgif-v4/encode", post(gptgif_v4_encode_handler))
-        .route("/api/convert/gptgif-v4/decode", post(gptgif_v4_decode_handler))
+        .route(
+            "/api/convert/gptgif/calibrate",
+            post(gptgif_calibrate_handler),
+        )
+        .route(
+            "/api/convert/gptgif-v4/encode",
+            post(gptgif_v4_encode_handler),
+        )
+        .route(
+            "/api/convert/gptgif-v4/decode",
+            post(gptgif_v4_decode_handler),
+        )
         .route(
             "/api/convert/gptgif-v4/font/default",
             get(gptgif_v4_font_default_handler),

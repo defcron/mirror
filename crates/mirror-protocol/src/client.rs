@@ -163,8 +163,14 @@ fn asset_download(json: &Value) -> Result<AssetDownload, BackendApiError> {
         .ok_or_else(|| BackendApiError::new("Asset metadata returned no download_url"))?;
     Ok(AssetDownload {
         url: url.to_string(),
-        file_name: json.get("file_name").and_then(Value::as_str).map(str::to_string),
-        mime_type: json.get("mime_type").and_then(Value::as_str).map(str::to_string),
+        file_name: json
+            .get("file_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        mime_type: json
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -193,10 +199,8 @@ pub fn classify_asset_hop(url: &url::Url) -> AssetHopClassification {
         || host == "oaiusercontent.com"
         || host.ends_with(".blob.core.windows.net");
     let has_userinfo = !url.username().is_empty() || url.password().is_some();
-    let is_allowed = url.scheme() == "https"
-        && !has_userinfo
-        && url.port().is_none()
-        && (is_estuary || is_cdn);
+    let is_allowed =
+        url.scheme() == "https" && !has_userinfo && url.port().is_none() && (is_estuary || is_cdn);
     AssetHopClassification {
         is_estuary,
         is_cdn,
@@ -226,8 +230,14 @@ pub fn map_conversation_summary(item: &Value, now_iso: &str) -> Option<RemoteCon
             .to_string(),
         create_time,
         update_time,
-        current_node_id: item.get("current_node").and_then(Value::as_str).map(str::to_string),
-        gizmo_id: item.get("gizmo_id").and_then(Value::as_str).map(str::to_string),
+        current_node_id: item
+            .get("current_node")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        gizmo_id: item
+            .get("gizmo_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         is_archived: item.get("is_archived") == Some(&Value::Bool(true)),
     })
 }
@@ -352,7 +362,9 @@ impl ChatGptBackendClient {
         }
         match parsed {
             Some(v) if is_object(&v) => Ok(v),
-            _ => Err(BackendApiError::new(format!("GET {path} returned non-object JSON"))),
+            _ => Err(BackendApiError::new(format!(
+                "GET {path} returned non-object JSON"
+            ))),
         }
     }
 
@@ -389,14 +401,19 @@ impl ChatGptBackendClient {
         }
         match parsed {
             Some(v) if is_object(&v) => Ok(v),
-            _ => Err(BackendApiError::new(format!("POST {path} returned non-object JSON"))),
+            _ => Err(BackendApiError::new(format!(
+                "POST {path} returned non-object JSON"
+            ))),
         }
     }
 
     pub async fn fetch_me(&self) -> Result<Value, BackendApiError> {
         let json = self.get_json("/me").await?;
         let account = json.get("account").filter(|v| is_object(v));
-        if let Some(id) = account.and_then(|a| a.get("account_user_id")).and_then(Value::as_str) {
+        if let Some(id) = account
+            .and_then(|a| a.get("account_user_id"))
+            .and_then(Value::as_str)
+        {
             *self.account_id.lock().expect("account_id mutex") = Some(id.to_string());
         } else if let Some(id) = json
             .get("orgs")
@@ -439,7 +456,10 @@ impl ChatGptBackendClient {
     /// `/gizmos/snorlax/sidebar` above which — despite the shared "gizmos/"
     /// path prefix — only surfaces ChatGPT Projects ("snorlax"), never GPTs.
     /// Upstream caps `limit` at 20 and exposes no pagination cursor.
-    pub async fn fetch_gizmo_bootstrap(&self, limit: Option<u32>) -> Result<Value, BackendApiError> {
+    pub async fn fetch_gizmo_bootstrap(
+        &self,
+        limit: Option<u32>,
+    ) -> Result<Value, BackendApiError> {
         let path = format!("/gizmos/bootstrap?limit={}", limit.unwrap_or(20).min(20));
         self.get_json(&path).await
     }
@@ -465,13 +485,20 @@ impl ChatGptBackendClient {
             archived.unwrap_or(false),
         );
         let raw = self.get_json(&path).await?;
-        let items = raw.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let items = raw
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
         let now = iso_now();
         let mapped: Vec<RemoteConversationSummary> = items
             .iter()
             .filter_map(|item| map_conversation_summary(item, &now))
             .collect();
-        let total = raw.get("total").and_then(Value::as_u64).unwrap_or(items.len() as u64);
+        let total = raw
+            .get("total")
+            .and_then(Value::as_u64)
+            .unwrap_or(items.len() as u64);
         Ok((mapped, total))
     }
 
@@ -525,7 +552,10 @@ impl ChatGptBackendClient {
             .unwrap_or_default();
 
         Ok(ConversationInitResult {
-            default_model_slug: raw.get("default_model_slug").and_then(Value::as_str).map(str::to_string),
+            default_model_slug: raw
+                .get("default_model_slug")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             intended_default_model_slug: raw
                 .get("intended_default_model_slug")
                 .and_then(Value::as_str)
@@ -579,14 +609,23 @@ impl ChatGptBackendClient {
                 "client_prepare_source": "context_change",
             }),
         );
-        let first = match self.post_json("/f/conversation/prepare", &first_body, &[]).await {
+        let first = match self
+            .post_json("/f/conversation/prepare", &first_body, &[])
+            .await
+        {
             Ok(v) => v,
-            Err(e) if e.status.is_some_and(|s| TOLERATED_PREPARE_STATUSES.contains(&s)) => {
+            Err(e)
+                if e.status
+                    .is_some_and(|s| TOLERATED_PREPARE_STATUSES.contains(&s)) =>
+            {
                 return Ok(None);
             }
             Err(e) => return Err(e),
         };
-        let conduit_a = first.get("conduit_token").and_then(Value::as_str).map(str::to_string);
+        let conduit_a = first
+            .get("conduit_token")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         let user_preview_id = Uuid::new_v4().to_string();
         let mut second_body = common;
@@ -608,13 +647,21 @@ impl ChatGptBackendClient {
             .map(|t| vec![("x-conduit-token", t.clone())])
             .unwrap_or_default();
 
-        match self.post_json("/f/conversation/prepare", &second_body, &extra).await {
+        match self
+            .post_json("/f/conversation/prepare", &second_body, &extra)
+            .await
+        {
             Ok(second) => Ok(second
                 .get("conduit_token")
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .or(conduit_a)),
-            Err(e) if e.status.is_some_and(|s| TOLERATED_PREPARE_STATUSES.contains(&s)) => Ok(conduit_a),
+            Err(e)
+                if e.status
+                    .is_some_and(|s| TOLERATED_PREPARE_STATUSES.contains(&s)) =>
+            {
+                Ok(conduit_a)
+            }
             Err(e) => Err(e),
         }
     }
@@ -632,20 +679,38 @@ impl ChatGptBackendClient {
         turnstile_override: Option<&str>,
     ) -> Result<SentinelHandshake, BackendApiError> {
         let prepare_res = self
-            .post_json("/sentinel/chat-requirements/prepare", &json!({"p": ""}), &[])
+            .post_json(
+                "/sentinel/chat-requirements/prepare",
+                &json!({"p": ""}),
+                &[],
+            )
             .await?;
 
         let pow = prepare_res.get("proofofwork").filter(|v| is_object(v));
         let proof_dx = pow.and_then(|p| p.get("dx")).and_then(Value::as_str);
         let proof_config = proof::decode_proof_config(proof_dx).map(ProofConfig::from_values);
-        let pow_required = pow.and_then(|p| p.get("required")).and_then(Value::as_bool).unwrap_or(false);
+        let pow_required = pow
+            .and_then(|p| p.get("required"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         // Owned copies: `GenerateProofOptions` borrows its seed/difficulty,
         // and spawn_blocking's closure needs `'static` data to move in.
-        let seed = pow.and_then(|p| p.get("seed")).and_then(Value::as_str).unwrap_or("").to_string();
-        let difficulty = pow.and_then(|p| p.get("difficulty")).and_then(Value::as_str).unwrap_or("").to_string();
+        let seed = pow
+            .and_then(|p| p.get("seed"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let difficulty = pow
+            .and_then(|p| p.get("difficulty"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
         let turnstile = prepare_res.get("turnstile").filter(|v| is_object(v));
-        let turnstile_required = turnstile.and_then(|t| t.get("required")).and_then(Value::as_bool).unwrap_or(false);
+        let turnstile_required = turnstile
+            .and_then(|t| t.get("required"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         // CPU-bound: run off the caller's async task.
         let proof_token = tokio::task::spawn_blocking(move || {
@@ -665,8 +730,18 @@ impl ChatGptBackendClient {
         // therefore gated on `turnstile_required` here, not only the
         // credential one.
         let turnstile_token = if turnstile_required {
-            let credential_turnstile = self.creds.lock().expect("creds mutex").turnstile_token.take();
-            let session_token = self.creds.lock().expect("creds mutex").session_token.clone();
+            let credential_turnstile = self
+                .creds
+                .lock()
+                .expect("creds mutex")
+                .turnstile_token
+                .take();
+            let session_token = self
+                .creds
+                .lock()
+                .expect("creds mutex")
+                .session_token
+                .clone();
             let device_id = self.device_id();
             let turnstile_dx = turnstile.and_then(|t| t.get("dx")).and_then(Value::as_str);
             let resolve_opts = crate::turnstile::ResolveTurnstileOptions {
@@ -710,7 +785,11 @@ impl ChatGptBackendClient {
         let token = finalize_res
             .get("token")
             .and_then(Value::as_str)
-            .ok_or_else(|| BackendApiError::new("Sentinel finalize succeeded but returned no requirements token"))?
+            .ok_or_else(|| {
+                BackendApiError::new(
+                    "Sentinel finalize succeeded but returned no requirements token",
+                )
+            })?
             .to_string();
 
         Ok(SentinelHandshake {
@@ -749,12 +828,16 @@ impl ChatGptBackendClient {
         let upload_url = created
             .get("upload_url")
             .and_then(Value::as_str)
-            .ok_or_else(|| BackendApiError::new("File create response did not contain upload_url and file_id"))?
+            .ok_or_else(|| {
+                BackendApiError::new("File create response did not contain upload_url and file_id")
+            })?
             .to_string();
         let file_id = created
             .get("file_id")
             .and_then(Value::as_str)
-            .ok_or_else(|| BackendApiError::new("File create response did not contain upload_url and file_id"))?
+            .ok_or_else(|| {
+                BackendApiError::new("File create response did not contain upload_url and file_id")
+            })?
             .to_string();
 
         let upload = self
@@ -810,7 +893,10 @@ impl ChatGptBackendClient {
         asset_pointer: &str,
         conversation_id: Option<&str>,
     ) -> Result<String, BackendApiError> {
-        Ok(self.resolve_asset_download_metadata(asset_pointer, conversation_id).await?.url)
+        Ok(self
+            .resolve_asset_download_metadata(asset_pointer, conversation_id)
+            .await?
+            .url)
     }
 
     pub async fn resolve_asset_download_metadata(
@@ -829,12 +915,15 @@ impl ChatGptBackendClient {
                 .find(|part| part.starts_with("file-") || part.starts_with("file_"))
                 .unwrap_or(rest);
             let Some(conversation_id) = conversation_id else {
-                return Err(BackendApiError::new("sediment asset download requires conversationId"));
+                return Err(BackendApiError::new(
+                    "sediment asset download requires conversationId",
+                ));
             };
             format!(
                 "/files/download/{}?conversation_id={}&inline=false",
                 url::form_urlencoded::byte_serialize(id.as_bytes()).collect::<String>(),
-                url::form_urlencoded::byte_serialize(conversation_id.as_bytes()).collect::<String>(),
+                url::form_urlencoded::byte_serialize(conversation_id.as_bytes())
+                    .collect::<String>(),
             )
         } else {
             return Err(BackendApiError::new("Unsupported asset pointer"));
@@ -885,19 +974,27 @@ impl ChatGptBackendClient {
     /// Estuary URLs need upstream authentication even when they contain a
     /// signature. Never forward that authentication to a CDN or an
     /// arbitrary redirect target — see [`classify_asset_hop`].
-    pub async fn fetch_asset_content(&self, download_url: &str) -> Result<wreq::Response, BackendApiError> {
+    pub async fn fetch_asset_content(
+        &self,
+        download_url: &str,
+    ) -> Result<wreq::Response, BackendApiError> {
         let mut url = url::Url::parse(download_url)
             .map_err(|_| BackendApiError::new("Unsupported asset download destination"))?;
 
         for _ in 0..=3 {
             let classification = classify_asset_hop(&url);
             if !classification.is_allowed {
-                return Err(BackendApiError::new("Unsupported asset download destination"));
+                return Err(BackendApiError::new(
+                    "Unsupported asset download destination",
+                ));
             }
 
             let mut request = self.http.get(url.as_str()).header("accept", "*/*");
             if classification.is_estuary {
-                let path_for_headers = url.path().strip_prefix("/backend-api").unwrap_or(url.path());
+                let path_for_headers = url
+                    .path()
+                    .strip_prefix("/backend-api")
+                    .unwrap_or(url.path());
                 for (name, value) in self.common_headers(path_for_headers) {
                     request = request.header(name, value);
                 }
@@ -925,7 +1022,10 @@ impl ChatGptBackendClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn send_message(&self, opts: SendMessageOptions<'_>) -> Result<SendMessageResult, BackendApiError> {
+    pub async fn send_message(
+        &self,
+        opts: SendMessageOptions<'_>,
+    ) -> Result<SendMessageResult, BackendApiError> {
         let timezone = opts.timezone.unwrap_or("UTC");
         let timezone_offset_min = opts.timezone_offset_min.unwrap_or(0);
         // Work Mode itself is an asynchronous task protocol, not
@@ -1006,11 +1106,9 @@ impl ChatGptBackendClient {
         for (name, value) in &headers {
             request = request.header(*name, value.as_str());
         }
-        let response = request
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BackendApiError::new(format!("POST /f/conversation failed to send: {e}")))?;
+        let response = request.json(&body).send().await.map_err(|e| {
+            BackendApiError::new(format!("POST /f/conversation failed to send: {e}"))
+        })?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
@@ -1029,7 +1127,8 @@ impl ChatGptBackendClient {
         let mut all_events: Vec<NormalizedConversationEvent> = Vec::new();
         let mut frames = SseFrameDecoder::new();
 
-        let deliver = |reducer: &mut ConversationStreamReducer, all_events: &mut Vec<NormalizedConversationEvent>| {
+        let deliver = |reducer: &mut ConversationStreamReducer,
+                       all_events: &mut Vec<NormalizedConversationEvent>| {
             for event in reducer.drain_events() {
                 all_events.push(event.clone());
                 if let Some(on_event) = opts.on_event {
@@ -1049,7 +1148,9 @@ impl ChatGptBackendClient {
         loop {
             let chunk = match byte_stream.next().await {
                 Some(Ok(bytes)) => bytes,
-                Some(Err(e)) => return Err(BackendApiError::new(format!("stream read failed: {e}"))),
+                Some(Err(e)) => {
+                    return Err(BackendApiError::new(format!("stream read failed: {e}")));
+                }
                 None => break,
             };
             let text = String::from_utf8_lossy(&chunk);
@@ -1078,7 +1179,9 @@ impl ChatGptBackendClient {
         deliver(&mut reducer, &mut all_events);
 
         if !reducer.is_done() {
-            return Err(BackendApiError::new("Conversation stream interrupted before completion"));
+            return Err(BackendApiError::new(
+                "Conversation stream interrupted before completion",
+            ));
         }
         if reducer.error().is_none() && reducer.current_assistant_message_id().is_none() {
             return Err(BackendApiError::new(
@@ -1141,8 +1244,16 @@ pub struct ChatGptConversationSession<'a> {
 }
 
 impl<'a> ChatGptConversationSession<'a> {
-    pub fn new(client: &'a ChatGptBackendClient, state: ConversationSessionState, gizmo_payload: Option<Value>) -> Self {
-        Self { client, state, gizmo_payload }
+    pub fn new(
+        client: &'a ChatGptBackendClient,
+        state: ConversationSessionState,
+        gizmo_payload: Option<Value>,
+    ) -> Self {
+        Self {
+            client,
+            state,
+            gizmo_payload,
+        }
     }
 
     pub async fn initialize(
@@ -1162,7 +1273,10 @@ impl<'a> ChatGptConversationSession<'a> {
                 false,
             )
             .await?;
-        let selected_model = init.default_model_slug.clone().or_else(|| init.intended_default_model_slug.clone());
+        let selected_model = init
+            .default_model_slug
+            .clone()
+            .or_else(|| init.intended_default_model_slug.clone());
         if self.state.model == "auto"
             && let Some(model) = selected_model
         {
@@ -1185,7 +1299,8 @@ impl<'a> ChatGptConversationSession<'a> {
         on_event: Option<&(dyn Fn(&NormalizedConversationEvent) + Send + Sync)>,
     ) -> Result<SendMessageResult, BackendApiError> {
         if !self.state.initialized {
-            self.initialize(timezone.unwrap_or("UTC"), timezone_offset_min.unwrap_or(0)).await?;
+            self.initialize(timezone.unwrap_or("UTC"), timezone_offset_min.unwrap_or(0))
+                .await?;
         }
 
         let gizmo_payload = self.gizmo_payload.clone();
@@ -1249,7 +1364,10 @@ mod tests {
         );
         // An empty string is falsy in JS (`if (!gizmoId)`), so it takes the
         // primary_assistant branch too.
-        assert_eq!(mode_for(Some(""), None), json!({"kind": "primary_assistant"}));
+        assert_eq!(
+            mode_for(Some(""), None),
+            json!({"kind": "primary_assistant"})
+        );
     }
 
     #[test]
@@ -1259,7 +1377,14 @@ mod tests {
         assert_eq!(common_context(), expected);
     }
 
-    fn file(id: &str, size: u64, mime: &str, name: &str, w: Option<u32>, h: Option<u32>) -> UploadedFile {
+    fn file(
+        id: &str,
+        size: u64,
+        mime: &str,
+        name: &str,
+        w: Option<u32>,
+        h: Option<u32>,
+    ) -> UploadedFile {
         UploadedFile {
             file_id: id.to_string(),
             file_name: name.to_string(),
@@ -1288,7 +1413,10 @@ mod tests {
         )
         .unwrap();
         let attachments = [file("f1", 100, "image/png", "a.png", Some(10), Some(20))];
-        assert_eq!(build_user_message("hi", &attachments, "u1", 1234.0), expected);
+        assert_eq!(
+            build_user_message("hi", &attachments, "u1", 1234.0),
+            expected
+        );
     }
 
     #[test]
@@ -1298,7 +1426,10 @@ mod tests {
         )
         .unwrap();
         let attachments = [file("f1", 100, "text/plain", "a.txt", None, None)];
-        assert_eq!(build_user_message("hi", &attachments, "u1", 1234.0), expected);
+        assert_eq!(
+            build_user_message("hi", &attachments, "u1", 1234.0),
+            expected
+        );
     }
 
     fn hop(url: &str) -> AssetHopClassification {
@@ -1310,19 +1441,35 @@ mod tests {
         // Verified against the real fetchAssetContent guard logic in Node.
         assert_eq!(
             hop("https://chatgpt.com/backend-api/estuary/content?x=1"),
-            AssetHopClassification { is_estuary: true, is_cdn: false, is_allowed: true }
+            AssetHopClassification {
+                is_estuary: true,
+                is_cdn: false,
+                is_allowed: true
+            }
         );
         assert_eq!(
             hop("https://files.oaiusercontent.com/abc"),
-            AssetHopClassification { is_estuary: false, is_cdn: true, is_allowed: true }
+            AssetHopClassification {
+                is_estuary: false,
+                is_cdn: true,
+                is_allowed: true
+            }
         );
         assert_eq!(
             hop("https://oaiusercontent.com/abc"),
-            AssetHopClassification { is_estuary: false, is_cdn: true, is_allowed: true }
+            AssetHopClassification {
+                is_estuary: false,
+                is_cdn: true,
+                is_allowed: true
+            }
         );
         assert_eq!(
             hop("https://x.blob.core.windows.net/abc"),
-            AssetHopClassification { is_estuary: false, is_cdn: true, is_allowed: true }
+            AssetHopClassification {
+                is_estuary: false,
+                is_cdn: true,
+                is_allowed: true
+            }
         );
         assert!(!hop("https://evil.com/abc").is_allowed);
         assert!(!hop("http://chatgpt.com/backend-api/estuary/content").is_allowed);
@@ -1340,7 +1487,10 @@ mod tests {
 
     #[test]
     fn asset_download_requires_a_download_url() {
-        let ok = asset_download(&json!({"download_url": "https://x", "file_name": "a.png", "mime_type": "image/png"})).unwrap();
+        let ok = asset_download(
+            &json!({"download_url": "https://x", "file_name": "a.png", "mime_type": "image/png"}),
+        )
+        .unwrap();
         assert_eq!(ok.url, "https://x");
         assert_eq!(ok.file_name.as_deref(), Some("a.png"));
         assert_eq!(ok.mime_type.as_deref(), Some("image/png"));
@@ -1375,7 +1525,9 @@ mod tests {
         assert!(!defaulted.is_archived);
 
         // update_time falls back to create_time when only create_time is present.
-        let partial = map_conversation_summary(&json!({"id": "c3", "create_time": "2025-06-01"}), now).unwrap();
+        let partial =
+            map_conversation_summary(&json!({"id": "c3", "create_time": "2025-06-01"}), now)
+                .unwrap();
         assert_eq!(partial.update_time, "2025-06-01");
     }
 }

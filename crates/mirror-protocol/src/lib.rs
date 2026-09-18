@@ -33,8 +33,8 @@ pub use sse::{
     Inherited, PatchEvent, SseFrameDecoder, StreamEvent, iter_sse_data_lines, parse_sse_event,
 };
 pub use turnstile::{
-    BrowserTurnstileOptions, ResolveTurnstileOptions, TurnstileChallenge,
-    decode_turnstile_config, resolve_turnstile_token, solve_turnstile_with_browser,
+    BrowserTurnstileOptions, ResolveTurnstileOptions, TurnstileChallenge, decode_turnstile_config,
+    resolve_turnstile_token, solve_turnstile_with_browser,
 };
 pub use types::{
     BackendApiError, ConversationInitResult, ConversationSessionState, GizmoSummary,

@@ -67,9 +67,7 @@ pub async fn get_valid_credentials(store: &Store) -> Result<SessionCredentials, 
         cookie: None,
         device_id: session.device_id,
         turnstile_token: None,
-        session_token: minted
-            .rotated_session_token
-            .or(Some(session.session_token)),
+        session_token: minted.rotated_session_token.or(Some(session.session_token)),
     })
 }
 

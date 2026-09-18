@@ -12,7 +12,9 @@ use std::io::{Read, Write};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoafError {
-    #[error("Malformed LoaF text: header does not match expected SHA256(-)=<hash> <payload> pattern")]
+    #[error(
+        "Malformed LoaF text: header does not match expected SHA256(-)=<hash> <payload> pattern"
+    )]
     MalformedHeader,
     #[error("Checksum mismatch: expected {expected}, computed {computed}")]
     ChecksumMismatch { expected: String, computed: String },
@@ -40,10 +42,12 @@ pub struct LoafExtractedEntry {
 
 fn to_hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
-    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
-        let _ = write!(out, "{b:02x}");
-        out
-    })
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
 }
 
 fn from_hex(hex: &str) -> Result<Vec<u8>, LoafError> {
@@ -194,7 +198,9 @@ mod tests {
         }];
         let loaf = pack_loaf(&entries).unwrap();
         let hex_payload = loaf.split(' ').nth(1).unwrap();
-        let tampered = format!("SHA256(-)=0000000000000000000000000000000000000000000000000000000000000000 {hex_payload}");
+        let tampered = format!(
+            "SHA256(-)=0000000000000000000000000000000000000000000000000000000000000000 {hex_payload}"
+        );
         assert!(matches!(
             unpack_loaf(&tampered),
             Err(LoafError::ChecksumMismatch { .. })
@@ -231,10 +237,26 @@ mod tests {
 
     #[test]
     fn loaf_rejects_malformed_inputs() {
-        assert!(matches!(unpack_loaf("not-a-loaf"), Err(LoafError::MalformedHeader)));
-        assert!(matches!(unpack_loaf("SHA256(-)=123 short"), Err(LoafError::MalformedHeader)));
-        assert!(matches!(unpack_loaf("SHA256(-)=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz nonhex"), Err(LoafError::MalformedHeader)));
-        assert!(matches!(unpack_loaf("SHA256(-)=0000000000000000000000000000000000000000000000000000000000000000 nothex!"), Err(LoafError::MalformedHeader)));
+        assert!(matches!(
+            unpack_loaf("not-a-loaf"),
+            Err(LoafError::MalformedHeader)
+        ));
+        assert!(matches!(
+            unpack_loaf("SHA256(-)=123 short"),
+            Err(LoafError::MalformedHeader)
+        ));
+        assert!(matches!(
+            unpack_loaf(
+                "SHA256(-)=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz nonhex"
+            ),
+            Err(LoafError::MalformedHeader)
+        ));
+        assert!(matches!(
+            unpack_loaf(
+                "SHA256(-)=0000000000000000000000000000000000000000000000000000000000000000 nothex!"
+            ),
+            Err(LoafError::MalformedHeader)
+        ));
 
         // Non-gzip data whose checksum matches
         let payload = "123456";
@@ -242,7 +264,10 @@ mod tests {
         hasher.update(payload.as_bytes());
         let hash = to_hex_lower(&hasher.finalize());
         let loaf = format!("SHA256(-)={hash} {payload}");
-        assert!(matches!(unpack_loaf(&loaf), Err(LoafError::DecompressionFailed(_))));
+        assert!(matches!(
+            unpack_loaf(&loaf),
+            Err(LoafError::DecompressionFailed(_))
+        ));
 
         // Odd length hex
         assert!(matches!(from_hex("123"), Err(LoafError::InvalidHex(_))));

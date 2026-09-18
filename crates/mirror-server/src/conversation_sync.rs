@@ -108,23 +108,29 @@ mod tests {
 
         assert!(has_remote_history(&store, account_id).unwrap());
 
-        sync_conversation_page(&store, account_id, 2, false, |offset, _limit, archived| async move {
-            if archived {
-                Ok(vec![])
-            } else if offset == 0 {
-                Ok(vec![RemoteConversationSummary {
-                    id: "c-1".into(),
-                    title: "Conv 1".into(),
-                    create_time: "2026-09-01T00:00:00Z".into(),
-                    update_time: "2026-09-01T00:00:00Z".into(),
-                    current_node_id: None,
-                    gizmo_id: None,
-                    is_archived: false,
-                }])
-            } else {
-                Ok(vec![])
-            }
-        })
+        sync_conversation_page(
+            &store,
+            account_id,
+            2,
+            false,
+            |offset, _limit, archived| async move {
+                if archived {
+                    Ok(vec![])
+                } else if offset == 0 {
+                    Ok(vec![RemoteConversationSummary {
+                        id: "c-1".into(),
+                        title: "Conv 1".into(),
+                        create_time: "2026-09-01T00:00:00Z".into(),
+                        update_time: "2026-09-01T00:00:00Z".into(),
+                        current_node_id: None,
+                        gizmo_id: None,
+                        is_archived: false,
+                    }])
+                } else {
+                    Ok(vec![])
+                }
+            },
+        )
         .await
         .unwrap();
 

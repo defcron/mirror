@@ -46,9 +46,24 @@ fn baseline(db: &Connection) -> rusqlite::Result<()> {
         "#,
     )?;
 
-    add_column_if_missing(db, "messages", "attachments_json", "TEXT NOT NULL DEFAULT '[]'")?;
-    add_column_if_missing(db, "conversations", "is_private", "INTEGER NOT NULL DEFAULT 0")?;
-    add_column_if_missing(db, "conversations", "is_branch", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(
+        db,
+        "messages",
+        "attachments_json",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )?;
+    add_column_if_missing(
+        db,
+        "conversations",
+        "is_private",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    add_column_if_missing(
+        db,
+        "conversations",
+        "is_branch",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
     Ok(())
 }
 
@@ -64,7 +79,9 @@ fn add_column_if_missing(
         .filter_map(Result::ok)
         .any(|name| name == column);
     if !has_column {
-        db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"))?;
+        db.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+        ))?;
     }
     Ok(())
 }
@@ -130,7 +147,9 @@ mod tests {
         .unwrap();
         migrate_database(&mut conn).unwrap();
         let value: String = conn
-            .query_row("SELECT value FROM settings WHERE key = 'k'", [], |r| r.get(0))
+            .query_row("SELECT value FROM settings WHERE key = 'k'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(value, "v");
     }
@@ -177,7 +196,10 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 0, "ON DELETE CASCADE should have removed the message");
+        assert_eq!(
+            count, 0,
+            "ON DELETE CASCADE should have removed the message"
+        );
     }
 
     #[test]
@@ -207,7 +229,9 @@ mod tests {
             ("conversations", "is_private"),
             ("conversations", "is_branch"),
         ] {
-            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})")).unwrap();
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
             let has = stmt
                 .query_map([], |row| row.get::<_, String>(1))
                 .unwrap()

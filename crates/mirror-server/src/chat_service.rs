@@ -18,10 +18,7 @@ static ACTIVE_TURNS: LazyLock<Mutex<HashMap<String, CancellationToken>>> =
 
 /// Derives a clean conversation title from the first prompt turn.
 pub fn title_from_prompt(prompt: &str) -> String {
-    let one_line: String = prompt
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
+    let one_line: String = prompt.split_whitespace().collect::<Vec<&str>>().join(" ");
     let trimmed = one_line.trim();
     if trimmed.chars().count() > 54 {
         let truncated: String = trimmed.chars().take(53).collect();
@@ -199,16 +196,13 @@ pub async fn run_chat(
         Ok(c) => c,
         Err(e) => {
             if !transient {
-                let _ = store.update_message(
-                    &assistant_msg_id,
-                    "",
-                    "error",
-                    None,
-                    &empty_events,
-                );
+                let _ = store.update_message(&assistant_msg_id, "", "error", None, &empty_events);
             }
             deadline.close();
-            ACTIVE_TURNS.lock().expect("active turns mutex").remove(&conv_id);
+            ACTIVE_TURNS
+                .lock()
+                .expect("active turns mutex")
+                .remove(&conv_id);
             return Err(e.into());
         }
     };
@@ -219,7 +213,10 @@ pub async fn run_chat(
         Ok(c) => c,
         Err(e) => {
             deadline.close();
-            ACTIVE_TURNS.lock().expect("active turns mutex").remove(&conv_id);
+            ACTIVE_TURNS
+                .lock()
+                .expect("active turns mutex")
+                .remove(&conv_id);
             return Err(ChatServiceError::Backend(e.to_string()));
         }
     };
@@ -287,7 +284,10 @@ pub async fn run_chat(
     let send_res = client.send_message(send_opts).await;
 
     deadline.close();
-    ACTIVE_TURNS.lock().expect("active turns mutex").remove(&conv_id);
+    ACTIVE_TURNS
+        .lock()
+        .expect("active turns mutex")
+        .remove(&conv_id);
 
     match send_res {
         Ok(result) => {

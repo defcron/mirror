@@ -6,8 +6,8 @@
 use crate::auth::get_valid_credentials;
 use crate::proxy_headers::safe_request_headers;
 use crate::response_transform::{
-    cache_control, is_stripped_response_header, transform_html, transform_text_asset,
-    BROWSER_TOKEN, EARLY_PATCH,
+    BROWSER_TOKEN, EARLY_PATCH, cache_control, is_stripped_response_header, transform_html,
+    transform_text_asset,
 };
 use crate::router::AppState;
 use crate::security::{authorized_local_request, is_allowed_origin, is_allowed_request_host};
@@ -49,7 +49,10 @@ pub async fn mirror_auth_session_at(state: &AppState, upstream_base: &str) -> Re
         .http
         .get(&me_url)
         .header("accept", "application/json")
-        .header("authorization", format!("Bearer {}", credentials.access_token))
+        .header(
+            "authorization",
+            format!("Bearer {}", credentials.access_token),
+        )
         .header("oai-device-id", &credentials.device_id)
         .header("user-agent", USER_AGENT)
         .send()
@@ -141,7 +144,10 @@ pub async fn resolve_account_id_at(
         .and_then(|v| v.as_str())
         .map(str::to_string)
         .or_else(|| {
-            let orgs = me.get("orgs").and_then(|o| o.get("data")).and_then(|d| d.as_array())?;
+            let orgs = me
+                .get("orgs")
+                .and_then(|o| o.get("data"))
+                .and_then(|d| d.as_array())?;
             orgs.first()?.get("id")?.as_str().map(str::to_string)
         });
 
@@ -152,10 +158,7 @@ pub async fn resolve_account_id_at(
 }
 
 /// Fallback proxy handler forwarding requests to `https://chatgpt.com`.
-pub async fn proxy_chatgpt(
-    State(state): State<Arc<AppState>>,
-    req: Request<Body>,
-) -> Response {
+pub async fn proxy_chatgpt(State(state): State<Arc<AppState>>, req: Request<Body>) -> Response {
     proxy_request_to_upstream(&state, UPSTREAM, req).await
 }
 
@@ -176,13 +179,20 @@ pub async fn proxy_request_to_upstream(
     }
 
     if path_and_query.starts_with("/v1/") {
-        return (StatusCode::NOT_FOUND, axum::Json(json!({ "error": "Not found" }))).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(json!({ "error": "Not found" })),
+        )
+            .into_response();
     }
 
     // Origin and Host security check
     let host = parts.headers.get("host").and_then(|h| h.to_str().ok());
     let origin = parts.headers.get("origin").and_then(|o| o.to_str().ok());
-    let auth_hdr = parts.headers.get("authorization").and_then(|v| v.to_str().ok());
+    let auth_hdr = parts
+        .headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
     let cookie_hdr = parts.headers.get("cookie").and_then(|v| v.to_str().ok());
 
     if !authorized_local_request(auth_hdr, cookie_hdr)
@@ -227,17 +237,30 @@ pub async fn proxy_request_to_upstream(
     let mut auth_headers = Vec::new();
     if needs_auth_headers {
         if let Ok(creds) = get_valid_credentials(&state.store).await {
-            auth_headers.push(("authorization".to_string(), format!("Bearer {}", creds.access_token)));
+            auth_headers.push((
+                "authorization".to_string(),
+                format!("Bearer {}", creds.access_token),
+            ));
             auth_headers.push(("oai-device-id".to_string(), creds.device_id.clone()));
 
             if path_and_query.starts_with("/backend-api/") {
                 let target_route = path_and_query.split('?').next().unwrap_or(path_and_query);
                 auth_headers.push(("x-openai-target-path".to_string(), target_route.to_string()));
-                auth_headers.push(("x-openai-target-route".to_string(), target_route.to_string()));
+                auth_headers.push((
+                    "x-openai-target-route".to_string(),
+                    target_route.to_string(),
+                ));
 
                 let has_acct = safe_headers.iter().any(|(k, _)| k == "chatgpt-account-id");
                 if !has_acct {
-                    if let Some(acct_id) = resolve_account_id_at(state, upstream_base, &creds.access_token, &creds.device_id).await {
+                    if let Some(acct_id) = resolve_account_id_at(
+                        state,
+                        upstream_base,
+                        &creds.access_token,
+                        &creds.device_id,
+                    )
+                    .await
+                    {
                         auth_headers.push(("chatgpt-account-id".to_string(), acct_id));
                     }
                 }
@@ -270,7 +293,9 @@ pub async fn proxy_request_to_upstream(
     if parts.method != Method::GET && parts.method != Method::HEAD {
         let bytes = match axum::body::to_bytes(body, 50 * 1024 * 1024).await {
             Ok(b) => b,
-            Err(_) => return (StatusCode::BAD_REQUEST, "Failed to read request body").into_response(),
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "Failed to read request body").into_response();
+            }
         };
         if !bytes.is_empty() {
             wreq_req = wreq_req.body(bytes.to_vec());
@@ -292,7 +317,8 @@ pub async fn proxy_request_to_upstream(
         }
     };
 
-    let status = StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let status =
+        StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream_resp
         .headers()
         .get("content-type")
@@ -300,7 +326,11 @@ pub async fn proxy_request_to_upstream(
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let scheme = if parts.uri.scheme_str() == Some("https") { "https" } else { "http" };
+    let scheme = if parts.uri.scheme_str() == Some("https") {
+        "https"
+    } else {
+        "http"
+    };
     let proxy_origin = request_origin(scheme, host);
 
     let is_html = content_type.contains("text/html");
@@ -331,7 +361,10 @@ pub async fn proxy_request_to_upstream(
     let cc = cache_control(
         path_and_query,
         &content_type,
-        upstream_resp.headers().get("cache-control").and_then(|v| v.to_str().ok()),
+        upstream_resp
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
     );
     response_builder = response_builder.header("cache-control", cc);
     response_builder = response_builder.header("alt-svc", "clear");
@@ -344,13 +377,17 @@ pub async fn proxy_request_to_upstream(
             html_access_token.as_deref(),
             EARLY_PATCH,
         );
-        return response_builder.body(Body::from(transformed)).unwrap_or_default();
+        return response_builder
+            .body(Body::from(transformed))
+            .unwrap_or_default();
     }
 
     if is_rewritable {
         let text = upstream_resp.text().await.unwrap_or_default();
         let transformed = transform_text_asset(&text, proxy_origin.as_deref().unwrap_or(""));
-        return response_builder.body(Body::from(transformed)).unwrap_or_default();
+        return response_builder
+            .body(Body::from(transformed))
+            .unwrap_or_default();
     }
 
     let bytes = upstream_resp.bytes().await.unwrap_or_default();
@@ -361,11 +398,14 @@ pub async fn proxy_request_to_upstream(
 mod tests {
     use super::*;
     use axum::http::Request;
-    use mirror_store::crypto::EncryptionKey;
     use mirror_store::Store;
+    use mirror_store::crypto::EncryptionKey;
 
     fn test_store() -> Arc<Store> {
-        Arc::new(Store::open_in_memory(EncryptionKey::decode_configured(&"ab".repeat(32)).unwrap()).unwrap())
+        Arc::new(
+            Store::open_in_memory(EncryptionKey::decode_configured(&"ab".repeat(32)).unwrap())
+                .unwrap(),
+        )
     }
 
     #[tokio::test]
@@ -414,12 +454,7 @@ mod tests {
     async fn resolve_account_id_returns_cached_account_id() {
         let store = test_store();
         store
-            .save_verified_session(
-                "token-123",
-                Some("acct-pre-resolved"),
-                None,
-                None,
-            )
+            .save_verified_session("token-123", Some("acct-pre-resolved"), None, None)
             .unwrap();
 
         let egress = Arc::new(crate::egress::EgressMonitor::new());

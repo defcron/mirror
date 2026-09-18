@@ -26,10 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // examples/header_probe.rs to print the ones it actually sends.
     println!("emulating Chrome {}\n", http::EMULATED_CHROME_MAJOR);
 
-    let response = client
-        .get("https://tls.peet.ws/api/all")
-        .send()
-        .await?;
+    let response = client.get("https://tls.peet.ws/api/all").send().await?;
 
     let status = response.status();
     let body = response.text().await?;

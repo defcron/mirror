@@ -98,7 +98,10 @@ pub fn record_failure(code: &str, request_id: &str, protocol_category: Option<&s
 
 /// Returns a clone of recent failures.
 pub fn recent_failures() -> Vec<FailureRecord> {
-    RECENT_FAILURES.lock().expect("recent failures lock").clone()
+    RECENT_FAILURES
+        .lock()
+        .expect("recent failures lock")
+        .clone()
 }
 
 #[cfg(test)]

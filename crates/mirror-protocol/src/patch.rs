@@ -212,7 +212,12 @@ mod tests {
     fn replace_sets_a_nested_value() {
         let mut message = message_with_parts(json!(["hello"]));
         assert_eq!(
-            apply(&mut message, "/message/content/parts/0", "replace", json!("goodbye")),
+            apply(
+                &mut message,
+                "/message/content/parts/0",
+                "replace",
+                json!("goodbye")
+            ),
             PatchOutcome::Applied
         );
         assert_eq!(message, message_with_parts(json!(["goodbye"])));
@@ -223,7 +228,12 @@ mod tests {
         // The hot path: each token arrives as an append of a string.
         let mut message = message_with_parts(json!([""]));
         for delta in ["Hel", "lo ", "world"] {
-            apply(&mut message, "/message/content/parts/0", "append", json!(delta));
+            apply(
+                &mut message,
+                "/message/content/parts/0",
+                "append",
+                json!(delta),
+            );
         }
         assert_eq!(message, message_with_parts(json!(["Hello world"])));
     }
@@ -239,7 +249,12 @@ mod tests {
         ] {
             let before = message.clone();
             assert_eq!(
-                apply(&mut message, "/message/content/parts/0", "append", json!("x")),
+                apply(
+                    &mut message,
+                    "/message/content/parts/0",
+                    "append",
+                    json!("x")
+                ),
                 PatchOutcome::Skipped
             );
             assert_eq!(message, before, "the message must be untouched");
@@ -252,14 +267,24 @@ mod tests {
         apply(&mut message, "/message/metadata/list", "append", json!(2));
         assert_eq!(message, json!({"metadata": {"list": [1, 2]}}));
         // An array operand is spread, not nested.
-        apply(&mut message, "/message/metadata/list", "append", json!([3, 4]));
+        apply(
+            &mut message,
+            "/message/metadata/list",
+            "append",
+            json!([3, 4]),
+        );
         assert_eq!(message, json!({"metadata": {"list": [1, 2, 3, 4]}}));
     }
 
     #[test]
     fn append_onto_a_non_string_non_array_overwrites() {
         let mut message = json!({"metadata": {"count": 5}});
-        apply(&mut message, "/message/metadata/count", "append", json!("text"));
+        apply(
+            &mut message,
+            "/message/metadata/count",
+            "append",
+            json!("text"),
+        );
         assert_eq!(message, json!({"metadata": {"count": "text"}}));
     }
 
@@ -284,7 +309,12 @@ mod tests {
     #[test]
     fn missing_intermediates_are_created_as_objects_or_arrays_by_the_next_key() {
         let mut message = json!({});
-        apply(&mut message, "/message/metadata/citations/0/title", "replace", json!("t"));
+        apply(
+            &mut message,
+            "/message/metadata/citations/0/title",
+            "replace",
+            json!("t"),
+        );
         // `citations` became an array because the next key is numeric;
         // `metadata` and the array element became objects.
         assert_eq!(
@@ -319,19 +349,34 @@ mod tests {
         assert_eq!(message, json!({"metadata": {"b": 2}}));
 
         let mut message = message_with_parts(json!(["a", "b", "c"]));
-        apply(&mut message, "/message/content/parts/1", "remove", Value::Null);
+        apply(
+            &mut message,
+            "/message/content/parts/1",
+            "remove",
+            Value::Null,
+        );
         assert_eq!(message, message_with_parts(json!(["a", "c"])));
     }
 
     #[test]
     fn removing_an_out_of_range_or_non_numeric_array_index_is_survivable() {
         let mut message = message_with_parts(json!(["a"]));
-        apply(&mut message, "/message/content/parts/9", "remove", Value::Null);
+        apply(
+            &mut message,
+            "/message/content/parts/9",
+            "remove",
+            Value::Null,
+        );
         assert_eq!(message, message_with_parts(json!(["a"])));
 
         // A non-numeric key coerces to index 0, matching splice(NaN, 1).
         let mut message = message_with_parts(json!(["a", "b"]));
-        apply(&mut message, "/message/content/parts/x", "remove", Value::Null);
+        apply(
+            &mut message,
+            "/message/content/parts/x",
+            "remove",
+            Value::Null,
+        );
         assert_eq!(message, message_with_parts(json!(["b"])));
     }
 
@@ -388,7 +433,12 @@ mod tests {
     #[test]
     fn assigning_past_the_end_of_an_array_grows_it_with_nulls() {
         let mut message = message_with_parts(json!(["a"]));
-        apply(&mut message, "/message/content/parts/2", "replace", json!("c"));
+        apply(
+            &mut message,
+            "/message/content/parts/2",
+            "replace",
+            json!("c"),
+        );
         assert_eq!(message, message_with_parts(json!(["a", null, "c"])));
     }
 
@@ -397,9 +447,19 @@ mod tests {
         // Exercises the sequence a real turn produces: the parts array is
         // created, text streams in, then an image part is appended.
         let mut message = json!({});
-        apply(&mut message, "/message/content/parts/0", "replace", json!(""));
+        apply(
+            &mut message,
+            "/message/content/parts/0",
+            "replace",
+            json!(""),
+        );
         for delta in ["Here ", "is ", "a chart:"] {
-            apply(&mut message, "/message/content/parts/0", "append", json!(delta));
+            apply(
+                &mut message,
+                "/message/content/parts/0",
+                "append",
+                json!(delta),
+            );
         }
         apply(
             &mut message,
@@ -407,7 +467,12 @@ mod tests {
             "add",
             json!({"asset_pointer": "sediment://chart", "content_type": "image_asset_pointer"}),
         );
-        apply(&mut message, "/message/metadata/finish", "replace", json!("stop"));
+        apply(
+            &mut message,
+            "/message/metadata/finish",
+            "replace",
+            json!("stop"),
+        );
 
         assert_eq!(
             message,

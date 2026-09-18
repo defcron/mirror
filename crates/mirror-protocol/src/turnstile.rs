@@ -7,10 +7,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
-const DEFAULT_ORIGIN: &str = "https://chatgpt.com";
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
-const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TurnstileChallenge {
@@ -21,7 +21,8 @@ pub struct TurnstileChallenge {
     pub frame_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BrowserTurnstileOptions {
     pub origin: Option<String>,
     pub frame_url: Option<String>,
@@ -79,109 +80,81 @@ pub fn decode_turnstile_config(dx: Option<&str>) -> Option<Vec<Value>> {
     }
 }
 
-/// Solves a Cloudflare Turnstile challenge using a headless browser instance.
+/// Solves a Cloudflare Turnstile challenge using the packaged Playwright helper.
 ///
 /// Port of `solveTurnstileWithBrowser` in `packages/protocol/src/turnstile.ts`.
-/// Uses `headless_chrome` to navigate to the challenge frame URL, inject
-/// session cookies and device ID headers, and capture the Turnstile token.
+/// The helper uses the same Playwright implementation as the TypeScript build.
+/// Options travel over stdin and the child process writes only its token result
+/// to stdout; session credentials are never placed in command arguments or logs.
 pub fn solve_turnstile_with_browser(
     opts: &BrowserTurnstileOptions,
 ) -> Result<Option<String>, String> {
-    let origin = opts.origin.as_deref().unwrap_or(DEFAULT_ORIGIN);
-    let default_frame_url = format!("{origin}/backend-api/sentinel/frame.html");
-    let frame_url = opts.frame_url.as_deref().unwrap_or(&default_frame_url);
-    let _timeout_ms = opts.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
-
-    let no_sandbox = opts.no_sandbox
-        || std::env::var("MIRROR_TURNSTILE_NO_SANDBOX")
-            .map(|v| v == "true")
-            .unwrap_or(false);
-
-    let mut builder = headless_chrome::LaunchOptions::default_builder();
-    builder.headless(true);
-    if no_sandbox {
-        builder.sandbox(false);
-    }
-
-    let mut args: Vec<std::ffi::OsString> = vec!["--disable-dev-shm-usage".into()];
-    if no_sandbox {
-        args.push("--no-sandbox".into());
-        args.push("--disable-setuid-sandbox".into());
-    }
-    if let Some(custom_args) = &opts.args {
-        for a in custom_args {
-            args.push(a.into());
-        }
-    }
-    let os_args: Vec<&std::ffi::OsStr> = args.iter().map(|s| s.as_os_str()).collect();
-    builder.args(os_args);
-
-    let launch_opts = builder
-        .build()
-        .map_err(|e| format!("Failed to configure headless browser: {e}"))?;
-
-    let browser = match headless_chrome::Browser::new(launch_opts) {
-        Ok(b) => b,
-        Err(_e) => {
-            // Mirrors upstream's catch-all returning null when launch fails
-            // (e.g. chromium not installed or sandboxed).
-            return Ok(None);
-        }
+    let root = std::env::var_os("MIRROR_APP_ROOT")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .filter(|path| path.join("packages/protocol/dist/turnstile.js").is_file());
+    let Some(root) = root else {
+        return Ok(None);
     };
-
-    let tab = match browser.new_tab() {
-        Ok(t) => t,
+    const SCRIPT: &str = r#"
+        import { solveTurnstileWithBrowser } from './packages/protocol/dist/turnstile.js';
+        let input = '';
+        for await (const chunk of process.stdin) input += chunk;
+        try {
+          const result = await solveTurnstileWithBrowser(JSON.parse(input));
+          process.stdout.write(JSON.stringify({ token: result || null }));
+        } catch {
+          process.stdout.write('{"token":null}');
+        }
+    "#;
+    let mut child = match Command::new("node")
+        .arg("--input-type=module")
+        .arg("-e")
+        .arg(SCRIPT)
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(_) => return Ok(None),
     };
-
-    // Set custom user agent matching the protocol profile.
-    let _ = tab.set_user_agent(USER_AGENT, None, None);
-
-    // If session token cookie is provided, add it before navigation.
-    if let Some(session_token) = &opts.session_token
-        && let Ok(parsed_url) = url::Url::parse(origin)
-        && let Some(host) = parsed_url.host_str()
+    if let Some(mut stdin) = child.stdin.take()
+        && (serde_json::to_writer(&mut stdin, opts).is_err() || stdin.flush().is_err())
     {
-        let _ = tab.navigate_to("about:blank");
-        // Inject session cookie
-        let cookie_script = format!(
-            "document.cookie = '__Secure-next-auth.session-token={session_token}; path=/; domain={host}; Secure; SameSite=Lax';"
-        );
-        let _ = tab.evaluate(&cookie_script, false);
-    }
-
-    if tab.navigate_to(frame_url).is_err() {
         return Ok(None);
     }
-    let _ = tab.wait_until_navigated();
-
-    // Query DOM for the Turnstile token response.
-    const DOM_QUERY: &str = r#"
-        (() => {
-            try {
-                const input = document.querySelector('input[name="cf-turnstile-response"]');
-                if (input && input.value) return input.value;
-                const turnstile = window.turnstile;
-                if (typeof turnstile?.getResponse === "function") {
-                    const response = turnstile.getResponse();
-                    if (response) return String(response);
-                }
-            } catch {}
-            return null;
-        })()
-    "#;
-
-    match tab.evaluate(DOM_QUERY, false) {
-        Ok(remote_object) => {
-            if let Some(serde_json::Value::String(token)) = remote_object.value
-                && !token.is_empty()
-            {
-                return Ok(Some(token));
+    let timeout = std::time::Duration::from_millis(
+        opts.timeout_ms
+            .unwrap_or(DEFAULT_TIMEOUT_MS)
+            .saturating_add(5_000),
+    );
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => break,
+            Ok(Some(_)) | Err(_) => return Ok(None),
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            Ok(None)
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(None);
+            }
         }
-        Err(_) => Ok(None),
     }
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(_) => return Ok(None),
+    };
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+    Ok(value
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string))
 }
 
 /// Resolves a Turnstile token according to upstream priority rules.
@@ -195,7 +168,9 @@ pub fn solve_turnstile_with_browser(
 /// 3. Returns `credentials_token` if provided.
 /// 4. Invokes custom `solver` if provided; returns token if non-empty.
 /// 5. Invokes `browser_solver` (or default `solve_turnstile_with_browser`).
-pub fn resolve_turnstile_token(opts: ResolveTurnstileOptions<'_>) -> Result<Option<String>, String> {
+pub fn resolve_turnstile_token(
+    opts: ResolveTurnstileOptions<'_>,
+) -> Result<Option<String>, String> {
     if !opts.required {
         return Ok(None);
     }
@@ -267,11 +242,17 @@ mod tests {
         assert_eq!(decode_turnstile_config(Some("")), None);
         assert_eq!(decode_turnstile_config(Some("no-marker-here")), None);
         assert_eq!(decode_turnstile_config(Some("prefixgAAAAAB")), None);
-        assert_eq!(decode_turnstile_config(Some("prefixgAAAAABinvalid-base64!~tail")), None);
+        assert_eq!(
+            decode_turnstile_config(Some("prefixgAAAAABinvalid-base64!~tail")),
+            None
+        );
         // Valid base64 that is not a JSON array
         let obj = BASE64_STANDARD.encode(b"{\"key\": \"val\"}");
         assert_eq!(
-            decode_turnstile_config(Some(&format!("prefixgAAAAAB{}~tail", obj.trim_end_matches('=')))),
+            decode_turnstile_config(Some(&format!(
+                "prefixgAAAAAB{}~tail",
+                obj.trim_end_matches('=')
+            ))),
             None
         );
     }
@@ -305,7 +286,10 @@ mod tests {
             solver: None,
             browser_solver: None,
         };
-        assert_eq!(resolve_turnstile_token(opts).unwrap(), Some("override-val".into()));
+        assert_eq!(
+            resolve_turnstile_token(opts).unwrap(),
+            Some("override-val".into())
+        );
     }
 
     #[test]
@@ -321,7 +305,10 @@ mod tests {
             solver: None,
             browser_solver: None,
         };
-        assert_eq!(resolve_turnstile_token(opts).unwrap(), Some("cred-val".into()));
+        assert_eq!(
+            resolve_turnstile_token(opts).unwrap(),
+            Some("cred-val".into())
+        );
     }
 
     #[test]
@@ -342,7 +329,10 @@ mod tests {
             })),
             browser_solver: None,
         };
-        assert_eq!(resolve_turnstile_token(opts).unwrap(), Some("solved-custom".into()));
+        assert_eq!(
+            resolve_turnstile_token(opts).unwrap(),
+            Some("solved-custom".into())
+        );
     }
 
     #[test]
@@ -362,6 +352,9 @@ mod tests {
                 Ok(Some("browser-token".into()))
             })),
         };
-        assert_eq!(resolve_turnstile_token(opts).unwrap(), Some("browser-token".into()));
+        assert_eq!(
+            resolve_turnstile_token(opts).unwrap(),
+            Some("browser-token".into())
+        );
     }
 }

@@ -12,7 +12,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .text()
         .await?;
     let parsed: serde_json::Value = serde_json::from_str(&body)?;
-    if let Some(headers) = parsed.pointer("/http1/headers").or_else(|| parsed.pointer("/http2/sent_frames")) {
+    if let Some(headers) = parsed
+        .pointer("/http1/headers")
+        .or_else(|| parsed.pointer("/http2/sent_frames"))
+    {
         println!("{}", serde_json::to_string_pretty(headers)?);
     } else {
         println!("{}", serde_json::to_string_pretty(&parsed)?);

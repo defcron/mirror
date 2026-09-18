@@ -173,7 +173,10 @@ mod tests {
         // The client holds an unsigned placeholder JWT; forwarding it would
         // send a token upstream rejects instead of the real minted one. This
         // was the root of a real bug, so it gets an explicit test.
-        let headers = build(&[("authorization", "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.")]);
+        let headers = build(&[(
+            "authorization",
+            "Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.",
+        )]);
         assert!(!headers.contains_key("authorization"));
     }
 
@@ -203,7 +206,11 @@ mod tests {
     fn a_lookalike_prefix_is_not_forwarded() {
         // "x-oai-" is allowed but "x-oaix" is not; the check is a prefix
         // match, not a fuzzy one.
-        let headers = build(&[("x-oaixyz", "v"), ("notchatgpt-thing", "v"), ("oaiother", "v")]);
+        let headers = build(&[
+            ("x-oaixyz", "v"),
+            ("notchatgpt-thing", "v"),
+            ("oaiother", "v"),
+        ]);
         assert!(!headers.contains_key("x-oaixyz"));
         assert!(!headers.contains_key("notchatgpt-thing"));
         assert!(!headers.contains_key("oaiother"));
@@ -267,8 +274,14 @@ mod tests {
             ("sec-fetch-site", "same-origin"),
             ("accept", "application/json"),
         ]);
-        assert_eq!(headers.get("sec-fetch-dest").map(String::as_str), Some("empty"));
-        assert_eq!(headers.get("sec-fetch-mode").map(String::as_str), Some("cors"));
+        assert_eq!(
+            headers.get("sec-fetch-dest").map(String::as_str),
+            Some("empty")
+        );
+        assert_eq!(
+            headers.get("sec-fetch-mode").map(String::as_str),
+            Some("cors")
+        );
         assert_eq!(
             headers.get("sec-fetch-site").map(String::as_str),
             Some("same-origin")

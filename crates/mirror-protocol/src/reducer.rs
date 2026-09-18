@@ -354,15 +354,17 @@ impl ConversationStreamReducer {
         let recipient_raw = message.get("recipient");
         let recipient_str = recipient_raw.and_then(Value::as_str).unwrap_or("");
 
-        let python = is_python_tool(author_name.as_deref().unwrap_or(""))
-            || is_python_tool(recipient_str);
+        let python =
+            is_python_tool(author_name.as_deref().unwrap_or("")) || is_python_tool(recipient_str);
         let is_visible_first_turn_tool = python
             || is_always_visible_first_turn_tool(author_name.as_deref().unwrap_or(""))
             || is_always_visible_first_turn_tool(recipient_str);
 
         let has_image_content = content_type.as_deref() == Some("image_asset_pointer")
             || content_type.as_deref() == Some("image")
-            || content_type.as_deref().is_some_and(|ct| ct.starts_with("image/"))
+            || content_type
+                .as_deref()
+                .is_some_and(|ct| ct.starts_with("image/"))
             || content
                 .and_then(|c| c.get("parts"))
                 .and_then(Value::as_array)
@@ -476,7 +478,9 @@ impl ConversationStreamReducer {
             || content_type.as_deref() == Some("computer_initialize_state")
             || content_type.as_deref() == Some("computer_output");
         if is_tool {
-            let name = author_name.or(content_type).unwrap_or_else(|| "tool".to_string());
+            let name = author_name
+                .or(content_type)
+                .unwrap_or_else(|| "tool".to_string());
             self.push(NormalizedConversationEvent::Tool {
                 message_id,
                 name,
@@ -515,7 +519,9 @@ impl ConversationStreamReducer {
             return;
         }
 
-        if path.starts_with("/message/") && path != "/message/status" && self.current_message.is_some()
+        if path.starts_with("/message/")
+            && path != "/message/status"
+            && self.current_message.is_some()
         {
             let mut message = self.current_message.take().expect("checked is_some");
             // Both of apply_message_patch's guards (an append into a
@@ -544,15 +550,15 @@ impl ConversationStreamReducer {
                 status: status.clone(),
                 display_hidden: None,
             });
-            let is_assistant = self
-                .current_message
-                .as_ref()
-                .and_then(|m| role_of(m))
-                == Some("assistant");
-            if status == "finished_successfully" && is_assistant && self.current_message_id.is_some()
-                && self.final_assistant_id.is_none() {
-                    self.final_assistant_id = self.current_message_id.clone();
-                }
+            let is_assistant =
+                self.current_message.as_ref().and_then(|m| role_of(m)) == Some("assistant");
+            if status == "finished_successfully"
+                && is_assistant
+                && self.current_message_id.is_some()
+                && self.final_assistant_id.is_none()
+            {
+                self.final_assistant_id = self.current_message_id.clone();
+            }
         }
     }
 
@@ -715,7 +721,9 @@ mod tests {
 
     #[test]
     fn fixture_4_suppressed_narration_keeps_python_tool_visible() {
-        let frames = [json!({"v": {"message": {"id": "p1", "author": {"role": "assistant", "name": "python"}, "recipient": "python", "channel": "commentary", "content": {"content_type": "code", "parts": ["print(1)"]}, "status": "in_progress"}}, "p": "", "o": "add"})];
+        let frames = [
+            json!({"v": {"message": {"id": "p1", "author": {"role": "assistant", "name": "python"}, "recipient": "python", "channel": "commentary", "content": {"content_type": "code", "parts": ["print(1)"]}, "status": "in_progress"}}, "p": "", "o": "add"}),
+        ];
         let expected = json!({
             "text": "", "role": "assistant", "status": "in_progress", "isDone": true,
             "conversationIdValue": null, "currentAssistantMessageId": null, "error": null,
@@ -788,7 +796,9 @@ mod tests {
 
     #[test]
     fn fixture_8_image_asset_in_message_content() {
-        let frames = [json!({"v": {"message": {"id": "m1", "author": {"role": "assistant"}, "content": {"content_type": "multimodal_text", "parts": [{"asset_pointer": "sediment://img1", "content_type": "image_asset_pointer"}]}, "status": "in_progress"}}, "p": "", "o": "add"})];
+        let frames = [
+            json!({"v": {"message": {"id": "m1", "author": {"role": "assistant"}, "content": {"content_type": "multimodal_text", "parts": [{"asset_pointer": "sediment://img1", "content_type": "image_asset_pointer"}]}, "status": "in_progress"}}, "p": "", "o": "add"}),
+        ];
         let expected = json!({
             "text": "sediment://img1", "role": "assistant", "status": "in_progress", "isDone": true,
             "conversationIdValue": null, "currentAssistantMessageId": "m1", "error": null,
@@ -814,7 +824,9 @@ mod tests {
 
     #[test]
     fn fixture_10_reasoning_recap_excluded_from_assistant_text() {
-        let frames = [json!({"v": {"message": {"id": "r1", "author": {"role": "assistant"}, "content": {"content_type": "reasoning_recap", "parts": ["thinking..."]}, "status": "in_progress"}}, "p": "", "o": "add"})];
+        let frames = [
+            json!({"v": {"message": {"id": "r1", "author": {"role": "assistant"}, "content": {"content_type": "reasoning_recap", "parts": ["thinking..."]}, "status": "in_progress"}}, "p": "", "o": "add"}),
+        ];
         let expected = json!({
             "text": "", "role": "assistant", "status": "in_progress", "isDone": true,
             "conversationIdValue": null, "currentAssistantMessageId": null, "error": null,

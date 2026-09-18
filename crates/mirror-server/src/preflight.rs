@@ -48,11 +48,12 @@ pub struct ClassifiedStartupFailure {
 /// `code` stands in for Node's `error.code` (e.g. `EADDRINUSE`), which Rust
 /// callers supply from `io::Error::kind()`/`raw_os_error()` at the call site.
 pub fn classify_startup_failure(message: &str, code: Option<&str>) -> ClassifiedStartupFailure {
-    let classified = |category: StartupFailureCategory, next_action: &str| ClassifiedStartupFailure {
-        category,
-        message: message.to_string(),
-        next_action: next_action.to_string(),
-    };
+    let classified =
+        |category: StartupFailureCategory, next_action: &str| ClassifiedStartupFailure {
+            category,
+            message: message.to_string(),
+            next_action: next_action.to_string(),
+        };
 
     if code == Some("EADDRINUSE") {
         return classified(
@@ -68,7 +69,8 @@ pub fn classify_startup_failure(message: &str, code: Option<&str>) -> Classified
         );
     }
 
-    if message.contains("Unsupported database schema version") || message.contains("database schema")
+    if message.contains("Unsupported database schema version")
+        || message.contains("database schema")
     {
         return classified(
             StartupFailureCategory::DatabaseMigration,
@@ -109,7 +111,10 @@ mod tests {
 
     #[test]
     fn a_bound_port_is_classified_from_the_os_error_code() {
-        let result = classify_startup_failure("listen EADDRINUSE: address already in use", Some("EADDRINUSE"));
+        let result = classify_startup_failure(
+            "listen EADDRINUSE: address already in use",
+            Some("EADDRINUSE"),
+        );
         assert_eq!(result.category, StartupFailureCategory::PortInUse);
         assert!(result.next_action.contains("MIRROR_PORT"));
     }

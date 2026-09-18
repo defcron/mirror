@@ -96,10 +96,7 @@ impl EncryptionKey {
 
     /// Env-reading wrapper over [`EncryptionKey::load_with`].
     pub fn load(data_dir: &Path) -> Result<Self, CryptoError> {
-        Self::load_with(
-            data_dir,
-            std::env::var("MIRROR_STORE_KEY").ok().as_deref(),
-        )
+        Self::load_with(data_dir, std::env::var("MIRROR_STORE_KEY").ok().as_deref())
     }
 
     fn cipher(&self) -> Aes256Gcm {

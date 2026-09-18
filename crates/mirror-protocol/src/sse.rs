@@ -50,7 +50,11 @@ impl SseFrameDecoder {
     pub fn finish(&mut self) -> Vec<String> {
         let tail = self.buffer.trim().to_string();
         self.buffer.clear();
-        if tail.is_empty() { Vec::new() } else { vec![tail] }
+        if tail.is_empty() {
+            Vec::new()
+        } else {
+            vec![tail]
+        }
     }
 }
 
@@ -93,7 +97,10 @@ pub enum StreamEvent {
     Done,
     ProtocolVersion(String),
     ResumeToken(Value),
-    Typed { r#type: String, raw: Value },
+    Typed {
+        r#type: String,
+        raw: Value,
+    },
     Patch(PatchEvent),
     /// `raw` is the original payload string when JSON parsing failed, and the
     /// parsed value otherwise — matching upstream's two `unknown` shapes.
@@ -324,7 +331,10 @@ mod tests {
     #[test]
     fn patch_events_use_explicit_path_op_and_counter_when_present() {
         assert_eq!(
-            parse_sse_event(r#"{"p":"/message/id","o":"replace","v":"m1","c":3}"#, &inherited()),
+            parse_sse_event(
+                r#"{"p":"/message/id","o":"replace","v":"m1","c":3}"#,
+                &inherited()
+            ),
             StreamEvent::Patch(PatchEvent {
                 p: "/message/id".to_string(),
                 o: "replace".to_string(),

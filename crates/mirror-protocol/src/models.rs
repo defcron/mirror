@@ -29,7 +29,9 @@ pub fn normalize_gizmos(raw: &Value) -> Vec<GizmoSummary> {
 
         if let Value::Object(obj) = val {
             let outer = obj.get("gizmo").and_then(Value::as_object);
-            let nested_core = outer.and_then(|o| o.get("gizmo")).and_then(Value::as_object);
+            let nested_core = outer
+                .and_then(|o| o.get("gizmo"))
+                .and_then(Value::as_object);
             let core = nested_core.or_else(|| {
                 if obj.get("id").and_then(Value::as_str).is_some() {
                     Some(obj)
@@ -38,7 +40,9 @@ pub fn normalize_gizmos(raw: &Value) -> Vec<GizmoSummary> {
                 }
             });
 
-            let display = core.and_then(|c| c.get("display")).and_then(Value::as_object);
+            let display = core
+                .and_then(|c| c.get("display"))
+                .and_then(Value::as_object);
 
             if let Some(core_map) = core
                 && core_map.get("id").and_then(Value::as_str).is_some()
@@ -54,13 +58,18 @@ pub fn normalize_gizmos(raw: &Value) -> Vec<GizmoSummary> {
                             merged.insert("profile_picture_url".to_string(), pic.clone());
                         }
                         if nested_core.is_some()
-                            && let Some(files) = outer.and_then(|o| o.get("files")).filter(|f| f.is_array())
+                            && let Some(files) =
+                                outer.and_then(|o| o.get("files")).filter(|f| f.is_array())
                         {
                             merged.insert("files".to_string(), files.clone());
                         }
                         candidates.push(Value::Object(merged));
                     }
-                } else if core_map.get("display_name").and_then(Value::as_str).is_some() {
+                } else if core_map
+                    .get("display_name")
+                    .and_then(Value::as_str)
+                    .is_some()
+                {
                     let has_extra = core_map.contains_key("short_url")
                         || core_map.contains_key("instructions")
                         || core_map.contains_key("author")
@@ -102,9 +111,18 @@ pub fn normalize_gizmos(raw: &Value) -> Vec<GizmoSummary> {
             .and_then(Value::as_str)
             .unwrap_or(&id)
             .to_string();
-        let short_url = item.get("short_url").and_then(Value::as_str).map(str::to_string);
-        let description = item.get("description").and_then(Value::as_str).map(str::to_string);
-        let icon_url = item.get("profile_picture_url").and_then(Value::as_str).map(str::to_string);
+        let short_url = item
+            .get("short_url")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let icon_url = item
+            .get("profile_picture_url")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let files_count = item.get("files").and_then(Value::as_array).map(|a| a.len());
 
         summaries.push(GizmoSummary {
@@ -150,7 +168,10 @@ pub fn normalize_models(raw: &Value) -> Vec<ModelDescriptor> {
             .unwrap_or(slug)
             .to_string();
 
-        let description = obj.get("description").and_then(Value::as_str).map(str::to_string);
+        let description = obj
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let max_tokens = obj.get("max_tokens").and_then(Value::as_u64);
         let capabilities = obj.get("capabilities").cloned();
         let enabled_tools = obj.get("enabled_tools").cloned();

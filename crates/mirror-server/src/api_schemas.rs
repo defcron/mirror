@@ -65,7 +65,10 @@ pub struct ConversationsQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssetsQuery {
     pub pointer: String,
-    #[serde(rename = "upstreamConversationId", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "upstreamConversationId",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub upstream_conversation_id: Option<String>,
 }
 

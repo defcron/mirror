@@ -92,13 +92,22 @@ mod tests {
     #[test]
     fn classifies_auth_and_turnstile_challenges() {
         let drift = classify_protocol_failure_parts("Turnstile challenge required", None);
-        assert_eq!(drift.category, ProtocolDriftCategory::AuthenticationChallenge);
+        assert_eq!(
+            drift.category,
+            ProtocolDriftCategory::AuthenticationChallenge
+        );
 
         let drift = classify_protocol_failure_parts("Unauthorized", Some(401));
-        assert_eq!(drift.category, ProtocolDriftCategory::AuthenticationChallenge);
+        assert_eq!(
+            drift.category,
+            ProtocolDriftCategory::AuthenticationChallenge
+        );
 
         let drift = classify_protocol_failure_parts("Forbidden", Some(403));
-        assert_eq!(drift.category, ProtocolDriftCategory::AuthenticationChallenge);
+        assert_eq!(
+            drift.category,
+            ProtocolDriftCategory::AuthenticationChallenge
+        );
     }
 
     #[test]

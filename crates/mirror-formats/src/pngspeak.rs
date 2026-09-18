@@ -2,9 +2,9 @@
 //! Port of `apps/server/src/pngspeak.ts` (faithful to the reference `pngspeak` CLI).
 
 use crc32fast::Hasher;
+use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use rand::RngCore;
 use std::fs;
 use std::io::{Read, Write};
@@ -95,7 +95,11 @@ fn minimal_big_endian_hex(value: usize) -> String {
         64 - (value as u64).leading_zeros()
     };
     let byte_length = (bit_length + 7) / 8;
-    let byte_length = if byte_length == 0 { 1 } else { byte_length as usize };
+    let byte_length = if byte_length == 0 {
+        1
+    } else {
+        byte_length as usize
+    };
     let hex_val = format!("{value:x}");
     let target_len = byte_length * 2;
     if hex_val.len() < target_len {
@@ -120,13 +124,7 @@ pub fn python_round(value: f64) -> f64 {
     }
 }
 
-fn bilinear_upscale(
-    data: &[u8],
-    width: usize,
-    height: usize,
-    uw: usize,
-    uh: usize,
-) -> Vec<u8> {
+fn bilinear_upscale(data: &[u8], width: usize, height: usize, uw: usize, uh: usize) -> Vec<u8> {
     let mut result = vec![0u8; uw * uh * BPP];
     let get_pixel = |x: usize, y: usize| -> [u8; 4] {
         let offset = (y * width + x) * BPP;
@@ -245,8 +243,14 @@ pub fn encode_png_speak(input: &[u8], options: &PngSpeakEncodeOptions) -> Vec<u8
     let mut out = Vec::with_capacity(final_pixel_data.len() + 1024);
     out.extend_from_slice(&PNG_SIGNATURE);
 
-    let ihdr_w = options.upscale_width.filter(|&w| w > 0).unwrap_or(grid_w as u32);
-    let ihdr_h = options.upscale_height.filter(|&h| h > 0).unwrap_or(grid_h as u32);
+    let ihdr_w = options
+        .upscale_width
+        .filter(|&w| w > 0)
+        .unwrap_or(grid_w as u32);
+    let ihdr_h = options
+        .upscale_height
+        .filter(|&h| h > 0)
+        .unwrap_or(grid_h as u32);
 
     let mut ihdr = [0u8; 13];
     ihdr[0..4].copy_from_slice(&ihdr_w.to_be_bytes());
@@ -294,9 +298,7 @@ pub fn encode_png_speak(input: &[u8], options: &PngSpeakEncodeOptions) -> Vec<u8
     }
 
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(&raw)
-        .expect("zlib encode should succeed");
+    encoder.write_all(&raw).expect("zlib encode should succeed");
     let deflated = encoder.finish().expect("zlib finish should succeed");
     write_chunk(&mut out, b"IDAT", &deflated);
 
@@ -593,7 +595,8 @@ mod tests {
 
     #[test]
     fn rand_from_file_reads_padding() {
-        let temp_dir = std::env::temp_dir().join(format!("pngspeak-test-{}", rand::random::<u32>()));
+        let temp_dir =
+            std::env::temp_dir().join(format!("pngspeak-test-{}", rand::random::<u32>()));
         let _ = fs::create_dir_all(&temp_dir);
         let file_path = temp_dir.join("pad.bin");
         fs::write(&file_path, b"PADDINGBYTES").unwrap();
@@ -688,7 +691,8 @@ mod tests {
         );
         let itxt_pos = png.windows(4).position(|w| w == b"iTXt").unwrap();
         let chunk_start = itxt_pos - 4;
-        let chunk_len = u32::from_be_bytes(png[chunk_start..chunk_start + 4].try_into().unwrap()) as usize;
+        let chunk_len =
+            u32::from_be_bytes(png[chunk_start..chunk_start + 4].try_into().unwrap()) as usize;
         let mut stripped = Vec::new();
         stripped.extend_from_slice(&png[..chunk_start]);
         stripped.extend_from_slice(&png[chunk_start + 12 + chunk_len..]);

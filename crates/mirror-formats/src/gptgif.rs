@@ -2,10 +2,10 @@
 //! in a 640x480 indexed-color GIF animation.
 //! Port of `apps/server/src/gptgif.ts` (faithful to `gptgif.c` and `gptungif.py`).
 
-use crate::gif89a::{read_gif, write_gif, GifColor, GifError, GifFrame, GifImage};
+use crate::gif89a::{GifColor, GifError, GifFrame, GifImage, read_gif, write_gif};
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use std::io::{Read, Write};
 
 const WIDTH: usize = 640;
@@ -257,7 +257,9 @@ pub fn calibrate_gptgif(gif_bytes: &[u8], cluster_map: Option<&str>) -> Result<S
         lines.push("-".repeat(20));
     }
     lines.push(String::new());
-    lines.push("Now associate each index with the correct character from the cluster map.".to_string());
+    lines.push(
+        "Now associate each index with the correct character from the cluster map.".to_string(),
+    );
 
     Ok(lines.join("\n"))
 }

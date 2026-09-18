@@ -145,20 +145,20 @@ pub fn is_allowed_origin(origin: Option<&str>, request_host: Option<&str>) -> bo
 /// the TS version does to avoid `timingSafeEqual` throwing).
 pub fn token_matches(candidate: &str, accepted: &[String]) -> bool {
     accepted.iter().any(|token| {
-        token.len() == candidate.len()
-            && bool::from(token.as_bytes().ct_eq(candidate.as_bytes()))
+        token.len() == candidate.len() && bool::from(token.as_bytes().ct_eq(candidate.as_bytes()))
     })
 }
 
 /// Mirrors `bearerToken`: `/^Bearer\s+(.+)$/i`, returning "" when absent or
 /// not a bearer header.
 pub fn bearer_token(authorization: Option<&str>) -> &str {
-    let Some(value) = authorization else { return "" };
-    let Some(rest) = value.get(..6).and_then(|prefix| {
-        prefix
-            .eq_ignore_ascii_case("Bearer")
-            .then(|| &value[6..])
-    }) else {
+    let Some(value) = authorization else {
+        return "";
+    };
+    let Some(rest) = value
+        .get(..6)
+        .and_then(|prefix| prefix.eq_ignore_ascii_case("Bearer").then(|| &value[6..]))
+    else {
         return "";
     };
     // `\s+` requires at least one whitespace character, and `(.+)` at least
@@ -189,7 +189,9 @@ pub fn control_cookie() -> String {
 }
 
 fn control_cookie_value(cookie_header: Option<&str>) -> &str {
-    let Some(header) = cookie_header else { return "" };
+    let Some(header) = cookie_header else {
+        return "";
+    };
     let prefix = const_format_prefix();
     header
         .split(';')
@@ -231,9 +233,8 @@ pub fn may_bootstrap_browser(
     sec_fetch_site: Option<&str>,
 ) -> bool {
     let pathname = url.split('?').next().unwrap_or(url);
-    let is_browser_page = pathname == "/"
-        || pathname == "/mirror/playground"
-        || is_conversation_path(pathname);
+    let is_browser_page =
+        pathname == "/" || pathname == "/mirror/playground" || is_conversation_path(pathname);
 
     method == "GET"
         && is_browser_page
@@ -262,15 +263,31 @@ mod tests {
 
     #[test]
     fn hostname_from_host_strips_port_and_lowercases() {
-        assert_eq!(hostname_from_host("LocalHost:8787").as_deref(), Some("localhost"));
-        assert_eq!(hostname_from_host("127.0.0.1:8787").as_deref(), Some("127.0.0.1"));
+        assert_eq!(
+            hostname_from_host("LocalHost:8787").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            hostname_from_host("127.0.0.1:8787").as_deref(),
+            Some("127.0.0.1")
+        );
         assert_eq!(hostname_from_host("[::1]:8787").as_deref(), Some("::1"));
-        assert_eq!(hostname_from_host("example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            hostname_from_host("example.com").as_deref(),
+            Some("example.com")
+        );
     }
 
     #[test]
     fn loopback_hostnames_are_recognized() {
-        for host in ["localhost", "LOCALHOST", "app.localhost", "::1", "127.0.0.1", "127.1.2.3"] {
+        for host in [
+            "localhost",
+            "LOCALHOST",
+            "app.localhost",
+            "::1",
+            "127.0.0.1",
+            "127.1.2.3",
+        ] {
             assert!(is_loopback_hostname(host), "{host} should be loopback");
         }
         for host in ["example.com", "128.0.0.1", "0.0.0.0", "notlocalhost"] {
@@ -282,7 +299,10 @@ mod tests {
     fn request_host_allows_loopback_and_rejects_everything_else_by_default() {
         assert!(is_allowed_request_host_with(Some("localhost:8787"), None));
         assert!(is_allowed_request_host_with(Some("127.0.0.1:8787"), None));
-        assert!(!is_allowed_request_host_with(Some("evil.example.com"), None));
+        assert!(!is_allowed_request_host_with(
+            Some("evil.example.com"),
+            None
+        ));
         // A missing Host header is rejected outright.
         assert!(!is_allowed_request_host_with(None, None));
     }
@@ -290,9 +310,18 @@ mod tests {
     #[test]
     fn request_host_honors_the_demo_only_allowlist_escape_hatch() {
         let allowed = Some("demo.example.com, other.example.com");
-        assert!(is_allowed_request_host_with(Some("demo.example.com"), allowed));
-        assert!(is_allowed_request_host_with(Some("DEMO.example.com:443"), allowed));
-        assert!(!is_allowed_request_host_with(Some("nope.example.com"), allowed));
+        assert!(is_allowed_request_host_with(
+            Some("demo.example.com"),
+            allowed
+        ));
+        assert!(is_allowed_request_host_with(
+            Some("DEMO.example.com:443"),
+            allowed
+        ));
+        assert!(!is_allowed_request_host_with(
+            Some("nope.example.com"),
+            allowed
+        ));
     }
 
     #[test]
@@ -383,8 +412,16 @@ mod tests {
     #[test]
     fn authorized_local_request_accepts_a_configured_api_key() {
         let api_keys = keys(&["k1"]);
-        assert!(authorized_local_request_with(Some("Bearer k1"), None, &api_keys));
-        assert!(!authorized_local_request_with(Some("Bearer wrong"), None, &api_keys));
+        assert!(authorized_local_request_with(
+            Some("Bearer k1"),
+            None,
+            &api_keys
+        ));
+        assert!(!authorized_local_request_with(
+            Some("Bearer wrong"),
+            None,
+            &api_keys
+        ));
     }
 
     #[test]
@@ -399,21 +436,40 @@ mod tests {
 
     #[test]
     fn authorized_local_request_rejects_an_unknown_or_stale_control_cookie() {
-        assert!(!authorized_local_request_with(None, Some("mirror_control=stale"), &[]));
-        assert!(!authorized_local_request_with(None, Some("unrelated=1"), &[]));
+        assert!(!authorized_local_request_with(
+            None,
+            Some("mirror_control=stale"),
+            &[]
+        ));
+        assert!(!authorized_local_request_with(
+            None,
+            Some("unrelated=1"),
+            &[]
+        ));
         assert!(!authorized_local_request_with(None, None, &[]));
     }
 
     #[test]
     fn browser_bootstrap_allows_exactly_the_known_page_paths() {
         let html = Some("text/html,application/xhtml+xml");
-        for path in ["/", "/mirror/playground", "/c/abc123", "/c/6aabc316-e4b8-83e9"] {
+        for path in [
+            "/",
+            "/mirror/playground",
+            "/c/abc123",
+            "/c/6aabc316-e4b8-83e9",
+        ] {
             assert!(
                 may_bootstrap_browser("GET", path, html, Some("none")),
                 "{path} should bootstrap"
             );
         }
-        for path in ["/api/health", "/backend-api/me", "/c/", "/c/bad!char", "/other"] {
+        for path in [
+            "/api/health",
+            "/backend-api/me",
+            "/c/",
+            "/c/bad!char",
+            "/other",
+        ] {
             assert!(
                 !may_bootstrap_browser("GET", path, html, Some("none")),
                 "{path} should not bootstrap"
@@ -430,7 +486,12 @@ mod tests {
         // extension/CDP-driven navigation reports cross-site and is refused.
         assert!(!may_bootstrap_browser("GET", "/", html, Some("cross-site")));
         assert!(!may_bootstrap_browser("POST", "/", html, None));
-        assert!(!may_bootstrap_browser("GET", "/", Some("application/json"), None));
+        assert!(!may_bootstrap_browser(
+            "GET",
+            "/",
+            Some("application/json"),
+            None
+        ));
         assert!(!may_bootstrap_browser("GET", "/", None, None));
     }
 

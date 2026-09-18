@@ -380,7 +380,9 @@ pub fn read_gif(buf: &[u8]) -> Result<GifImage, GifError> {
                 if offset + 8 > buf.len() {
                     return Err(GifError::UnexpectedEof);
                 }
-                pending_delay = Some(u16::from_le_bytes(buf[offset + 4..offset + 6].try_into().unwrap()));
+                pending_delay = Some(u16::from_le_bytes(
+                    buf[offset + 4..offset + 6].try_into().unwrap(),
+                ));
                 offset += 8;
             } else {
                 offset += 2;
@@ -409,7 +411,11 @@ pub fn read_gif(buf: &[u8]) -> Result<GifImage, GifError> {
             offset += 1;
             let (data, next_offset) = read_sub_blocks(buf, offset)?;
             offset = next_offset;
-            let pixels = lzw_decode(&data, min_code_size, img_width as usize * img_height as usize)?;
+            let pixels = lzw_decode(
+                &data,
+                min_code_size,
+                img_width as usize * img_height as usize,
+            )?;
             frames.push(GifFrame {
                 pixels,
                 delay_cs: pending_delay,
@@ -526,7 +532,11 @@ mod tests {
             GifColor { r: 1, g: 2, b: 3 },
             GifColor { r: 4, g: 5, b: 6 },
             GifColor { r: 7, g: 8, b: 9 },
-            GifColor { r: 10, g: 11, b: 12 },
+            GifColor {
+                r: 10,
+                g: 11,
+                b: 12,
+            },
         ];
         let image = GifImage {
             width: 2,
@@ -547,7 +557,11 @@ mod tests {
     fn round_trips_multiple_frames_with_and_without_delay() {
         let palette = vec![
             GifColor { r: 0, g: 0, b: 0 },
-            GifColor { r: 255, g: 255, b: 255 },
+            GifColor {
+                r: 255,
+                g: 255,
+                b: 255,
+            },
         ];
         let image = GifImage {
             width: 2,
@@ -606,7 +620,10 @@ mod tests {
 
     #[test]
     fn rejects_not_a_gif() {
-        assert!(matches!(read_gif(b"not a gif"), Err(GifError::BadSignature)));
+        assert!(matches!(
+            read_gif(b"not a gif"),
+            Err(GifError::BadSignature)
+        ));
     }
 
     #[test]
@@ -627,12 +644,7 @@ mod tests {
         raw.push(0);
 
         raw.push(2); // minCodeSize
-        raw.extend_from_slice(&sub_blocks(&pack_codes(&[
-            (4, 3),
-            (0, 3),
-            (1, 3),
-            (5, 3),
-        ])));
+        raw.extend_from_slice(&sub_blocks(&pack_codes(&[(4, 3), (0, 3), (1, 3), (5, 3)])));
         raw.push(0x3b);
 
         let decoded = read_gif(&raw).unwrap();
@@ -643,7 +655,13 @@ mod tests {
     #[test]
     fn skips_local_color_table() {
         let local_bytes = [1u8; 12];
-        let raw = build_raw_gif(3, 1, 2, &[(4, 3), (0, 3), (1, 3), (5, 3)], Some((2, &local_bytes)));
+        let raw = build_raw_gif(
+            3,
+            1,
+            2,
+            &[(4, 3), (0, 3), (1, 3), (5, 3)],
+            Some((2, &local_bytes)),
+        );
         let decoded = read_gif(&raw).unwrap();
         assert_eq!(decoded.global_color_table.len(), 2);
         assert_eq!(decoded.frames[0].pixels, vec![0, 1, 0]);
@@ -654,7 +672,10 @@ mod tests {
         let mut raw = build_raw_gif(1, 1, 2, &[(4, 3), (0, 3), (5, 3)], None);
         let trailer_idx = raw.len() - 1;
         raw[trailer_idx] = 0x99;
-        assert!(matches!(read_gif(&raw), Err(GifError::UnexpectedMarker(0x99, _))));
+        assert!(matches!(
+            read_gif(&raw),
+            Err(GifError::UnexpectedMarker(0x99, _))
+        ));
     }
 
     #[test]

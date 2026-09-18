@@ -27,8 +27,12 @@ pub use api_schemas::{
 };
 pub use auth::{get_valid_credentials, verify_candidate_session_token};
 pub use browser_patch::EARLY_PATCH;
-pub use chat_service::{RunChatOptions, RunChatOutcome, run_chat, stop_conversation, title_from_prompt};
-pub use conversation_context::{first_history_difference, is_public_image_host, prompt_for, route_model, text_content};
+pub use chat_service::{
+    RunChatOptions, RunChatOutcome, run_chat, stop_conversation, title_from_prompt,
+};
+pub use conversation_context::{
+    first_history_difference, is_public_image_host, prompt_for, route_model, text_content,
+};
 pub use conversation_sync::{has_remote_history, sync_conversation_page};
 pub use conversion_routes::conversion_routes;
 pub use deadlines::{TurnDeadline, deadline_ms};

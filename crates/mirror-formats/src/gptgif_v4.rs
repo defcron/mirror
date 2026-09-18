@@ -3,7 +3,7 @@
 //! GIF itself, rather than hard-coded in the decoder.
 //! Native port of `apps/server/src/gptgif-v4.ts` (faithful to `gptgif-v4.c` and `gptungif-v4.py`).
 
-use crate::gif89a::{read_gif, write_gif, GifColor, GifError, GifFrame, GifImage};
+use crate::gif89a::{GifColor, GifError, GifFrame, GifImage, read_gif, write_gif};
 use crate::gptgif::FONT as DEFAULT_FONT;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -515,11 +515,7 @@ pub fn encode_gptgif_v4(
 // Decoder
 // ---------------------------------------------------------------------------
 
-fn read_cell_mask(
-    raster: &[u8],
-    cell: usize,
-    is_foreground: impl Fn(u8) -> bool,
-) -> u64 {
+fn read_cell_mask(raster: &[u8], cell: usize, is_foreground: impl Fn(u8) -> bool) -> u64 {
     let base_x = (cell % COLS) * GLYPH_W;
     let base_y = (cell / COLS) * GLYPH_H;
     let mut mask = 0u64;
@@ -646,7 +642,9 @@ fn learn_calibration(image: &GifImage) -> Result<Calibration, GptgifV4Error> {
     }
 
     if &header[0..8] != MAGIC {
-        return Err(GptgifV4Error::Decode("visual header is not gptgif v4".into()));
+        return Err(GptgifV4Error::Decode(
+            "visual header is not gptgif v4".into(),
+        ));
     }
     let payload_length = u64::from_le_bytes(header[8..16].try_into().unwrap()) as usize;
     let mut payload_digest = [0u8; 32];
@@ -744,9 +742,14 @@ fn decode_payload_frame(
     let mut nibbles = vec![0u8; length];
     for i in 0..length {
         let template = &calibration.templates[styles[i]];
-        let nibble = template.iter().position(|&m| m == observed[i]).ok_or_else(|| {
-            GptgifV4Error::Decode(format!("payload frame {frame_index}: unknown or ambiguous glyph"))
-        })?;
+        let nibble = template
+            .iter()
+            .position(|&m| m == observed[i])
+            .ok_or_else(|| {
+                GptgifV4Error::Decode(format!(
+                    "payload frame {frame_index}: unknown or ambiguous glyph"
+                ))
+            })?;
         nibbles[i] = nibble as u8;
     }
 
@@ -776,9 +779,7 @@ pub fn decode_gptgif_v4(gif: &[u8]) -> Result<Vec<u8>, GptgifV4Error> {
         )));
     }
     if image.frames.is_empty() {
-        return Err(GptgifV4Error::Decode(
-            "missing v4 calibration frame".into(),
-        ));
+        return Err(GptgifV4Error::Decode("missing v4 calibration frame".into()));
     }
 
     let calibration = learn_calibration(&image)?;
@@ -843,8 +844,14 @@ mod tests {
 
     #[test]
     fn font_from_bytes_rejects_wrong_length() {
-        assert!(matches!(font_from_bytes(&[0u8; 100]), Err(GptgifV4Error::Validation(_))));
-        assert!(matches!(palette_from_bytes(&[0u8; 100]), Err(GptgifV4Error::Validation(_))));
+        assert!(matches!(
+            font_from_bytes(&[0u8; 100]),
+            Err(GptgifV4Error::Validation(_))
+        ));
+        assert!(matches!(
+            palette_from_bytes(&[0u8; 100]),
+            Err(GptgifV4Error::Validation(_))
+        ));
     }
 
     #[test]
@@ -879,6 +886,9 @@ mod tests {
             global_color_table: default_palette(),
             frames: Vec::new(),
         });
-        assert!(matches!(decode_gptgif_v4(&empty_gif), Err(GptgifV4Error::Decode(_))));
+        assert!(matches!(
+            decode_gptgif_v4(&empty_gif),
+            Err(GptgifV4Error::Decode(_))
+        ));
     }
 }
