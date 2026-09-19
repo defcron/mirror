@@ -34,7 +34,7 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 8787
-      MIRROR_DATA_DIR: /home/node/.mirror
+      MIRROR_DATA_DIR: /home/mirror/.mirror
       MIRROR_API_KEY: ${MIRROR_API_KEY:-}
       MIRROR_API_KEYS: ${MIRROR_API_KEYS:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -46,13 +46,14 @@ services:
       MIRROR_ALLOWED_HOSTS: ${MIRROR_ALLOWED_HOSTS:-}
       MIRROR_WEB_ORIGIN: ${MIRROR_WEB_ORIGIN:-}
     volumes:
-      - mirror-data:/home/node/.mirror
+      - mirror-data:/home/mirror/.mirror
     healthcheck:
       test:
         - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:8787/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+        - curl
+        - --fail
+        - --silent
+        - http://127.0.0.1:8787/api/health
       interval: 10s
       timeout: 5s
       retries: 12

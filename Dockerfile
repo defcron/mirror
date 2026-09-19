@@ -33,7 +33,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # node_modules the build stage already produced, dev packages and all.
 # Bigger runtime image, but it actually finishes building.
 
-FROM node:24-bookworm-slim AS runtime
+FROM debian:12-slim AS runtime
 
 ARG MIRROR_BUILD_REVISION=development
 LABEL org.opencontainers.image.revision=$MIRROR_BUILD_REVISION
@@ -42,20 +42,14 @@ ENV MIRROR_BUILD_REVISION=$MIRROR_BUILD_REVISION
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8787 \
-    MIRROR_DATA_DIR=/home/node/.mirror \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    MIRROR_DATA_DIR=/home/mirror/.mirror \
+    MIRROR_CHROMIUM_BIN=/usr/bin/chromium
 WORKDIR /app
-COPY --from=build /app/package.json /app/package-lock.json ./
-COPY --from=build /app/node_modules ./node_modules
-RUN npx playwright install --with-deps chromium && chmod -R a+rX /ms-playwright
-COPY --from=build /app/apps/server/package.json ./apps/server/package.json
+RUN apt-get update && apt-get install -y --no-install-recommends chromium ca-certificates curl && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/apps/server/dist ./apps/server/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
-COPY --from=build /app/packages/protocol/package.json ./packages/protocol/package.json
-COPY --from=build /app/packages/protocol/dist ./packages/protocol/dist
-COPY scripts/storage.mjs scripts/restore-drill.mjs ./scripts/
 COPY --from=rust-build /build-artifacts/mirror-server /usr/local/bin/mirror-server
-RUN mkdir -p /home/node/.mirror && chown node:node /home/node/.mirror
-USER node
+RUN useradd --create-home --home-dir /home/mirror --shell /usr/sbin/nologin mirror && mkdir -p /home/mirror/.mirror && chown mirror:mirror /home/mirror/.mirror
+USER mirror
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/mirror-server"]

@@ -6,8 +6,7 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use std::io::Write;
+use serde_json::{Value, json};
 use std::process::{Command, Stdio};
 
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
@@ -80,81 +79,171 @@ pub fn decode_turnstile_config(dx: Option<&str>) -> Option<Vec<Value>> {
     }
 }
 
-/// Solves a Cloudflare Turnstile challenge using the packaged Playwright helper.
-///
-/// Port of `solveTurnstileWithBrowser` in `packages/protocol/src/turnstile.ts`.
-/// The helper uses the same Playwright implementation as the TypeScript build.
-/// Options travel over stdin and the child process writes only its token result
-/// to stdout; session credentials are never placed in command arguments or logs.
+/// Solves a challenge by launching Chromium and talking to its DevTools socket
+/// directly. Credentials travel only in CDP messages, never command arguments.
 pub fn solve_turnstile_with_browser(
     opts: &BrowserTurnstileOptions,
 ) -> Result<Option<String>, String> {
-    let root = std::env::var_os("MIRROR_APP_ROOT")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .filter(|path| path.join("packages/protocol/dist/turnstile.js").is_file());
-    let Some(root) = root else {
-        return Ok(None);
-    };
-    const SCRIPT: &str = r#"
-        import { solveTurnstileWithBrowser } from './packages/protocol/dist/turnstile.js';
-        let input = '';
-        for await (const chunk of process.stdin) input += chunk;
-        try {
-          const result = await solveTurnstileWithBrowser(JSON.parse(input));
-          process.stdout.write(JSON.stringify({ token: result || null }));
-        } catch {
-          process.stdout.write('{"token":null}');
-        }
-    "#;
-    let mut child = match Command::new("node")
-        .arg("--input-type=module")
-        .arg("-e")
-        .arg(SCRIPT)
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
+    let origin = opts.origin.as_deref().unwrap_or("https://chatgpt.com");
+    let frame = opts
+        .frame_url
+        .as_deref()
+        .unwrap_or("https://chatgpt.com/backend-api/sentinel/frame.html");
+    let chrome = chromium_binary();
+    let mut child = match Command::new(chrome)
+        .args([
+            "--headless=new",
+            "--remote-debugging-address=127.0.0.1",
+            "--remote-debugging-port=9222",
+            "--disable-dev-shm-usage",
+            "--no-first-run",
+            "--user-data-dir=/tmp/mirror-turnstile-profile",
+        ])
+        .args(opts.args.clone().unwrap_or_default())
         .stderr(Stdio::null())
+        .stdout(Stdio::null())
         .spawn()
     {
-        Ok(child) => child,
+        Ok(c) => c,
         Err(_) => return Ok(None),
     };
-    if let Some(mut stdin) = child.stdin.take()
-        && (serde_json::to_writer(&mut stdin, opts).is_err() || stdin.flush().is_err())
-    {
-        return Ok(None);
-    }
     let timeout = std::time::Duration::from_millis(
         opts.timeout_ms
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .saturating_add(5_000),
     );
     let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => return Ok(None),
-            Ok(None) if started.elapsed() < timeout => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(None);
+    let ws = loop {
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            return Ok(None);
+        };
+        if let Ok(response) = ureq::get("http://127.0.0.1:9222/json").call()
+            && let Ok(v) = response.into_string()
+            && let Some(url) = serde_json::from_str::<Value>(&v).ok().and_then(|v| {
+                v.as_array()?
+                    .iter()
+                    .find(|target| target.get("type").and_then(Value::as_str) == Some("page"))?
+                    .get("webSocketDebuggerUrl")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+        {
+            break url;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let result = cdp_turnstile(&ws, origin, frame, opts, timeout);
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn chromium_binary() -> String {
+    if let Ok(path) = std::env::var("MIRROR_CHROMIUM_BIN") {
+        return path;
+    }
+    for path in ["/usr/bin/chromium", "/usr/bin/chromium-browser"] {
+        if std::path::Path::new(path).is_file() {
+            return path.into();
+        }
+    }
+    let root =
+        std::env::var("PLAYWRIGHT_BROWSERS_PATH").unwrap_or_else(|_| "/ms-playwright".into());
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for entry in entries.flatten() {
+            for relative in ["chrome-linux/chrome", "chrome-linux-arm64/chrome"] {
+                let path = entry.path().join(relative);
+                if path.is_file() {
+                    return path.to_string_lossy().into_owned();
+                }
             }
         }
     }
-    let output = match child.wait_with_output() {
-        Ok(output) => output,
-        Err(_) => return Ok(None),
+    "/usr/bin/chromium".into()
+}
+
+fn cdp_turnstile(
+    ws: &str,
+    origin: &str,
+    frame: &str,
+    opts: &BrowserTurnstileOptions,
+    timeout: std::time::Duration,
+) -> Result<Option<String>, String> {
+    let (mut socket, _) = tungstenite::connect(ws).map_err(|e| e.to_string())?;
+    let mut id = 0u64;
+    let mut send = |method: &str, params: Value| -> Result<(), String> {
+        id += 1;
+        socket
+            .send(tungstenite::Message::Text(
+                json!({"id":id,"method":method,"params":params}).to_string(),
+            ))
+            .map_err(|e| e.to_string())
     };
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
-    Ok(value
-        .get("token")
-        .and_then(Value::as_str)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string))
+    send("Network.enable", json!({}))?;
+    send("Page.enable", json!({}))?;
+    if let Some(device) = &opts.device_id {
+        send(
+            "Network.setExtraHTTPHeaders",
+            json!({"headers":{"oai-device-id":device}}),
+        )?
+    };
+    if let Some(token) = &opts.session_token {
+        send(
+            "Network.setCookie",
+            json!({"name":"__Secure-next-auth.session-token","value":token,"url":origin,"httpOnly":true,"secure":true,"sameSite":"Lax"}),
+        )?
+    };
+    send("Page.navigate", json!({"url":frame}))?;
+    if let tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_mut() {
+        stream.set_read_timeout(Some(timeout)).ok();
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let Ok(msg) = socket.read() else { break };
+        let Ok(v) = serde_json::from_str::<Value>(msg.into_text().unwrap_or_default().as_str())
+        else {
+            continue;
+        };
+        if let Some(token) = find_token(&v) {
+            return Ok(Some(token));
+        }
+    }
+    id += 1;
+    let evaluation_id = id;
+    socket
+        .send(tungstenite::Message::Text(
+            json!({"id":evaluation_id,"method":"Runtime.evaluate","params":{"expression":"(()=>{const input=document.querySelector('input[name=cf-turnstile-response]');if(input&&input.value)return input.value;const t=window.turnstile;if(t&&typeof t.getResponse==='function')return String(t.getResponse()||'');return ''})()","returnByValue":true}}).to_string(),
+        ))
+        .map_err(|e| e.to_string())?;
+    if let Ok(message) = socket.read()
+        && let Ok(value) = serde_json::from_str::<Value>(&message.into_text().unwrap_or_default())
+        && value.get("id").and_then(Value::as_u64) == Some(evaluation_id)
+    {
+        return Ok(value
+            .pointer("/result/result/value")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string));
+    }
+    Ok(None)
+}
+fn find_token(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return (!s.is_empty() && s.len() > 20 && s.contains('.')).then(|| s.to_string());
+    };
+    let o = v.as_object()?;
+    for (k, x) in o {
+        if (k.eq_ignore_ascii_case("openai-sentinel-turnstile-token") || k == "turnstile")
+            && let Some(s) = x.as_str()
+        {
+            return Some(s.to_string());
+        }
+        if let Some(t) = find_token(x) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 /// Resolves a Turnstile token according to upstream priority rules.
