@@ -58,4 +58,4 @@ COPY --from=rust-build /build-artifacts/mirror-server /usr/local/bin/mirror-serv
 RUN mkdir -p /home/node/.mirror && chown node:node /home/node/.mirror
 USER node
 EXPOSE 8787
-CMD ["/usr/local/bin/mirror-server"]
+ENTRYPOINT ["/usr/local/bin/mirror-server"]
