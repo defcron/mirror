@@ -21,12 +21,12 @@ services:
     restart: unless-stopped
 
   mirror:
-    image: mirror-app-mirror-next:local
+    image: mirror-app-mirror:local
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        MIRROR_BUILD_REVISION: ${MIRROR_BUILD_REVISION:-mirror-next}
+        MIRROR_BUILD_REVISION: ${MIRROR_BUILD_REVISION:-mirror}
     network_mode: "service:warp"
     depends_on:
       warp:
