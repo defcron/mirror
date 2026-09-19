@@ -74,6 +74,7 @@ impl AppState {
 
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(playground_handler))
         .route("/api/health", get(health_handler))
         .route("/api/diagnostics", get(diagnostics_handler))
         .route(
