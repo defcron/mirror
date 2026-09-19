@@ -40,6 +40,11 @@ struct ExportParams {
     metadata: bool,
 }
 
+#[derive(serde::Deserialize, Default)]
+struct DocsParams {
+    format: Option<String>,
+}
+
 fn default_export_format() -> String {
     "json".to_string()
 }
@@ -1755,8 +1760,28 @@ async fn openapi_handler() -> Response {
     }
 }
 
-async fn api_docs_handler() -> Response {
-    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], r#"<!doctype html><title>Mirror API docs</title><style>body{font:16px system-ui;max-width:900px;margin:3rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:1rem;overflow:auto}</style><h1>Mirror API</h1><p>OpenAPI 3.1 document:</p><p><a href="/mirror/openapi">/mirror/openapi</a></p><pre id="doc">Loading…</pre><script>fetch('/mirror/openapi').then(r=>r.json()).then(x=>doc.textContent=JSON.stringify(x,null,2))</script>"#).into_response()
+async fn api_docs_handler(Query(params): Query<DocsParams>) -> Response {
+    if params.format.as_deref() == Some("json") {
+        return match tokio::fs::read("./apps/server/dist/openapi.json").await {
+            Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "application/json")], bytes).into_response(),
+            Err(_) => Json(json!({"openapi":"3.1.0","info":{"title":"Mirror API","version":"0.1.0"},"paths":{}})).into_response(),
+        };
+    }
+    match tokio::fs::read("./apps/server/dist/openapi.yaml").await {
+        Ok(bytes) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "application/yaml; charset=utf-8",
+            )],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (
+            [(axum::http::header::CONTENT_TYPE, "text/yaml; charset=utf-8")],
+            "openapi: 3.1.0\ninfo:\n  title: Mirror API\n  version: 0.1.0\npaths: {}\n",
+        )
+            .into_response(),
+    }
 }
 
 async fn api_models_handler(State(state): State<Arc<AppState>>) -> Response {
