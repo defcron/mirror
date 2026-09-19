@@ -21,10 +21,12 @@ services:
     restart: unless-stopped
 
   mirror:
+    image: mirror-app-mirror-next:local
     build:
       context: .
+      dockerfile: Dockerfile
       args:
-        MIRROR_BUILD_REVISION: ${MIRROR_BUILD_REVISION:-development}
+        MIRROR_BUILD_REVISION: ${MIRROR_BUILD_REVISION:-mirror-next}
     network_mode: "service:warp"
     depends_on:
       warp:
@@ -45,6 +47,16 @@ services:
       MIRROR_WEB_ORIGIN: ${MIRROR_WEB_ORIGIN:-}
     volumes:
       - mirror-data:/home/node/.mirror
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8787/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
     restart: unless-stopped
 
 volumes:
