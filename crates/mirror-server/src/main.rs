@@ -121,6 +121,7 @@ async fn main() {
         store,
         egress,
         http,
+        challenges: mirror_server::decoder_challenges::ChallengeShelf::default(),
     });
 
     let router = create_router(app_state);

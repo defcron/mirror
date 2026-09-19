@@ -9,6 +9,7 @@ pub mod conversation_context;
 pub mod conversation_sync;
 pub mod conversion_routes;
 pub mod deadlines;
+pub mod decoder_challenges;
 pub mod egress;
 pub mod mirror_controls;
 pub mod preflight;

@@ -10,6 +10,7 @@ use crate::api_schemas::{
 };
 use crate::auth::{get_valid_credentials, verify_candidate_session_token};
 use crate::chat_service::{RunChatOptions, run_chat, stop_conversation};
+use crate::decoder_challenges::ChallengeShelf;
 use crate::egress::EgressMonitor;
 use axum::Router;
 use axum::extract::{Path, Query, State};
@@ -47,6 +48,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub egress: Arc<EgressMonitor>,
     pub http: wreq::Client,
+    pub challenges: ChallengeShelf,
 }
 
 impl AppState {
@@ -60,6 +62,7 @@ impl AppState {
             store,
             egress,
             http,
+            challenges: ChallengeShelf::default(),
         }
     }
 }
@@ -125,6 +128,23 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/mirror/inject.js", get(inject_js_handler))
         .route("/mirror/playground", get(playground_handler))
         .route("/mirror/openapi", get(openapi_handler))
+        .route("/mirror/api-docs", get(api_docs_handler))
+        .route(
+            "/api/decoder-challenges",
+            post(crate::decoder_challenges::create),
+        )
+        .route(
+            "/api/decoder-challenges/kit",
+            post(crate::decoder_challenges::kit),
+        )
+        .route(
+            "/api/decoder-challenges/{id}/artifact",
+            get(crate::decoder_challenges::artifact),
+        )
+        .route(
+            "/api/decoder-challenges/{id}/verify",
+            post(crate::decoder_challenges::verify),
+        )
         .nest_service(
             "/mirror/assets",
             tower_http::services::ServeDir::new("./apps/web/dist/assets"),
@@ -1722,7 +1742,21 @@ async fn playground_handler() -> Response {
 }
 
 async fn openapi_handler() -> Response {
-    Json(json!({"openapi":"3.1.0","info":{"title":"Mirror API","version":"0.1.0"},"paths":{"/api/health":{"get":{"summary":"Health check"}},"/api/conversations":{"get":{"summary":"List conversations"},"post":{"summary":"Create conversation"}},"/api/chat":{"post":{"summary":"Stream a chat turn"}},"/v1/models":{"get":{"summary":"List models"}},"/v1/chat/completions":{"post":{"summary":"Create a chat completion"}},"/v1/responses":{"post":{"summary":"Create a response"}}}})).into_response()
+    match tokio::fs::read("./apps/server/dist/openapi.json").await {
+        Ok(bytes) => (
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => Json(
+            json!({"openapi":"3.1.0","info":{"title":"Mirror API","version":"0.1.0"},"paths":{}}),
+        )
+        .into_response(),
+    }
+}
+
+async fn api_docs_handler() -> Response {
+    ([(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")], r#"<!doctype html><title>Mirror API docs</title><style>body{font:16px system-ui;max-width:900px;margin:3rem auto;padding:0 1rem}pre{background:#f4f4f4;padding:1rem;overflow:auto}</style><h1>Mirror API</h1><p>OpenAPI 3.1 document:</p><p><a href="/mirror/openapi">/mirror/openapi</a></p><pre id="doc">Loading…</pre><script>fetch('/mirror/openapi').then(r=>r.json()).then(x=>doc.textContent=JSON.stringify(x,null,2))</script>"#).into_response()
 }
 
 async fn api_models_handler(State(state): State<Arc<AppState>>) -> Response {
