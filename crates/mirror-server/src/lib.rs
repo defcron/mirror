@@ -20,6 +20,7 @@ pub mod router;
 pub mod security;
 pub mod upload_mime;
 pub mod url_rewrite;
+pub mod ws_proxy;
 
 pub use api_errors::{api_error, recent_failures, record_failure};
 pub use api_schemas::{

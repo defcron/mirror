@@ -29,12 +29,13 @@ thiserror = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "fs"] }
 tokio-util = "0.7"
-axum = "0.8.9"
+axum = { version = "0.8.9", features = ["ws"] }
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["fs"] }
-wreq = { version = "0.16", features = ["json", "stream"] }
+wreq = { version = "0.16", features = ["json", "stream", "gzip", "brotli", "deflate", "zstd"] }
 flate2 = "1"
 tar = "0.4"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

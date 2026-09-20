@@ -159,7 +159,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/v1/responses", post(v1_responses_handler))
         .route("/v1/capabilities", get(v1_capabilities_handler))
         .merge(crate::conversion_routes::conversion_routes())
-        .fallback(crate::proxy::proxy_chatgpt)
+        .fallback(fallback_or_websocket)
         // Security checks must wrap every route, including the catch-all
         // ChatGPT proxy. Axum does not provide the Fastify onRequest hook the
         // original server relied on, so omitting this layer makes every
@@ -167,6 +167,20 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn(security_middleware))
         .layer(axum::extract::DefaultBodyLimit::max(30 * 1024 * 1024))
         .with_state(state)
+}
+
+/// The catch-all for every path not otherwise routed above. An `Upgrade:
+/// websocket` request (the frontend's realtime notifications socket) is
+/// proxied to chatgpt.com's own WebSocket endpoint; everything else is
+/// proxied over plain HTTP, exactly as before.
+async fn fallback_or_websocket(
+    State(state): State<Arc<AppState>>,
+    req: Request<axum::body::Body>,
+) -> Response {
+    if crate::ws_proxy::is_websocket_upgrade_request(&req) {
+        return crate::ws_proxy::proxy_websocket_upgrade(state, req).await;
+    }
+    crate::proxy::proxy_chatgpt(State(state), req).await
 }
 
 fn current_account_id(store: &Store) -> Result<String, mirror_store::StoreError> {
