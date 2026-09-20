@@ -10,7 +10,6 @@ use crate::response_transform::{
     transform_text_asset,
 };
 use crate::router::AppState;
-use crate::security::{authorized_local_request, is_allowed_origin, is_allowed_request_host};
 use crate::url_rewrite::{is_rewritable_content_type, request_origin, rewrite_chatgpt_urls};
 use axum::body::Body;
 use axum::extract::State;
@@ -186,21 +185,7 @@ pub async fn proxy_request_to_upstream(
             .into_response();
     }
 
-    // Origin and Host security check
     let host = parts.headers.get("host").and_then(|h| h.to_str().ok());
-    let origin = parts.headers.get("origin").and_then(|o| o.to_str().ok());
-    let auth_hdr = parts
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok());
-    let cookie_hdr = parts.headers.get("cookie").and_then(|v| v.to_str().ok());
-
-    if !authorized_local_request(auth_hdr, cookie_hdr)
-        || !is_allowed_request_host(host)
-        || !is_allowed_origin(origin, host)
-    {
-        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
-    }
 
     let headers_ref: Vec<(&str, &str)> = parts
         .headers
@@ -408,21 +393,14 @@ mod tests {
         )
     }
 
-    #[tokio::test]
-    async fn proxy_rejects_unauthorized_host_or_origin() {
-        let store = test_store();
-        let egress = Arc::new(crate::egress::EgressMonitor::new());
-        let state = Arc::new(AppState::new(store, egress));
-
-        let req = Request::builder()
-            .uri("/some/unmatched/path")
-            .header("host", "evil.com")
-            .body(Body::empty())
-            .unwrap();
-
-        let resp = proxy_chatgpt(State(state), req).await;
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-    }
+    // Host/origin/auth rejection is enforced once, in `router::security_middleware`,
+    // which wraps every route including this fallback - see
+    // `router::tests::security_layer_rejects_untrusted_hosts_and_unauthenticated_control_routes`.
+    // `proxy_chatgpt` itself no longer re-checks these (matching the original
+    // `proxyChatGpt` in apps/server/src/proxy.ts, which never did either); a
+    // duplicate check here previously also rejected the browser's very first,
+    // not-yet-bootstrapped navigation to `/`, since it had no way to honor
+    // `may_bootstrap_browser`.
 
     #[tokio::test]
     async fn proxy_returns_404_for_v1_routes() {
