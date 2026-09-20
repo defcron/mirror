@@ -54,8 +54,24 @@ pub const EMULATED_CHROME_MAJOR: u32 = 149;
 /// Builds the shared client. All upstream traffic (proxy forwarding,
 /// protocol calls, session minting) must go through one of these so every
 /// connection carries the same fingerprint.
+///
+/// # Why `http1_only`
+///
+/// The emulation profile negotiates HTTP/2 by default (matching real
+/// Chrome's ALPN offer), but chatgpt.com's Cloudflare edge treats our
+/// HTTP/2 connections as suspicious even with a byte-correct SETTINGS/JA3
+/// profile - a plain top-level GET to `/` gets an unrecoverable
+/// `cf-mitigated: challenge` loop that never completes, while the exact
+/// same request over HTTP/1.1 gets a clean 200. This is the same failure
+/// mode `apps/server` hit with Node's undici (see the repo-root
+/// `alpn-fix.patch`, which forces `ALPNProtocols: ["http/1.1"]` on its
+/// global dispatcher for the same reason); the fix here is the direct
+/// equivalent for wreq.
 pub fn build_client() -> Result<wreq::Client, wreq::Error> {
-    wreq::Client::builder().emulation(EMULATED_CHROME).build()
+    wreq::Client::builder()
+        .emulation(EMULATED_CHROME)
+        .http1_only()
+        .build()
 }
 
 #[cfg(test)]
