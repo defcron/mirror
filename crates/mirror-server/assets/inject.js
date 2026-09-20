@@ -181,7 +181,8 @@ function mountFormatLauncher(){
 }
 mountFormatLauncher();
 var launchTimer=setInterval(function(){if(mountFormatLauncher())clearInterval(launchTimer);},500);
-})();\n(()=>{
+})();
+(()=>{
 var widgetRoot=null;
 function buildWidget(){
   var root=document.createElement('div');
