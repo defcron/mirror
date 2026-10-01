@@ -299,11 +299,7 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
 
   const wantsHtml = (req.headers.accept ?? "").includes("text/html");
   let htmlAccessToken: string | null = null;
-  const session = getSession();
-  if (session) {
-    headers.set("cookie", `__Secure-next-auth.session-token=${session.sessionToken}`);
-    if (wantsHtml) htmlAccessToken = (await getValidCredentials()).accessToken;
-  }
+  const hasSession = Boolean(getSession());
 
   // Determine which paths need authentication headers
   const needsAuthHeaders =
@@ -313,8 +309,16 @@ export async function proxyChatGpt(req: FastifyRequest, reply: FastifyReply): Pr
     req.url.startsWith("/realtime/");        // Real-time/Work Mode endpoints
   // Note: /sentinel/* endpoints don't need auth headers (real ChatGPT doesn't send them)
 
+  const credentials = hasSession && (needsAuthHeaders || wantsHtml) ? await getValidCredentials() : undefined;
+  if (credentials?.sessionToken)
+    headers.set("cookie", `__Secure-next-auth.session-token=${credentials.sessionToken}`);
+  if (wantsHtml && credentials) htmlAccessToken = credentials.accessToken;
+
   if (needsAuthHeaders) {
-    const credentials = await getValidCredentials();
+    if (!credentials) {
+      reply.code(401).send({ error: "A valid session is required for this upstream request" });
+      return;
+    }
     headers.set("authorization", `Bearer ${credentials.accessToken}`);
     headers.set("oai-device-id", credentials.deviceId);
 

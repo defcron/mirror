@@ -150,6 +150,23 @@ test("GET /api/auth/session falls back to defaults when /me fails", () =>
 
 // --- backend-api account-id resolution --------------------------------------
 
+test("proxied requests use the session cookie returned by a credential refresh", () =>
+  withFetch(
+    fetchRouter([
+      [/\/api\/auth\/session$/, () => new Response(JSON.stringify({ accessToken: jwtWithExp(3600) }), {
+        headers: { "content-type": "application/json", "set-cookie": "__Secure-next-auth.session-token=rotated-session; Path=/; Secure" },
+      })],
+      [/\/backend-api\/models$/, (_u, init) => {
+        assert.equal(init.headers.get("cookie"), "__Secure-next-auth.session-token=rotated-session");
+        return Response.json({ models: [] });
+      }],
+    ]),
+    async () => {
+      useSession("rotation");
+      await proxyChatGpt(makeReq(), makeReply().reply);
+    },
+  ));
+
 test("backend-api requests resolve and cache the account id from /me when the session has none yet", () =>
   withFetch(
     fetchRouter([
