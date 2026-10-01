@@ -5,9 +5,12 @@ use mirror_protocol::http::build_client;
 use mirror_protocol::session::{SessionError, mint_access_token};
 use mirror_protocol::types::SessionCredentials;
 use mirror_store::Store;
+use std::sync::OnceLock;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 const REFRESH_BUFFER_MS: i64 = 60_000;
+static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
@@ -15,6 +18,8 @@ pub enum AuthError {
     NoSession,
     #[error("Session token invalid: {0}")]
     InvalidSession(String),
+    #[error("Session exchange failed: {0}")]
+    SessionExchange(SessionError),
     #[error("Storage error: {0}")]
     Store(#[from] mirror_store::StoreError),
     #[error("HTTP client initialization error: {0}")]
@@ -26,13 +31,32 @@ pub enum AuthError {
 /// Persists both the new accessToken and any rotated session token.
 pub async fn get_valid_credentials(store: &Store) -> Result<SessionCredentials, AuthError> {
     let session = store.session()?.ok_or(AuthError::NoSession)?;
+    if needs_mint(&session) {
+        // Only one request should exchange a rotating session credential at a
+        // time. Re-read after waiting because the first caller may have saved
+        // fresh credentials while this request was queued.
+        let _guard = REFRESH_LOCK.get_or_init(|| Mutex::new(())).lock().await;
+        let session = store.session()?.ok_or(AuthError::NoSession)?;
+        return credentials_for_session(store, session).await;
+    }
+    credentials_for_session(store, session).await
+}
 
+fn needs_mint(session: &mirror_store::store::StoredSession) -> bool {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let needs_mint = session.cached_access_token.is_none()
+    session.cached_access_token.is_none()
         || session
             .cached_access_token_expires_at
             .map(|exp| exp - now_ms < REFRESH_BUFFER_MS)
-            .unwrap_or(true);
+            .unwrap_or(true)
+}
+
+async fn credentials_for_session(
+    store: &Store,
+    session: mirror_store::store::StoredSession,
+) -> Result<SessionCredentials, AuthError> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let needs_mint = needs_mint(&session);
 
     if !needs_mint {
         return Ok(SessionCredentials {
@@ -52,7 +76,7 @@ pub async fn get_valid_credentials(store: &Store) -> Result<SessionCredentials, 
             SessionError::SessionTokenInvalid => {
                 AuthError::InvalidSession("Session token invalid or expired".into())
             }
-            other => AuthError::InvalidSession(other.to_string()),
+            other => AuthError::SessionExchange(other),
         })?;
 
     store.assert_session_revision(revision)?;

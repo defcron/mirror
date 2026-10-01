@@ -3,7 +3,7 @@
 
 #![allow(clippy::collapsible_if)]
 
-use crate::auth::get_valid_credentials;
+use crate::auth::{AuthError, get_valid_credentials};
 use crate::proxy_headers::safe_request_headers;
 use crate::response_transform::{
     BROWSER_TOKEN, EARLY_PATCH, cache_control, is_stripped_response_header, transform_html,
@@ -202,54 +202,68 @@ pub async fn proxy_request_to_upstream(
         .unwrap_or("");
     let wants_html = accept.contains("text/html");
 
-    let mut html_access_token: Option<String> = None;
-    let mut session_token: Option<String> = None;
-
-    if let Ok(Some(sess)) = state.store.session() {
-        session_token = Some(sess.session_token.clone());
-        if wants_html {
-            if let Ok(creds) = get_valid_credentials(&state.store).await {
-                html_access_token = Some(creds.access_token);
-            }
-        }
-    }
-
     let needs_auth_headers = path_and_query.starts_with("/backend-api/")
         || path_and_query.starts_with("/ces/")
         || path_and_query.starts_with("/api/")
         || path_and_query.starts_with("/realtime/");
 
     let mut auth_headers = Vec::new();
-    if needs_auth_headers {
-        if let Ok(creds) = get_valid_credentials(&state.store).await {
-            auth_headers.push((
-                "authorization".to_string(),
-                format!("Bearer {}", creds.access_token),
-            ));
-            auth_headers.push(("oai-device-id".to_string(), creds.device_id.clone()));
+    let mut html_access_token: Option<String> = None;
+    let mut session_token: Option<String> = None;
+    if needs_auth_headers || wants_html {
+        match get_valid_credentials(&state.store).await {
+            Ok(creds) => {
+                session_token = creds.session_token.clone();
+                if wants_html {
+                    html_access_token = Some(creds.access_token.clone());
+                }
+                if needs_auth_headers {
+                    auth_headers.push((
+                        "authorization".to_string(),
+                        format!("Bearer {}", creds.access_token),
+                    ));
+                    auth_headers.push(("oai-device-id".to_string(), creds.device_id.clone()));
 
-            if path_and_query.starts_with("/backend-api/") {
-                let target_route = path_and_query.split('?').next().unwrap_or(path_and_query);
-                auth_headers.push(("x-openai-target-path".to_string(), target_route.to_string()));
-                auth_headers.push((
-                    "x-openai-target-route".to_string(),
-                    target_route.to_string(),
-                ));
+                    if path_and_query.starts_with("/backend-api/") {
+                        let target_route =
+                            path_and_query.split('?').next().unwrap_or(path_and_query);
+                        auth_headers
+                            .push(("x-openai-target-path".to_string(), target_route.to_string()));
+                        auth_headers.push((
+                            "x-openai-target-route".to_string(),
+                            target_route.to_string(),
+                        ));
 
-                let has_acct = safe_headers.iter().any(|(k, _)| k == "chatgpt-account-id");
-                if !has_acct {
-                    if let Some(acct_id) = resolve_account_id_at(
-                        state,
-                        upstream_base,
-                        &creds.access_token,
-                        &creds.device_id,
-                    )
-                    .await
-                    {
-                        auth_headers.push(("chatgpt-account-id".to_string(), acct_id));
+                        let has_acct = safe_headers.iter().any(|(k, _)| k == "chatgpt-account-id");
+                        if !has_acct {
+                            if let Some(acct_id) = resolve_account_id_at(
+                                state,
+                                upstream_base,
+                                &creds.access_token,
+                                &creds.device_id,
+                            )
+                            .await
+                            {
+                                auth_headers.push(("chatgpt-account-id".to_string(), acct_id));
+                            }
+                        }
                     }
                 }
             }
+            Err(error) if needs_auth_headers => {
+                let status = match error {
+                    AuthError::NoSession | AuthError::InvalidSession(_) => StatusCode::UNAUTHORIZED,
+                    _ => StatusCode::BAD_GATEWAY,
+                };
+                return (
+                    status,
+                    axum::Json(json!({
+                        "error": "credentials_unavailable", "detail": error.to_string()
+                    })),
+                )
+                    .into_response();
+            }
+            Err(_) => {}
         }
     }
 
@@ -416,6 +430,23 @@ mod tests {
 
         let resp = proxy_chatgpt(State(state), req).await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn authenticated_upstream_path_stops_when_credentials_are_missing() {
+        let store = test_store();
+        let egress = Arc::new(crate::egress::EgressMonitor::new());
+        let state = AppState::new(store, egress);
+        let req = Request::builder()
+            .uri("/backend-api/models")
+            .header("host", "localhost:8787")
+            .body(Body::empty())
+            .unwrap();
+
+        // If credential acquisition fails, this must return before using the
+        // deliberately unreachable upstream URL.
+        let resp = proxy_request_to_upstream(&state, "http://127.0.0.1:1", req).await;
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
