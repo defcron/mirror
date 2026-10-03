@@ -1311,6 +1311,22 @@ async fn v1_chat_completions_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<Value>,
 ) -> Response {
+    if body
+        .get("tools")
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty())
+        || body
+            .get("messages")
+            .and_then(Value::as_array)
+            .is_some_and(|messages| {
+                messages.iter().any(|message| {
+                    message.get("role").and_then(Value::as_str) == Some("tool")
+                        || message.get("tool_calls").is_some()
+                })
+            })
+    {
+        return tool_bridge_completion(state, body).await;
+    }
     let stream = body.get("stream").and_then(Value::as_bool) == Some(true);
     let Some(raw_messages) = body
         .get("messages")
@@ -1383,6 +1399,126 @@ async fn v1_chat_completions_handler(
         .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
         .collect::<std::collections::HashMap<_, _>>();
     handle_completion_request(state, body, messages, metadata, None).await
+}
+
+async fn tool_bridge_completion(state: Arc<AppState>, body: Value) -> Response {
+    let tools = match crate::tool_bridge::validate_tools(&body) {
+        Ok(tools) => tools,
+        Err(message) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":{"type":"invalid_request_error","message":message}})),
+            )
+                .into_response();
+        }
+    };
+    let Some(messages) = body
+        .get("messages")
+        .and_then(Value::as_array)
+        .filter(|messages| !messages.is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":{"type":"invalid_request_error","message":"messages must contain at least one message"}}))).into_response();
+    };
+    let choice = body.get("tool_choice").cloned().unwrap_or(json!("auto"));
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("auto");
+    let metadata = body.get("metadata").and_then(Value::as_object);
+    let metadata = metadata.map(|map| {
+        map.iter()
+            .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.to_string())))
+            .collect::<std::collections::HashMap<_, _>>()
+    });
+    let routed = crate::conversation_context::route_model(model, metadata.as_ref());
+    if routed.model.ends_with("-wm") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error":{"type":"unsupported_parameter","message":"Work Mode is not supported by Mirror"}}))).into_response();
+    }
+    let prompt = crate::tool_bridge::prompt(&json!(messages), &tools, &choice);
+    let result = run_chat(
+        &state.store,
+        RunChatOptions {
+            conversation_id: None,
+            new_conversation_id: None,
+            prompt,
+            model: Some(routed.model),
+            gizmo_id: routed.gizmo_id,
+            timezone: None,
+            timezone_offset_min: None,
+            attachments: Vec::new(),
+            private: true,
+            ephemeral: true,
+            turnstile_token: metadata
+                .as_ref()
+                .and_then(|map| {
+                    map.get("mirror_turnstile_token")
+                        .or_else(|| map.get("turnstile_token"))
+                })
+                .cloned(),
+            on_delta: None,
+            on_event: None,
+            cancel_token: None,
+        },
+    )
+    .await;
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let status = if matches!(error, crate::chat_service::ChatServiceError::Auth(_)) {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::BAD_GATEWAY
+            };
+            return (
+                status,
+                Json(json!({"error":{"type":"server_error","message":error.to_string()}})),
+            )
+                .into_response();
+        }
+    };
+    let (content, calls) =
+        match crate::tool_bridge::parse_answer(&result.result.text, &tools, &choice) {
+            Ok(answer) => answer,
+            Err(message) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"error":{"type":"server_error","message":message}})),
+                )
+                    .into_response();
+            }
+        };
+    let id = format!("chatcmpl-{}", Uuid::new_v4().simple());
+    let created = chrono::Utc::now().timestamp();
+    let finish = if calls.is_some() {
+        "tool_calls"
+    } else {
+        "stop"
+    };
+    if body.get("stream").and_then(Value::as_bool) == Some(true) {
+        let mut frames = Vec::new();
+        frames.push(json!({"id":id,"object":"chat.completion.chunk","created":created,"model":model,"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}));
+        let delta = if let Some(calls) = &calls {
+            json!({"tool_calls":calls.as_array().unwrap().iter().enumerate().map(|(index, call)| {
+                let mut call = call.clone(); call["index"] = json!(index); call
+            }).collect::<Vec<_>>()})
+        } else {
+            json!({"content":content})
+        };
+        frames.push(json!({"id":id,"object":"chat.completion.chunk","created":created,"model":model,"choices":[{"index":0,"delta":delta,"finish_reason":null}]}));
+        frames.push(json!({"id":id,"object":"chat.completion.chunk","created":created,"model":model,"choices":[{"index":0,"delta":{},"finish_reason":finish}]}));
+        let mut text = frames
+            .into_iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect::<String>();
+        text.push_str("data: [DONE]\n\n");
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream; charset=utf-8")
+            .body(axum::body::Body::from(text))
+            .unwrap();
+    }
+    let mut message = json!({"role":"assistant","content":content});
+    if let Some(calls) = calls {
+        message["tool_calls"] = calls;
+    }
+    (StatusCode::OK, Json(json!({"id":id,"object":"chat.completion","created":created,"model":model,"choices":[{"index":0,"message":message,"finish_reason":finish}],"usage":null}))).into_response()
 }
 
 async fn handle_completion_request(
@@ -2727,6 +2863,19 @@ mod tests {
             .unwrap();
         let resp = app.clone().oneshot(authorized(req)).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/chat/completions")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"messages":[{"role":"user","content":"hi"}],"tools":[{"type":"function","function":{}}],"stream_options":{"include_usage":true},"reasoning_effort":"high"}"#))
+            .unwrap();
+        let resp = app.clone().oneshot(authorized(req)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("Tool name is required"));
 
         let req = Request::builder()
             .method("POST")

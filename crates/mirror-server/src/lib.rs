@@ -18,6 +18,7 @@ pub mod proxy_headers;
 pub mod response_transform;
 pub mod router;
 pub mod security;
+pub mod tool_bridge;
 pub mod upload_mime;
 pub mod url_rewrite;
 pub mod ws_proxy;
