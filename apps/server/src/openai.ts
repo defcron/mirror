@@ -30,6 +30,7 @@ import {
 } from "./conversation-context.js";
 import { getValidCredentials } from "./auth.js";
 import { runChat } from "./chat-service.js";
+import { validateToolDefinitions, toolBridgePrompt, parseToolBridgeAnswer } from "./tool-bridge.js";
 import {
   updateMessage,
   getSessionRevision,
@@ -148,6 +149,11 @@ const CompletionBody = z
     }),
     messages: z.array(OpenAiMessage).min(1),
     stream: z.boolean().default(false),
+    stream_options: z.object({ include_usage: z.boolean().optional() }).strict().optional(),
+    reasoning_effort: z.enum(["none", "minimal", "low", "medium", "high", "xhigh"]).optional(),
+    tools: z.array(z.unknown()).optional(),
+    tool_choice: z.union([z.enum(["none", "auto", "required"]), z.object({ type: z.literal("function"), function: z.object({ name: z.string() }).strict() }).strict()]).optional(),
+    parallel_tool_calls: z.boolean().optional(),
     /**
      * Official OpenAI field, repurposed rather than adding a new one: whether
      * this turn is attached to a continuable Mirror conversation thread.
@@ -279,7 +285,7 @@ const CompletionBody = z
     ref: "CompletionRequest",
     description:
       "OpenAI Chat Completions-shaped request, backed by chatgpt.com/backend-api. " +
-      "Unsupported fields are rejected (400) rather than silently ignored.",
+      "Caller-defined function tools use an experimental prompt-based translation; unsupported fields are rejected (400).",
   });
 
 
@@ -442,6 +448,65 @@ export async function registerOpenAiRoutes(
     }
     const requestRevision = getSessionRevision();
     const body = parsed.data;
+    if (!isResponses && (body.tools?.length || body.messages.some(message => message.role === "tool" || "tool_calls" in message))) {
+      let bridgeStream = false;
+      let bridgeHeartbeat: ReturnType<typeof setInterval> | undefined;
+      try {
+        const tools = validateToolDefinitions(body.tools ?? []);
+        const route = routeModel(body.model, body.metadata);
+        if (route.model?.endsWith("-wm")) throw Object.assign(new Error("Work Mode is not supported by Mirror"), { statusCode: 400 });
+        const rawMessages = body.messages.map(message => ({
+          role: message.role, content: message.content,
+          ...(message.name ? { name: message.name } : {}),
+          ...("tool_call_id" in message ? { tool_call_id: message.tool_call_id } : {}),
+          ...("tool_calls" in message ? { tool_calls: message.tool_calls } : {}),
+        }));
+        const prompt = toolBridgePrompt(rawMessages, tools, body.tool_choice);
+        const id = `chatcmpl-${crypto.randomUUID().replaceAll("-", "")}`;
+        const created = Math.floor(Date.now() / 1000);
+        if (body.stream) {
+          reply.hijack();
+          reply.raw.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
+          bridgeStream = true;
+          sse(reply, { id, object: "chat.completion.chunk", created, model: body.model,
+            choices: [{ index: 0, delta: { role: "assistant" }, finish_reason: null }] });
+          bridgeHeartbeat = setInterval(() => {
+            if (!reply.raw.destroyed && !reply.raw.writableEnded) sse(reply, { id, object: "chat.completion.chunk", created, model: body.model,
+              choices: [{ index: 0, delta: {}, finish_reason: null }] });
+          }, 10_000);
+        }
+        const chat = await runChat({ prompt, model: route.model, gizmoId: route.gizmoId,
+          private: true, ephemeral: true, signal: (req as any).raw?.signal ?? req.signal });
+        const answer = parseToolBridgeAnswer(chat.result.text, tools, body.tool_choice);
+        if (bridgeHeartbeat) clearInterval(bridgeHeartbeat);
+        const finish_reason = answer.toolCalls ? "tool_calls" : "stop";
+        if (body.stream) {
+          sse(reply, { id, object: "chat.completion.chunk", created, model: body.model,
+            choices: [{ index: 0, delta: answer.toolCalls
+              ? { tool_calls: answer.toolCalls.map((call, index) => ({ index, ...call })) }
+              : { content: answer.content }, finish_reason: null }] });
+          sse(reply, { id, object: "chat.completion.chunk", created, model: body.model,
+            choices: [{ index: 0, delta: {}, finish_reason }] });
+          sse(reply, "[DONE]");
+          reply.raw.end();
+          return;
+        }
+        return reply.send({ id, object: "chat.completion", created, model: body.model,
+          choices: [{ index: 0, message: { role: "assistant", content: answer.content,
+            ...(answer.toolCalls ? { tool_calls: answer.toolCalls } : {}) }, finish_reason }], usage: null });
+      } catch (error) {
+        if (bridgeHeartbeat) clearInterval(bridgeHeartbeat);
+        const upstreamResponseText = (error as { upstreamResponseText?: unknown })?.upstreamResponseText;
+        const status = Number((error as { statusCode?: number; status?: number }).statusCode ?? (error as { status?: number }).status ?? 502);
+        const message = error instanceof Error ? error.message : "Tool bridge failed";
+        const envelope = apiError(status, message, req.id);
+        if (bridgeStream) {
+          if (!reply.raw.destroyed) { sse(reply, envelope); sse(reply, "[DONE]"); reply.raw.end(); }
+          return;
+        }
+        return reply.code(status).send(envelope);
+      }
+    }
     if ((body.metadata?.mirror_model ?? body.model).endsWith("-wm")) return reply.code(400).send({ error: {message: "Work Mode is not supported by Mirror; select an interactive model", type: "unsupported_parameter"} });
     let streamedText = "";
     let emittedText = "";
