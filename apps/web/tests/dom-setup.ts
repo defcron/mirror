@@ -14,7 +14,7 @@ const dom = new JSDOM(
 const { window } = dom;
 
 function copy(name: string) {
-  if (name in (globalThis as Record<string, unknown>)) return;
+  if (!["localStorage", "sessionStorage", "Storage"].includes(name) && name in (globalThis as Record<string, unknown>) && (globalThis as Record<string, unknown>)[name] !== undefined) return;
   Object.defineProperty(globalThis, name, {
     get: () => (window as unknown as Record<string, unknown>)[name],
     configurable: true,

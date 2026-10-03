@@ -209,21 +209,19 @@ test("a Work Mode model reached via metadata.mirror_model is also rejected", asy
   assert.match(res.json().error.message, /Work Mode/);
 });
 
-test("a tool-role message is rejected as unsupported", async () => {
+test("an invalid function tool is rejected before calling ChatGPT", async () => {
   useSession("account-validate-3");
   const res = await app.inject({
     method: "POST",
     url: "/v1/chat/completions",
     payload: {
       model: "auto",
-      messages: [
-        { role: "user", content: "hi" },
-        { role: "tool", content: "result" },
-      ],
+      messages: [{ role: "user", content: "hi" }],
+      tools: [{ type: "function", function: {} }],
     },
   });
   assert.equal(res.statusCode, 400);
-  assert.match(res.json().error.message, /Tool messages/);
+  assert.match(res.json().error.message, /Tool names/);
 });
 
 test("a final message that isn't from the user is rejected", async () => {
